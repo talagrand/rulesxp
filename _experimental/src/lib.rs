@@ -39,6 +39,7 @@
 
 pub mod builtins;
 pub mod compiler;
+pub mod macros;
 pub mod parser;
 pub mod repl;
 pub mod value;
@@ -48,6 +49,7 @@ pub mod vm;
 pub mod test_closure_fix;
 
 pub use compiler::{compile, CompileError};
+pub use macros::MacroExpander;
 pub use parser::{parse, ParseError};
 pub use value::Value;
 pub use vm::{BytecodeModule, RuntimeError, VM};

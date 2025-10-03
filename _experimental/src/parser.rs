@@ -1,13 +1,13 @@
+use crate::value::Value;
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_while1, take_while},
+    bytes::complete::{tag, take_while, take_while1},
     character::complete::{char, multispace0, multispace1, none_of, one_of},
     combinator::{map, opt, recognize, value},
     multi::{many0, separated_list0},
     sequence::{delimited, pair, preceded, terminated},
     IResult,
 };
-use crate::value::Value;
 
 #[derive(Debug, Clone)]
 pub struct ParseError(pub String);
@@ -24,9 +24,70 @@ impl std::error::Error for ParseError {}
 pub fn parse(input: &str) -> Result<Value, ParseError> {
     match expression(input) {
         Ok(("", value)) => Ok(value),
-        Ok((remaining, _)) => Err(ParseError(format!("Unexpected remaining input: {}", remaining))),
+        Ok((remaining, _)) => Err(ParseError(format!(
+            "Unexpected remaining input: {}",
+            remaining
+        ))),
         Err(e) => Err(ParseError(format!("Parse error: {:?}", e))),
     }
+}
+
+/// Parse multiple Scheme expressions from input, ignoring comments and empty lines
+/// Returns a vector of parsed expressions
+pub fn parse_multiple(input: &str) -> Result<Vec<Value>, ParseError> {
+    let mut expressions = Vec::new();
+    let mut remaining = input;
+
+    while !remaining.trim().is_empty() {
+        // Skip whitespace and comments
+        remaining = skip_whitespace_and_comments(remaining);
+
+        if remaining.is_empty() {
+            break;
+        }
+
+        // Parse one expression
+        match expression(remaining) {
+            Ok((rest, value)) => {
+                expressions.push(value);
+                remaining = rest;
+            }
+            Err(e) => return Err(ParseError(format!("Parse error: {:?}", e))),
+        }
+    }
+
+    Ok(expressions)
+}
+
+/// Skip whitespace and comments (lines starting with ;)
+fn skip_whitespace_and_comments(input: &str) -> &str {
+    let mut remaining = input;
+
+    loop {
+        // Skip initial whitespace
+        remaining = remaining.trim_start();
+
+        if remaining.is_empty() {
+            break;
+        }
+
+        // Check if this line is a comment
+        if remaining.starts_with(';') {
+            // Skip to end of line
+            if let Some(newline_pos) = remaining.find('\n') {
+                remaining = &remaining[newline_pos + 1..];
+            } else {
+                // Comment goes to end of input
+                remaining = "";
+                break;
+            }
+        } else {
+            // Not a comment line, we're done skipping
+            break;
+        }
+    }
+
+    remaining
 }
 
 /// Parse a Scheme expression (the main entry point)
@@ -41,7 +102,7 @@ fn expression(input: &str) -> IResult<&str, Value> {
             symbol,
             quoted,
             list,
-        ))
+        )),
     )(input)
 }
 
@@ -63,20 +124,26 @@ fn number(input: &str) -> IResult<&str, Value> {
     let (input, sign) = opt(one_of("+-"))(input)?;
     let (input, number_str) = recognize(pair(
         take_while1(|c: char| c.is_ascii_digit()),
-        opt(pair(char('.'), take_while1(|c: char| c.is_ascii_digit())))
+        opt(pair(char('.'), take_while1(|c: char| c.is_ascii_digit()))),
     ))(input)?;
-    
+
     let full_number = format!("{}{}", sign.unwrap_or('+'), number_str);
-    
+
     if number_str.contains('.') {
         match full_number.parse::<f64>() {
             Ok(n) => Ok((input, Value::Real(n))),
-            Err(_) => Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Float))),
+            Err(_) => Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Float,
+            ))),
         }
     } else {
         match full_number.parse::<i64>() {
             Ok(n) => Ok((input, Value::Integer(n))),
-            Err(_) => Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit))),
+            Err(_) => Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Digit,
+            ))),
         }
     }
 }
@@ -92,7 +159,7 @@ fn string_literal(input: &str) -> IResult<&str, Value> {
         none_of("\""),
     )))(input)?;
     let (input, _) = char('"')(input)?;
-    
+
     Ok((input, Value::String(content.into_iter().collect())))
 }
 
@@ -100,7 +167,10 @@ fn string_literal(input: &str) -> IResult<&str, Value> {
 /// **R7RS Limitation**: Not implemented yet
 fn character(_input: &str) -> IResult<&str, Value> {
     // TODO: Implement character literals like #\a, #\space, #\newline
-    Err(nom::Err::Error(nom::error::Error::new(_input, nom::error::ErrorKind::Tag)))
+    Err(nom::Err::Error(nom::error::Error::new(
+        _input,
+        nom::error::ErrorKind::Tag,
+    )))
 }
 
 /// Parse symbols (identifiers)
@@ -109,17 +179,14 @@ fn symbol(input: &str) -> IResult<&str, Value> {
     fn is_initial(c: char) -> bool {
         c.is_ascii_alphabetic() || "!$%&*+-./:<=>?@^_~".contains(c)
     }
-    
+
     fn is_subsequent(c: char) -> bool {
         is_initial(c) || c.is_ascii_digit()
     }
-    
+
     map(
-        recognize(pair(
-            take_while1(is_initial),
-            take_while(is_subsequent)
-        )),
-        |s: &str| Value::Symbol(s.to_string())
+        recognize(pair(take_while1(is_initial), take_while(is_subsequent))),
+        |s: &str| Value::Symbol(s.to_string()),
     )(input)
 }
 
@@ -127,12 +194,12 @@ fn symbol(input: &str) -> IResult<&str, Value> {
 fn quoted(input: &str) -> IResult<&str, Value> {
     let (input, _) = char('\'')(input)?;
     let (input, expr) = expression(input)?;
-    
+
     // Convert 'expr to (quote expr)
-    Ok((input, Value::List(vec![
-        Value::Symbol("quote".to_string()),
-        expr
-    ])))
+    Ok((
+        input,
+        Value::List(vec![Value::Symbol("quote".to_string()), expr]),
+    ))
 }
 
 /// Parse lists (expr1 expr2 ...) and empty list ()
@@ -141,33 +208,32 @@ fn list(input: &str) -> IResult<&str, Value> {
         char('('),
         |input| {
             let (input, _) = multispace0(input)?;
-            
+
             // Parse list elements
             let (input, elements) = separated_list0(multispace1, expression)(input)?;
             let (input, _) = multispace0(input)?;
-            
+
             // Check for improper list (dotted tail)
-            let (input, tail) = opt(preceded(
-                terminated(char('.'), multispace0),
-                expression
-            ))(input)?;
-            
+            let (input, tail) =
+                opt(preceded(terminated(char('.'), multispace0), expression))(input)?;
+
             let (input, _) = multispace0(input)?;
-            
+
             // Build the list structure
             let list = if tail.is_some() {
                 // Improper lists not supported - return error
                 return Err(nom::Err::Error(nom::error::Error::new(
-                    input, nom::error::ErrorKind::Tag
+                    input,
+                    nom::error::ErrorKind::Tag,
                 )));
             } else {
                 // Proper list
                 Value::List(elements)
             };
-            
+
             Ok((input, list))
         },
-        char(')')
+        char(')'),
     )(input)
 }
 
@@ -193,16 +259,28 @@ mod tests {
 
     #[test]
     fn test_parse_strings() {
-        assert_eq!(parse("\"hello\"").unwrap(), Value::String("hello".to_string()));
-        assert_eq!(parse("\"hello\\\"world\"").unwrap(), Value::String("hello\"world".to_string()));
-        assert_eq!(parse("\"path\\\\to\\\\file\"").unwrap(), Value::String("path\\to\\file".to_string()));
+        assert_eq!(
+            parse("\"hello\"").unwrap(),
+            Value::String("hello".to_string())
+        );
+        assert_eq!(
+            parse("\"hello\\\"world\"").unwrap(),
+            Value::String("hello\"world".to_string())
+        );
+        assert_eq!(
+            parse("\"path\\\\to\\\\file\"").unwrap(),
+            Value::String("path\\to\\file".to_string())
+        );
     }
 
-    #[test] 
+    #[test]
     fn test_parse_symbols() {
         assert_eq!(parse("foo").unwrap(), Value::Symbol("foo".to_string()));
         assert_eq!(parse("+").unwrap(), Value::Symbol("+".to_string()));
-        assert_eq!(parse("list->vector").unwrap(), Value::Symbol("list->vector".to_string()));
+        assert_eq!(
+            parse("list->vector").unwrap(),
+            Value::Symbol("list->vector".to_string())
+        );
     }
 
     #[test]
@@ -217,7 +295,7 @@ mod tests {
         let expected = Value::List(vec![
             Value::Symbol("+".to_string()),
             Value::Integer(1),
-            Value::Integer(2)
+            Value::Integer(2),
         ]);
         assert_eq!(result, expected);
     }
@@ -227,7 +305,7 @@ mod tests {
         let result = parse("'foo").unwrap();
         let expected = Value::List(vec![
             Value::Symbol("quote".to_string()),
-            Value::Symbol("foo".to_string())
+            Value::Symbol("foo".to_string()),
         ]);
         assert_eq!(result, expected);
     }
@@ -237,7 +315,7 @@ mod tests {
         let result = parse("((lambda (x) x) 42)").unwrap();
         // Just verify it parses without error for now
         match result {
-            Value::List(_) => {},
+            Value::List(_) => {}
             _ => panic!("Expected a list"),
         }
     }

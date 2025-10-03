@@ -47,10 +47,22 @@ impl std::error::Error for CompileError {}
 
 /// Compiler context for tracking compilation state
 ///
-/// **R7RS Limitations:**
-/// - No support for `set!` - all bindings are immutable after creation
-/// - Simplified lexical scoping - uses runtime environment capture instead of compile-time analysis
-/// - No support for `letrec` mutual recursion complexities
+/// ## R7RS Deviations and Limitations:
+///
+/// **Missing Features (require compiler changes):**
+/// - `set!` - all bindings are immutable after creation
+/// - `letrec` - mutual recursion requires special compiler support
+/// - `call/cc` and continuations - not implemented
+/// - `dynamic-wind` - not implemented
+///
+/// **Features implemented via macro system (R7RS derived expressions):**
+/// See `STANDARD_DERIVED_EXPRESSIONS` in macros.rs for the complete list.
+/// These forms are expanded by the macro system before reaching the compiler.
+///
+/// **Architectural Limitations:**
+/// - **R7RS DEVIATION:** Simplified lexical scoping - uses runtime environment capture instead of compile-time analysis
+/// - **R7RS DEVIATION:** No support for proper tail call optimization
+/// - **R7RS DEVIATION:** Limited error reporting with source location tracking
 pub struct Compiler {
     /// Generated instructions
     instructions: Vec<Instruction>,
@@ -379,24 +391,24 @@ impl Compiler {
                                 }
                             }
 
-                            // R7RS features that are not supported - provide explicit errors
-                            "let"
-                            | "let*"
-                            | "letrec"
+                            // **R7RS DEVIATION:** Block truly unsupported R7RS special forms
+                            // Forms in macros::STANDARD_DERIVED_EXPRESSIONS are handled by macro system
+                            "letrec"
                             | "set!"
-                            | "cond"
-                            | "case"
-                            | "and"
-                            | "or"
-                            | "when"
-                            | "unless"
-                            | "do"
                             | "call/cc"
                             | "call-with-current-continuation"
                             | "dynamic-wind" => {
-                                return Err(CompileError::new(
-                                    "Unsupported R7RS feature".to_string(),
-                                )
+                                let reason = match operator.as_str() {
+                                    "letrec" => "requires compiler support for mutual recursion",
+                                    "set!" => {
+                                        "variable mutation not supported - all bindings immutable"
+                                    }
+                                    _ => "continuation support not implemented",
+                                };
+                                return Err(CompileError::new(format!(
+                                    "R7RS DEVIATION: {} - {}",
+                                    operator, reason
+                                ))
                                 .with_expression(value));
                             }
 

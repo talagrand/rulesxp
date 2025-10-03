@@ -1,13 +1,15 @@
-// Test the stabilization-based macro expansion system
-use samplescheme::*;
+use samplescheme::macros::MacroExpander;
+use samplescheme::vm::VM;
+use samplescheme::{parse, Value};
 
-fn parse_and_expand(
-    expander: &mut MacroExpander,
-    input: &str,
-) -> Result<Value, Box<dyn std::error::Error>> {
-    let ast = parse(input)?;
-    let expanded = expander.expand(&ast)?;
-    Ok(expanded)
+fn parse_and_expand(expander: &mut MacroExpander, code: &str) -> Result<Value, String> {
+    match parse(code) {
+        Ok(ast) => match expander.expand(&ast) {
+            Ok(expanded) => Ok(expanded),
+            Err(e) => Err(format!("Macro error: {}", e)),
+        },
+        Err(e) => Err(format!("Parse error: {}", e)),
+    }
 }
 
 fn main() {
@@ -18,11 +20,11 @@ fn main() {
 
     // Test 1: Define a simple macro
     println!("\n1. Defining simple macro...");
-    let when_macro = "(define-syntax when
+    let simple_macro = "(define-syntax when
         (syntax-rules ()
             ((when test body) (if test body))))";
 
-    match parse_and_expand(&mut expander, when_macro) {
+    match parse_and_expand(&mut expander, simple_macro) {
         Ok(result) => println!("   Expanded: {:?}", result),
         Err(e) => println!("   Error: {:?}", e),
     }
@@ -30,7 +32,7 @@ fn main() {
     // Test 2: Use the simple macro (stabilization-based expansion)
     println!("\n2. Using simple macro (stabilization-based expansion)...");
     println!("   Known macros before: {:?}", expander.known_macro_count());
-    println!("   Note: Using per-expression stabilization with short-circuit optimization");
+    println!("   Note: Using per-expression stabilization instead of global tracking");
 
     let when_usage = "(when #t \"works\")";
 

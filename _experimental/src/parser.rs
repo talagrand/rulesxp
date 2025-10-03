@@ -1,3 +1,27 @@
+// Parser module - converts text into AST using nom parser combinators
+//
+// ## R7RS Deviations and Limitations:
+//
+// **Missing Features:**
+// - Character literals (#\a, #\space, #\newline) - not implemented
+// - Vector literals (#(1 2 3)) - vectors not supported in core language
+// - Improper lists (dotted pairs) - only proper lists supported
+// - Complex numbers (3+4i) and rationals (1/2) - only integers and reals
+// - Exact/inexact number prefixes (#e, #i) - not supported
+// - Alternative radix prefixes (#b, #o, #x) - only decimal numbers
+// - Advanced string escapes (\n, \t, \r, \x, \u) - only \" and \\ supported
+// - Quoted symbols with | | delimiters - not supported
+// - Bytevector literals (#u8()) - not supported
+//
+// **Partial Implementations:**
+// - String escape sequences - basic support for \" and \\ only
+// - Symbol character set - simplified, missing some R7RS characters
+//
+// **Error Enforcement:**
+// - Character literals emit parse errors when encountered
+// - Improper lists emit parse errors when encountered
+// - Other limitations result in parse failures or are silently ignored
+
 use crate::value::Value;
 use nom::{
     branch::alt,
@@ -118,7 +142,7 @@ fn boolean(input: &str) -> IResult<&str, Value> {
 }
 
 /// Parse numeric literals (integers and reals)
-/// **R7RS Limitation**: Only supports basic decimal integers and floats
+/// **R7RS DEVIATION:** Only supports basic decimal integers and floats
 /// Missing: exact/inexact prefixes, different radixes, rational numbers, complex numbers
 fn number(input: &str) -> IResult<&str, Value> {
     let (input, sign) = opt(one_of("+-"))(input)?;
@@ -149,7 +173,7 @@ fn number(input: &str) -> IResult<&str, Value> {
 }
 
 /// Parse string literals
-/// **R7RS Limitation**: Basic escape sequences only (\" and \\)
+/// **R7RS DEVIATION:** Basic escape sequences only (\" and \\)
 /// Missing: \n, \t, \r, \x, \u escape sequences
 fn string_literal(input: &str) -> IResult<&str, Value> {
     let (input, _) = char('"')(input)?;
@@ -164,9 +188,12 @@ fn string_literal(input: &str) -> IResult<&str, Value> {
 }
 
 /// Parse character literals  
-/// **R7RS Limitation**: Not implemented yet
+/// **R7RS DEVIATION:** Character literals not implemented
+/// **NEEDS-ENFORCEMENT:** Cannot detect #\ patterns at parser level - would need lexer changes
 fn character(_input: &str) -> IResult<&str, Value> {
-    // TODO: Implement character literals like #\a, #\space, #\newline
+    // Character literals like #\a, #\space, #\newline are not supported
+    // This function is kept for completeness but will never match since
+    // the # character is not handled by the main expression parser
     Err(nom::Err::Error(nom::error::Error::new(
         _input,
         nom::error::ErrorKind::Tag,
@@ -174,7 +201,7 @@ fn character(_input: &str) -> IResult<&str, Value> {
 }
 
 /// Parse symbols (identifiers)
-/// **R7RS Limitation**: Simplified character set, no | | quoted symbols
+/// **R7RS DEVIATION:** Simplified character set, no | | quoted symbols
 fn symbol(input: &str) -> IResult<&str, Value> {
     fn is_initial(c: char) -> bool {
         c.is_ascii_alphabetic() || "!$%&*+-./:<=>?@^_~".contains(c)
@@ -221,7 +248,9 @@ fn list(input: &str) -> IResult<&str, Value> {
 
             // Build the list structure
             let list = if tail.is_some() {
-                // Improper lists not supported - return error
+                // **R7RS DEVIATION:** Improper lists (dotted pairs) not supported
+                // This would need to be handled at a higher level to emit proper error message
+                // since nom parsers don't support custom error types easily
                 return Err(nom::Err::Error(nom::error::Error::new(
                     input,
                     nom::error::ErrorKind::Tag,
@@ -253,7 +282,7 @@ mod tests {
     fn test_parse_numbers() {
         assert_eq!(parse("42").unwrap(), Value::Integer(42));
         assert_eq!(parse("-17").unwrap(), Value::Integer(-17));
-        assert_eq!(parse("3.14").unwrap(), Value::Real(3.14));
+        assert_eq!(parse("3.5").unwrap(), Value::Real(3.5));
         assert_eq!(parse("-2.5").unwrap(), Value::Real(-2.5));
     }
 
@@ -320,9 +349,9 @@ mod tests {
         }
     }
 
-    // Disabled tests showing R7RS limitations
+    // Disabled tests showing R7RS deviations - these features are not supported
     #[test]
-    #[ignore = "Character literals not implemented"]
+    #[ignore = "R7RS DEVIATION: Character literals not implemented"]
     fn test_parse_characters() {
         parse("#\\a").unwrap();
         parse("#\\space").unwrap();
@@ -330,20 +359,20 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Complex numbers not supported"]
+    #[ignore = "R7RS DEVIATION: Complex numbers and rationals not supported"]
     fn test_parse_complex_numbers() {
         parse("3+4i").unwrap();
         parse("1/2").unwrap();
     }
 
     #[test]
-    #[ignore = "Vectors not implemented"]
+    #[ignore = "R7RS DEVIATION: Vectors not implemented"]
     fn test_parse_vectors() {
         parse("#(1 2 3)").unwrap();
     }
 
     #[test]
-    #[ignore = "Advanced string escapes not supported"]
+    #[ignore = "R7RS DEVIATION: Advanced string escapes not supported"]
     fn test_parse_advanced_string_escapes() {
         parse("\"line1\\nline2\"").unwrap();
         parse("\"tab\\there\"").unwrap();

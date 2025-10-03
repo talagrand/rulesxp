@@ -1118,7 +1118,7 @@ mod tests {
     fn test_vm_debug_info() {
         let source = "hello";
         let ast = parse(source).unwrap();
-        let mut vm = VM::new();
+        let vm = VM::new();
         let module = compile(&ast, source.to_string(), vm.current_env.clone()).unwrap();
 
         // Test line/column conversion
@@ -1519,13 +1519,13 @@ mod tests {
         assert_eq!(result, Value::Integer(42));
     }
 
-    // ===== NEGATIVE TESTS - R7RS LIMITATIONS =====
+    // ===== NEGATIVE TESTS - R7RS DEVIATIONS =====
     // These tests document what we DON'T support compared to R7RS Scheme
 
     #[test]
     #[should_panic(expected = "Undefined variable: set!")]
     fn test_set_not_supported() {
-        // R7RS LIMITATION: No support for set! - all bindings are immutable
+        // **R7RS DEVIATION:** No support for set! - all bindings are immutable
         use crate::compiler::compile;
         use crate::parser::parse;
 
@@ -1541,7 +1541,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Undefined variable: letrec")]
     fn test_letrec_not_supported() {
-        // R7RS LIMITATION: No support for letrec mutual recursion
+        // **R7RS DEVIATION:** No support for letrec mutual recursion
         use crate::compiler::compile;
         use crate::parser::parse;
 
@@ -1557,7 +1557,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Undefined variable: let")]
     fn test_let_not_supported() {
-        // R7RS LIMITATION: No support for let bindings yet
+        // **R7RS DEVIATION:** No support for let bindings yet
         use crate::compiler::compile;
         use crate::parser::parse;
 

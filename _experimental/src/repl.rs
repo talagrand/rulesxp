@@ -13,9 +13,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut rl = DefaultEditor::new()?;
     let mut macro_expander = MacroExpander::new(vm.current_env());
 
-    // Load prelude macros
+    // Load R7RS standard macro prelude (derived expressions)
+    // This loads all forms listed in macros::STANDARD_DERIVED_EXPRESSIONS
+    // from prelude/macros.scm - these are required for R7RS compliance
     if let Err(e) = macro_expander.load_prelude() {
-        eprintln!("Warning: Failed to load prelude macros: {}", e);
+        eprintln!("Error: Failed to load standard macro prelude: {}", e);
+        eprintln!("The interpreter cannot function without these essential macros.");
+        return Err(Box::new(std::io::Error::other(e.to_string())));
     }
 
     // Load history if it exists

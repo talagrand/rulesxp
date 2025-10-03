@@ -13,6 +13,8 @@
 //!   compile-time free variable analysis (less efficient but simpler)
 //! - **No `let`, `let*`, `letrec`**: Only `define` and `lambda` for bindings
 //! - **Environment chaining**: Proper lexical scoping through environment chain walking
+//! - **TODO: Inner defines don't work correctly**: Scoping issue with compilation vs runtime environments.
+//!   Will be addressed when moving to CPS (Continuation Passing Style) transformation.
 //!
 //! ### Data Types
 //! - **Limited numeric tower**: Only i64/u64 integers and f64 floats, no arbitrary precision

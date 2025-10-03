@@ -1,6 +1,23 @@
-// Prolog injection system for implementing built-ins in Scheme
-// This allows us to define many standard procedures in Scheme itself
-// rather than implementing them all in Rust
+// Built-in procedures module - implements core Scheme procedures in Rust
+//
+// ## R7RS Deviations and Limitations:
+//
+// **Missing Features:**
+// - Many R7RS standard procedures not implemented yet
+// - Character procedures (char?, char=?, etc.) - characters not supported
+// - Vector procedures (vector?, vector-ref, etc.) - vectors not supported
+// - Bytevector procedures - bytevectors not supported
+// - Port/IO procedures - ports not supported
+// - System procedures (command-line, environment variables, etc.)
+//
+// **Partial Implementations:**
+// - Numeric procedures: Basic arithmetic only, missing advanced math functions
+// - List procedures: Core functions implemented, missing some utilities
+// - String procedures: Basic operations, missing advanced string manipulation
+//
+// **Architecture:**
+// - Uses Scheme prelude system to implement many procedures in Scheme itself
+// - Only core primitives that require Rust implementation are defined here
 
 /// Comprehensive Scheme prelude - procedures implemented in Scheme itself
 /// These will be compiled and loaded before user code

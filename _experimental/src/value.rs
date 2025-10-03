@@ -5,14 +5,21 @@ use std::rc::Rc;
 
 /// Core Scheme value types
 ///
-/// **R7RS Deviations and Limitations:**
-/// - Numbers: Only supports i64/u64 integers and f64 floats, no arbitrary precision
-/// - Lists: No support for improper lists (dotted pairs) - only proper lists using Vec
+/// ## R7RS Deviations and Limitations:
+///
+/// **Missing Features:**
 /// - Characters: Not implemented yet
 /// - Vectors: Not implemented yet  
 /// - Bytevectors: Not implemented yet
 /// - Ports: Not implemented yet
 /// - Records: Not implemented yet
+/// - Complex numbers and rationals: Only supports integers and reals
+///
+/// **Partial Implementations:**
+/// - Numbers: Only supports i64/u64 integers and f64 floats, no arbitrary precision
+/// - Lists: No support for improper lists (dotted pairs) - only proper lists using Vec
+///
+/// **R7RS DEVIATION:** Limited numeric tower - missing exact rationals, complex numbers, arbitrary precision
 #[derive(Debug, Clone)]
 pub enum Value {
     /// Boolean values (#t and #f)

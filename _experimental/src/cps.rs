@@ -133,7 +133,7 @@ impl CPSTransformer {
     fn make_continuation_call(&self, continuation: &Value, args: Vec<Value>) -> Value {
         // Generate explicit continuation call annotation
         let mut call = vec![
-            Value::Symbol("$$-cont-call".to_string()),
+            Value::Symbol("$cont-call".to_string()),
             continuation.clone(),
         ];
         call.extend(args);
@@ -219,7 +219,7 @@ impl CPSTransformer {
         // This allows the compiler to immediately recognize CPS forms and emit
         // native MakeCont opcodes without pattern matching or heuristics
         let cps_lambda = Value::List(vec![
-            Value::Symbol("$$-cps-lambda".to_string()),
+            Value::Symbol("$cps-lambda".to_string()),
             Value::List(cps_params[..cps_params.len() - 1].to_vec()), // Regular parameters
             cont_param.clone(),                                       // Continuation parameter
             cps_body, // Body with explicit cont-calls
@@ -255,7 +255,7 @@ impl CPSTransformer {
                 ]),
                 self.make_continuation_call(
                     continuation,
-                    vec![Value::Symbol("$$-unspecified".to_string())],
+                    vec![Value::Symbol("$unspecified".to_string())],
                 ),
             ]),
         ]);
@@ -269,7 +269,7 @@ impl CPSTransformer {
             // Empty begin returns unspecified
             return self.make_continuation_call(
                 continuation,
-                vec![Value::Symbol("$$-unspecified".to_string())],
+                vec![Value::Symbol("$unspecified".to_string())],
             );
         }
 

@@ -43,10 +43,7 @@ fn main() {
             "Nested if with applications",
         ),
         // Test with the helper macro
-        (
-            "(rulesxp-internal-cps-app + (1 2) () identity)",
-            "Direct CPS app usage",
-        ),
+        ("($cps-app + (1 2) () identity)", "Direct CPS app usage"),
     ];
 
     for (input, description) in advanced_test_cases {

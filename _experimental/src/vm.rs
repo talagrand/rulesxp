@@ -24,6 +24,32 @@ pub struct SourceLocation {
     pub source_code: String,
 }
 
+/// Evaluation stack frame for stack-based AST interpretation
+#[derive(Debug, Clone)]
+enum EvalFrame {
+    /// Evaluate an expression and push result
+    Evaluate(Value),
+    /// Apply a function with given arguments (function first, then args)
+    Apply { function: Value, args: Vec<Value> },
+    /// Continue with if evaluation (test_result, then_expr, else_expr)
+    IfContinue {
+        test_result: Value,
+        then_expr: Value,
+        else_expr: Option<Value>,
+    },
+    /// Continue with begin evaluation (expressions left to evaluate, last_result)
+    BeginContinue {
+        remaining: Vec<Value>,
+        last_result: Value,
+    },
+    /// Function argument evaluation (function, evaluated_args, remaining_args)
+    ArgEval {
+        function: Value,
+        evaluated: Vec<Value>,
+        remaining: Vec<Value>,
+    },
+}
+
 impl RuntimeError {
     pub fn new(message: String) -> Self {
         RuntimeError {
@@ -260,6 +286,12 @@ pub struct ContinuationPool {
     /// Pool statistics
     hits: usize,
     misses: usize,
+}
+
+impl Default for ContinuationPool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ContinuationPool {
@@ -509,11 +541,9 @@ impl VM {
                 eprintln!("Fatal error loading CPS function prelude: {}", e);
                 std::process::exit(1);
             }
-        } else {
-            if let Err(e) = vm.load_function_prelude() {
-                eprintln!("Fatal error loading function prelude: {}", e);
-                std::process::exit(1);
-            }
+        } else if let Err(e) = vm.load_function_prelude() {
+            eprintln!("Fatal error loading function prelude: {}", e);
+            std::process::exit(1);
         }
 
         vm
@@ -589,6 +619,36 @@ impl VM {
                 func,
             };
             self.current_env.define(name.to_string(), cps_builtin);
+        }
+    }
+
+    /// Create a new VM for direct AST interpretation (no bytecode compilation)
+    /// This VM will evaluate expressions directly from the AST without compiling to bytecode
+    pub fn new_direct_interpreter(env: Rc<Environment>) -> Self {
+        VM {
+            stack: Vec::new(),
+            call_stack: Vec::new(),
+            ip: 0,
+            current_env: env.clone(),
+            global_env: env,
+            recursion_depth: std::collections::HashMap::new(),
+            cps_mode: false, // Direct interpretation doesn't use CPS
+            continuation_pool: ContinuationPool::new(),
+        }
+    }
+
+    /// Create a new VM for stack-based AST interpretation (no recursion, no bytecode compilation)
+    /// This VM will evaluate expressions using an explicit stack instead of recursion
+    pub fn new_stack_ast_interpreter(env: Rc<Environment>) -> Self {
+        VM {
+            stack: Vec::new(),
+            call_stack: Vec::new(),
+            ip: 0,
+            current_env: env.clone(),
+            global_env: env,
+            recursion_depth: std::collections::HashMap::new(),
+            cps_mode: false, // Stack-based interpretation doesn't use CPS
+            continuation_pool: ContinuationPool::new(),
         }
     }
 
@@ -869,6 +929,776 @@ impl VM {
         //     Err(err) => eprintln!("Debug: execute_value_in_current_env error: {}", err),
         // }
         result
+    }
+
+    /// Direct AST evaluation without bytecode compilation
+    /// This is a naive tree-walking interpreter that evaluates expressions directly
+    pub fn evaluate_ast(&mut self, expression: &Value) -> Result<Value, RuntimeError> {
+        match expression {
+            // Literals evaluate to themselves
+            Value::Integer(_)
+            | Value::UInteger(_)
+            | Value::Real(_)
+            | Value::Boolean(_)
+            | Value::String(_) => Ok(expression.clone()),
+
+            // Symbols are variable lookups
+            Value::Symbol(name) => match self.current_env.lookup(name) {
+                Some(value) => Ok(value),
+                None => {
+                    Err(self.create_simple_runtime_error(format!("Undefined variable: {}", name)))
+                }
+            },
+
+            // Lists are either special forms or function applications
+            Value::List(elements) if !elements.is_empty() => {
+                match &elements[0] {
+                    Value::Symbol(name) => match name.as_str() {
+                        // Special forms
+                        "if" => self.evaluate_if(&elements[1..]),
+                        "define" => self.evaluate_define(&elements[1..]),
+                        "lambda" => self.evaluate_lambda(&elements[1..]),
+                        "quote" => {
+                            if elements.len() == 2 {
+                                Ok(elements[1].clone())
+                            } else {
+                                Err(self.create_simple_runtime_error(
+                                    "quote requires exactly one argument".to_string(),
+                                ))
+                            }
+                        }
+                        "begin" => self.evaluate_begin(&elements[1..]),
+                        _ => {
+                            // Regular function application
+                            self.evaluate_application(elements)
+                        }
+                    },
+                    _ => {
+                        // Function expression application: ((lambda ...) args...)
+                        self.evaluate_application(elements)
+                    }
+                }
+            }
+
+            // Empty list
+            Value::List(_) => Ok(Value::List(vec![])),
+
+            // Other values pass through
+            _ => Ok(expression.clone()),
+        }
+    }
+
+    /// Evaluate if expression directly
+    fn evaluate_if(&mut self, args: &[Value]) -> Result<Value, RuntimeError> {
+        if args.len() < 2 || args.len() > 3 {
+            return Err(
+                self.create_simple_runtime_error("if requires 2 or 3 arguments".to_string())
+            );
+        }
+
+        let test_result = self.evaluate_ast(&args[0])?;
+        let is_true = match test_result {
+            Value::Boolean(false) => false,
+            _ => true, // Everything except #f is true in Scheme
+        };
+
+        if is_true {
+            self.evaluate_ast(&args[1])
+        } else if args.len() == 3 {
+            self.evaluate_ast(&args[2])
+        } else {
+            // No else clause - return unspecified
+            Ok(Value::List(vec![]))
+        }
+    }
+
+    /// Evaluate define expression directly
+    fn evaluate_define(&mut self, args: &[Value]) -> Result<Value, RuntimeError> {
+        if args.len() != 2 {
+            return Err(
+                self.create_simple_runtime_error("define requires exactly 2 arguments".to_string())
+            );
+        }
+
+        match &args[0] {
+            Value::Symbol(name) => {
+                let value = self.evaluate_ast(&args[1])?;
+                self.current_env.define(name.clone(), value);
+                Ok(Value::List(vec![])) // Unspecified return value
+            }
+            _ => Err(self
+                .create_simple_runtime_error("define first argument must be a symbol".to_string())),
+        }
+    }
+
+    /// Evaluate lambda expression directly
+    fn evaluate_lambda(&mut self, args: &[Value]) -> Result<Value, RuntimeError> {
+        if args.len() < 2 {
+            return Err(self
+                .create_simple_runtime_error("lambda requires at least 2 arguments".to_string()));
+        }
+
+        let params = args[0].clone();
+        let body = if args.len() == 2 {
+            args[1].clone()
+        } else {
+            // Multiple body expressions - wrap in begin
+            let mut begin_expr = vec![Value::Symbol("begin".to_string())];
+            begin_expr.extend(args[1..].iter().cloned());
+            Value::List(begin_expr)
+        };
+
+        // Create a user-defined procedure
+        let param_names = match &params {
+            Value::List(param_list) => {
+                let mut names = Vec::new();
+                for param in param_list {
+                    if let Value::Symbol(name) = param {
+                        names.push(name.clone());
+                    } else {
+                        return Err(self.create_simple_runtime_error(
+                            "Function parameters must be symbols".to_string(),
+                        ));
+                    }
+                }
+                names
+            }
+            Value::Symbol(single_param) => vec![single_param.clone()],
+            _ => {
+                return Err(self.create_simple_runtime_error(
+                    "Function parameters must be symbols or list of symbols".to_string(),
+                ))
+            }
+        };
+
+        Ok(Value::Procedure {
+            params: param_names,
+            body: Rc::new(body),
+            env: self.current_env.clone(),
+            variadic: false, // For now, no variadic support in direct interpreter
+        })
+    }
+
+    /// Evaluate begin expression directly
+    fn evaluate_begin(&mut self, args: &[Value]) -> Result<Value, RuntimeError> {
+        if args.is_empty() {
+            return Ok(Value::List(vec![])); // Unspecified
+        }
+
+        let mut result = Value::List(vec![]);
+        for expr in args {
+            result = self.evaluate_ast(expr)?;
+        }
+        Ok(result)
+    }
+
+    /// Evaluate function application directly
+    fn evaluate_application(&mut self, elements: &[Value]) -> Result<Value, RuntimeError> {
+        // Evaluate the function
+        let function = self.evaluate_ast(&elements[0])?;
+
+        // Evaluate the arguments
+        let mut args = Vec::new();
+        for arg in &elements[1..] {
+            args.push(self.evaluate_ast(arg)?);
+        }
+
+        // Apply the function
+        match function {
+            Value::Builtin {
+                name,
+                arity: _,
+                func,
+            } => {
+                // Call builtin function
+                func(&args).map_err(|e| {
+                    self.create_simple_runtime_error(format!("Builtin '{}' error: {}", name, e))
+                })
+            }
+            Value::Procedure {
+                params,
+                body,
+                env,
+                variadic: _,
+            } => {
+                // Call user-defined function
+                self.apply_user_function_direct(params, (*body).clone(), env, args)
+            }
+            _ => Err(self.create_simple_runtime_error(format!(
+                "Cannot apply non-function: {}",
+                function.type_name()
+            ))),
+        }
+    }
+
+    /// Apply a user-defined function directly
+    fn apply_user_function_direct(
+        &mut self,
+        params: Vec<String>,
+        body: Value,
+        closure: Rc<Environment>,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        // Create new environment for function execution
+        let func_env = Environment::with_parent(closure);
+
+        // Bind parameters to arguments
+        if params.len() != args.len() {
+            return Err(self.create_simple_runtime_error(format!(
+                "Function expects {} arguments, got {}",
+                params.len(),
+                args.len()
+            )));
+        }
+        for (param_name, arg) in params.iter().zip(args.iter()) {
+            func_env.define(param_name.clone(), arg.clone());
+        }
+
+        // Save current environment and switch to function environment
+        let saved_env = self.current_env.clone();
+        self.current_env = Rc::new(func_env);
+
+        // Evaluate function body
+        let result = self.evaluate_ast(&body);
+
+        // Restore previous environment
+        self.current_env = saved_env;
+
+        result
+    }
+
+    /// Stack-based AST evaluation (no recursion)
+    /// This evaluates expressions using an explicit stack instead of recursive calls
+    pub fn evaluate_ast_stack(&mut self, expression: &Value) -> Result<Value, RuntimeError> {
+        let mut eval_stack: Vec<EvalFrame> = vec![EvalFrame::Evaluate(expression.clone())];
+        let mut result_stack: Vec<Value> = Vec::new();
+
+        while let Some(frame) = eval_stack.pop() {
+            match frame {
+                EvalFrame::Evaluate(expr) => {
+                    match expr {
+                        // Literals evaluate to themselves
+                        Value::Integer(_)
+                        | Value::UInteger(_)
+                        | Value::Real(_)
+                        | Value::Boolean(_)
+                        | Value::String(_) => {
+                            result_stack.push(expr.clone());
+                        }
+
+                        // Symbols are variable lookups
+                        Value::Symbol(name) => match self.current_env.lookup(&name) {
+                            Some(value) => result_stack.push(value),
+                            None => {
+                                return Err(self.create_simple_runtime_error(format!(
+                                    "Undefined variable: {}",
+                                    name
+                                )))
+                            }
+                        },
+
+                        // Lists are either special forms or function applications
+                        Value::List(elements) if !elements.is_empty() => {
+                            match &elements[0] {
+                                Value::Symbol(name) => match name.as_str() {
+                                    // Special forms
+                                    "if" => {
+                                        if elements.len() < 3 || elements.len() > 4 {
+                                            return Err(self.create_simple_runtime_error(
+                                                "if requires 2 or 3 arguments".to_string(),
+                                            ));
+                                        }
+                                        let test_expr = elements[1].clone();
+                                        let then_expr = elements[2].clone();
+                                        let else_expr = if elements.len() == 4 {
+                                            Some(elements[3].clone())
+                                        } else {
+                                            None
+                                        };
+
+                                        // Push continuation frame first, then evaluate test
+                                        eval_stack.push(EvalFrame::IfContinue {
+                                            test_result: Value::Boolean(false), // placeholder
+                                            then_expr,
+                                            else_expr,
+                                        });
+                                        eval_stack.push(EvalFrame::Evaluate(test_expr));
+                                    }
+
+                                    "define" => {
+                                        if elements.len() != 3 {
+                                            return Err(self.create_simple_runtime_error(
+                                                "define requires exactly 2 arguments".to_string(),
+                                            ));
+                                        }
+                                        if let Value::Symbol(name) = &elements[1] {
+                                            // Push define continuation first, then evaluate value
+                                            let name = name.clone();
+                                            // We need to create owned values for internal operations
+                                            eval_stack.push(EvalFrame::Apply {
+                                                function: Value::Symbol(
+                                                    "$internal-define".to_string(),
+                                                ),
+                                                args: vec![Value::Symbol(name)],
+                                            });
+                                            eval_stack
+                                                .push(EvalFrame::Evaluate(elements[2].clone()));
+                                        } else {
+                                            return Err(self.create_simple_runtime_error(
+                                                "define first argument must be a symbol"
+                                                    .to_string(),
+                                            ));
+                                        }
+                                    }
+
+                                    "lambda" => {
+                                        if elements.len() < 3 {
+                                            return Err(self.create_simple_runtime_error(
+                                                "lambda requires at least 2 arguments".to_string(),
+                                            ));
+                                        }
+
+                                        let params = elements[1].clone();
+                                        let body = if elements.len() == 3 {
+                                            elements[2].clone()
+                                        } else {
+                                            // Multiple body expressions - wrap in begin
+                                            let mut begin_expr =
+                                                vec![Value::Symbol("begin".to_string())];
+                                            begin_expr.extend(elements[2..].iter().cloned());
+                                            Value::List(begin_expr)
+                                        };
+
+                                        // Create parameter list
+                                        let param_names = match &params {
+                                            Value::List(param_list) => {
+                                                let mut names = Vec::new();
+                                                for param in param_list {
+                                                    if let Value::Symbol(name) = param {
+                                                        names.push(name.clone());
+                                                    } else {
+                                                        return Err(self.create_simple_runtime_error(
+                                                            "Function parameters must be symbols".to_string()
+                                                        ));
+                                                    }
+                                                }
+                                                names
+                                            }
+                                            Value::Symbol(single_param) => vec![single_param.clone()],
+                                            _ => return Err(self.create_simple_runtime_error(
+                                                "Function parameters must be symbols or list of symbols".to_string()
+                                            )),
+                                        };
+
+                                        result_stack.push(Value::Procedure {
+                                            params: param_names,
+                                            body: Rc::new(body),
+                                            env: self.current_env.clone(),
+                                            variadic: false,
+                                        });
+                                    }
+
+                                    "quote" => {
+                                        if elements.len() == 2 {
+                                            result_stack.push(elements[1].clone());
+                                        } else {
+                                            return Err(self.create_simple_runtime_error(
+                                                "quote requires exactly one argument".to_string(),
+                                            ));
+                                        }
+                                    }
+
+                                    "begin" => {
+                                        if elements.is_empty() {
+                                            result_stack.push(Value::List(vec![]));
+                                        // Unspecified
+                                        } else if elements.len() == 2 {
+                                            // Single expression, just evaluate it
+                                            eval_stack
+                                                .push(EvalFrame::Evaluate(elements[1].clone()));
+                                        } else {
+                                            // Multiple expressions
+                                            let mut remaining: Vec<Value> = elements[1..].to_vec();
+                                            remaining.reverse(); // Reverse to pop in order
+                                            let first_expr = remaining.pop().unwrap();
+                                            eval_stack.push(EvalFrame::BeginContinue {
+                                                remaining,
+                                                last_result: Value::List(vec![]),
+                                            });
+                                            eval_stack.push(EvalFrame::Evaluate(first_expr));
+                                        }
+                                    }
+
+                                    _ => {
+                                        // Check if this is a builtin function call that we can optimize
+                                        if let Value::Symbol(ref name) = elements[0] {
+                                            if let Some(builtin_value) = self.current_env.lookup(name) {
+                                                if let Value::Builtin { name: _, arity: _, func } = builtin_value {
+                                                    // This is a builtin function - check if all args are literals/symbols
+                                                    // that we can evaluate immediately without stack frames
+                                                    let args = &elements[1..];
+                                                    if args.iter().all(|arg| self.is_immediate_value(arg)) {
+                                                        // All arguments are immediate - evaluate and call builtin directly
+                                                        let mut eval_args = Vec::new();
+                                                        for arg in args {
+                                                            match self.evaluate_immediate_value(arg) {
+                                                                Ok(val) => eval_args.push(val),
+                                                                Err(e) => return Err(e),
+                                                            }
+                                                        }
+                                                        
+                                                        // Call builtin directly - no stack needed!
+                                                        match func(&eval_args) {
+                                                            Ok(result) => {
+                                                                result_stack.push(result);
+                                                                continue; // Skip to next frame
+                                                            },
+                                                            Err(e) => {
+                                                                return Err(self.create_simple_runtime_error(format!(
+                                                                    "Builtin '{}' error: {}", name, e
+                                                                )));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        
+                                        // Regular function application (non-optimizable case)
+                                        self.setup_application_stack(&mut eval_stack, &elements);
+                                    }
+                                },
+                                _ => {
+                                    // Function expression application: ((lambda ...) args...)
+                                    self.setup_application_stack(&mut eval_stack, &elements);
+                                }
+                            }
+                        }
+
+                        // Empty list
+                        Value::List(_) => result_stack.push(Value::List(vec![])),
+
+                        // Other values pass through
+                        _ => result_stack.push(expr.clone()),
+                    }
+                }
+
+                EvalFrame::IfContinue {
+                    test_result: _,
+                    then_expr,
+                    else_expr,
+                } => {
+                    // The test result should be on the result stack
+                    if let Some(test_result) = result_stack.pop() {
+                        let is_true = match test_result {
+                            Value::Boolean(false) => false,
+                            _ => true, // Everything except #f is true in Scheme
+                        };
+
+                        if is_true {
+                            eval_stack.push(EvalFrame::Evaluate(then_expr));
+                        } else if let Some(else_expr) = else_expr {
+                            eval_stack.push(EvalFrame::Evaluate(else_expr));
+                        } else {
+                            result_stack.push(Value::List(vec![])); // Unspecified
+                        }
+                    } else {
+                        return Err(self.create_simple_runtime_error(
+                            "Internal error: missing test result for if".to_string(),
+                        ));
+                    }
+                }
+
+                EvalFrame::BeginContinue {
+                    mut remaining,
+                    last_result: _,
+                } => {
+                    // The result of the previous expression should be on the result stack
+                    if let Some(_) = result_stack.pop() {
+                        if let Some(next_expr) = remaining.pop() {
+                            // More expressions to evaluate
+                            eval_stack.push(EvalFrame::BeginContinue {
+                                remaining,
+                                last_result: Value::List(vec![]),
+                            });
+                            eval_stack.push(EvalFrame::Evaluate(next_expr));
+                        }
+                        // If no more expressions, the result from the last expression is already on stack
+                    } else {
+                        return Err(self.create_simple_runtime_error(
+                            "Internal error: missing result for begin".to_string(),
+                        ));
+                    }
+                }
+
+                EvalFrame::Apply { function, args } => {
+                    // Check if function is a placeholder (empty list) meaning real function is on result stack
+                    let actual_function = if let Value::List(ref elements) = function {
+                        if elements.is_empty() {
+                            if let Some(func_value) = result_stack.pop() {
+                                func_value
+                            } else {
+                                return Err(self.create_simple_runtime_error(
+                                    "Internal error: missing function on result stack".to_string(),
+                                ));
+                            }
+                        } else {
+                            function
+                        }
+                    } else {
+                        function
+                    };
+
+                    // Handle special internal operations
+                    if let Value::Symbol(name) = &actual_function {
+                        if name == "$internal-define" {
+                            if args.len() == 1 {
+                                if let Value::Symbol(var_name) = &args[0] {
+                                    if let Some(value) = result_stack.pop() {
+                                        self.current_env.define(var_name.clone(), value);
+                                        result_stack.push(Value::List(vec![])); // Unspecified
+                                    } else {
+                                        return Err(self.create_simple_runtime_error(
+                                            "Internal error: missing value for define".to_string(),
+                                        ));
+                                    }
+                                } else {
+                                    return Err(self.create_simple_runtime_error(
+                                        "Internal error: define name must be symbol".to_string(),
+                                    ));
+                                }
+                            } else {
+                                return Err(self.create_simple_runtime_error(
+                                    "Internal error: define requires exactly one argument"
+                                        .to_string(),
+                                ));
+                            }
+                            continue;
+                        }
+                    }
+
+                    // Regular function application
+                    match actual_function {
+                        Value::Builtin {
+                            name,
+                            arity: _,
+                            func,
+                        } => {
+                            // Call builtin function
+                            match func(&args) {
+                                Ok(result) => result_stack.push(result),
+                                Err(e) => {
+                                    return Err(self.create_simple_runtime_error(format!(
+                                        "Builtin '{}' error: {}",
+                                        name, e
+                                    )))
+                                }
+                            }
+                        }
+                        Value::Procedure {
+                            params,
+                            body,
+                            env: closure_env,
+                            variadic: _,
+                        } => {
+                            // Call user-defined function without recursion
+                            self.apply_user_function_stack(
+                                params,
+                                (*body).clone(),
+                                closure_env,
+                                args,
+                                &mut result_stack,
+                            )?;
+                        }
+                        _ => {
+                            return Err(self.create_simple_runtime_error(format!(
+                                "Cannot apply non-function: {}",
+                                actual_function.type_name()
+                            )))
+                        }
+                    }
+                }
+
+                EvalFrame::ArgEval {
+                    function,
+                    mut evaluated,
+                    mut remaining,
+                } => {
+                    // Get the result of the argument evaluation
+                    if let Some(arg_result) = result_stack.pop() {
+                        evaluated.push(arg_result);
+
+                        if let Some(next_arg) = remaining.pop() {
+                            // More arguments to evaluate
+                            eval_stack.push(EvalFrame::ArgEval {
+                                function,
+                                evaluated,
+                                remaining,
+                            });
+                            eval_stack.push(EvalFrame::Evaluate(next_arg));
+                        } else {
+                            // All arguments evaluated, check if we need to evaluate function
+                            if let Value::List(ref elements) = function {
+                                if elements.is_empty() {
+                                    // Function result should be on stack
+                                    if let Some(func_value) = result_stack.pop() {
+                                        eval_stack.push(EvalFrame::Apply {
+                                            function: func_value,
+                                            args: evaluated,
+                                        });
+                                    } else {
+                                        return Err(self.create_simple_runtime_error(
+                                            "Internal error: missing function result".to_string(),
+                                        ));
+                                    }
+                                } else {
+                                    // Function is an expression, evaluate it first
+                                    eval_stack.push(EvalFrame::Apply {
+                                        function: Value::List(vec![]),
+                                        args: evaluated,
+                                    });
+                                    eval_stack.push(EvalFrame::Evaluate(function));
+                                }
+                            } else {
+                                // Function is a value, apply directly
+                                eval_stack.push(EvalFrame::Apply {
+                                    function,
+                                    args: evaluated,
+                                });
+                            }
+                        }
+                    } else {
+                        return Err(self.create_simple_runtime_error(
+                            "Internal error: missing argument result".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Return the final result
+        Ok(result_stack.pop().unwrap_or(Value::List(vec![])))
+    }
+
+    /// Helper to set up function application evaluation on the stack
+    fn setup_application_stack(&mut self, eval_stack: &mut Vec<EvalFrame>, elements: &[Value]) {
+        if elements.is_empty() {
+            return;
+        }
+
+        let function_expr = elements[0].clone();
+        let arg_exprs: Vec<Value> = elements[1..].to_vec(); // Slightly more efficient than iter().cloned().collect()
+
+        if arg_exprs.is_empty() {
+            // No arguments, evaluate function then apply with empty args
+            eval_stack.push(EvalFrame::Apply {
+                function: Value::List(vec![]), // placeholder - real function comes from result stack
+                args: vec![],
+            });
+            eval_stack.push(EvalFrame::Evaluate(function_expr));
+        } else {
+            // Have arguments to evaluate - set up argument evaluation chain
+            let mut remaining = arg_exprs;
+            remaining.reverse(); // Reverse to pop in correct order
+            let first_arg = remaining.pop().unwrap();
+
+            eval_stack.push(EvalFrame::ArgEval {
+                function: Value::List(vec![]), // placeholder - real function comes from result stack
+                evaluated: vec![],
+                remaining,
+            });
+            eval_stack.push(EvalFrame::Evaluate(first_arg));
+            eval_stack.push(EvalFrame::Evaluate(function_expr));
+        }
+    }
+
+    /// Check if a value can be evaluated immediately without stack frames
+    fn is_immediate_value(&self, value: &Value) -> bool {
+        match value {
+            // Literals are immediate
+            Value::Integer(_) | Value::UInteger(_) | Value::Real(_) | 
+            Value::Boolean(_) | Value::String(_) => true,
+            // Simple symbols are immediate  
+            Value::Symbol(_) => true,
+            // Quoted values are immediate
+            Value::List(elements) if !elements.is_empty() => {
+                if let Value::Symbol(name) = &elements[0] {
+                    name == "quote" && elements.len() == 2
+                } else {
+                    false
+                }
+            },
+            _ => false,
+        }
+    }
+    
+    /// Evaluate an immediate value without using stack frames
+    fn evaluate_immediate_value(&self, value: &Value) -> Result<Value, RuntimeError> {
+        match value {
+            // Literals evaluate to themselves
+            Value::Integer(_) | Value::UInteger(_) | Value::Real(_) | 
+            Value::Boolean(_) | Value::String(_) => Ok(value.clone()),
+            // Symbols are variable lookups
+            Value::Symbol(name) => {
+                match self.current_env.lookup(name) {
+                    Some(val) => Ok(val),
+                    None => Err(self.create_simple_runtime_error(format!("Undefined variable: {}", name))),
+                }
+            },
+            // Quote expressions
+            Value::List(elements) if elements.len() == 2 => {
+                if let Value::Symbol(name) = &elements[0] {
+                    if name == "quote" {
+                        return Ok(elements[1].clone());
+                    }
+                }
+                Err(self.create_simple_runtime_error("Cannot evaluate complex expression immediately".to_string()))
+            },
+            _ => Err(self.create_simple_runtime_error("Cannot evaluate complex expression immediately".to_string())),
+        }
+    }
+
+    /// Apply a user-defined function using the stack (no recursion)
+    fn apply_user_function_stack(
+        &mut self,
+        params: Vec<String>,
+        body: Value,
+        closure: Rc<Environment>,
+        args: Vec<Value>,
+        result_stack: &mut Vec<Value>,
+    ) -> Result<(), RuntimeError> {
+        // Create new environment for function execution
+        let func_env = Environment::with_parent(closure);
+
+        // Bind parameters to arguments
+        if params.len() != args.len() {
+            return Err(self.create_simple_runtime_error(format!(
+                "Function expects {} arguments, got {}",
+                params.len(),
+                args.len()
+            )));
+        }
+        for (param_name, arg) in params.iter().zip(args.iter()) {
+            func_env.define(param_name.clone(), arg.clone());
+        }
+
+        // Save current environment and switch to function environment
+        let saved_env = self.current_env.clone();
+        self.current_env = Rc::new(func_env);
+
+        // Evaluate function body using stack-based evaluation
+        let result = self.evaluate_ast_stack(&body);
+
+        // Restore previous environment
+        self.current_env = saved_env;
+
+        match result {
+            Ok(value) => {
+                result_stack.push(value);
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Execute bytecode module

@@ -12,37 +12,37 @@
 
 ;; CPS-compatible arithmetic operators
 ;; These would replace the built-in operators in a full CPS system
-(define (rulesxp-internal-cps-+ cont a b)
+(define ($cps-+ cont a b)
   (cont (+ a b)))
 
-(define (rulesxp-internal-cps-- cont a b)
+(define ($cps-- cont a b)
   (cont (- a b)))
 
-(define (rulesxp-internal-cps-* cont a b)
+(define ($cps-* cont a b)
   (cont (* a b)))
 
-(define (rulesxp-internal-cps-/ cont a b)
+(define ($cps-/ cont a b)
   (cont (/ a b)))
 
 ;; CPS-compatible comparison operators
-(define (rulesxp-internal-cps-= cont a b)
+(define ($cps-= cont a b)
   (cont (= a b)))
 
-(define (rulesxp-internal-cps-< cont a b)
+(define ($cps-< cont a b)
   (cont (< a b)))
 
-(define (rulesxp-internal-cps-> cont a b)
+(define ($cps-> cont a b)
   (cont (> a b)))
 
 ;; CPS-compatible list operations
-(define (rulesxp-internal-cps-cons cont car cdr)
+(define ($cps-cons cont car cdr)
   (cont (cons car cdr)))
 
-(define (rulesxp-internal-cps-car cont lst)
+(define ($cps-car cont lst)
   (cont (car lst)))
 
-(define (rulesxp-internal-cps-cdr cont lst)
+(define ($cps-cdr cont lst)
   (cont (cdr lst)))
 
-(define (rulesxp-internal-cps-null? cont lst)
+(define ($cps-null? cont lst)
   (cont (null? lst)))

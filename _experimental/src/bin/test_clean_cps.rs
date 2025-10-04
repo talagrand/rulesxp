@@ -14,7 +14,7 @@ fn main() {
         Ok(_) => {
             println!("✓ All macro preludes loaded successfully");
             println!("  - Standard R7RS macros: and, or, when, unless, cond, case, let, let*, do");
-            println!("  - CPS macros: cps-transform, rulesxp-internal-cps-app, to-cps");
+            println!("  - CPS macros: cps-transform, $cps-app, to-cps");
         }
         Err(e) => {
             eprintln!("✗ Error loading macro preludes: {}", e);

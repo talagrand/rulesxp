@@ -73,23 +73,23 @@
     
     ;; Application - CPS transform operator and operands, then apply
     ((cps-transform (op args ...) k)
-     (rulesxp-internal-cps-app op (args ...) () k))
+     ($cps-app op (args ...) () k))
     
     ;; Catch-all for self-evaluating literals and variables - MUST BE LAST
     ((cps-transform val k) 
      (k val))))
 
 ;; Helper macro for CPS application
-(define-syntax rulesxp-internal-cps-app
+(define-syntax $cps-app
   (syntax-rules ()
     ;; Base case - all arguments transformed, now apply
-    ((rulesxp-internal-cps-app op () (cps-args ...) k)
+    (($cps-app op () (cps-args ...) k)
      (op k cps-args ...))
     
     ;; Transform next argument
-    ((rulesxp-internal-cps-app op (arg rest-args ...) (cps-args ...) k)
+    (($cps-app op (arg rest-args ...) (cps-args ...) k)
      (cps-transform arg (lambda (cps-arg)
-                          (rulesxp-internal-cps-app op (rest-args ...) (cps-args ... cps-arg) k))))))
+                          ($cps-app op (rest-args ...) (cps-args ... cps-arg) k))))))
 
 ;; Macro to convert a program to CPS with identity continuation
 (define-syntax to-cps

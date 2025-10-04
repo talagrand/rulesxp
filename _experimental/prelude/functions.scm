@@ -25,12 +25,12 @@
 
 ;; Simple recursive reverse without inner defines
 (define (reverse lst)
-  (rulesxp-internal-reverse-impl lst '()))
+  ($reverse-impl lst '()))
 
-(define (rulesxp-internal-reverse-impl lst acc)
+(define ($reverse-impl lst acc)
   (if (null? lst)
       acc
-      (rulesxp-internal-reverse-impl (cdr lst) (cons (car lst) acc))))
+      ($reverse-impl (cdr lst) (cons (car lst) acc))))
 
 (define (list-ref lst n)
   (if (= n 0)

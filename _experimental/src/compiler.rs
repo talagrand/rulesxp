@@ -241,6 +241,69 @@ impl Compiler {
         None
     }
 
+    /// Check if a lambda body references a given function name (for recursion detection)
+    fn lambda_references_name(&self, body: &Value, func_name: &str) -> bool {
+        match body {
+            Value::Symbol(name) => name == func_name,
+            Value::List(elements) => elements
+                .iter()
+                .any(|elem| self.lambda_references_name(elem, func_name)),
+            _ => false,
+        }
+    }
+
+    /// Compile a recursive lambda that can reference itself
+    /// This creates a special recursive procedure constant
+    fn compile_recursive_lambda(
+        &mut self,
+        lambda_expr: &Value,
+        func_name: &str,
+    ) -> Result<(), CompileError> {
+        if let Value::List(lambda_parts) = lambda_expr {
+            if lambda_parts.len() != 3 {
+                return Err(CompileError::new("Invalid lambda expression".to_string()));
+            }
+
+            // Extract parameters and body
+            let params = &lambda_parts[1];
+            let body = &lambda_parts[2];
+
+            // Create parameter list
+            let param_names = match params {
+                Value::List(param_list) => {
+                    let mut names = Vec::new();
+                    for param in param_list {
+                        if let Value::Symbol(name) = param {
+                            names.push(name.clone());
+                        } else {
+                            return Err(CompileError::new(
+                                "Parameter must be a symbol".to_string(),
+                            ));
+                        }
+                    }
+                    names
+                }
+                _ => return Err(CompileError::new("Parameters must be a list".to_string())),
+            };
+
+            // Store the recursive function information
+            let func_name_index = self.add_constant(Value::String(func_name.to_string()));
+            let params_index = self.add_constant(params.clone());
+            let body_index = self.add_constant(body.clone());
+
+            // Emit a special opcode to create the recursive procedure
+            self.emit(Opcode::MakeRecursiveProcedure(
+                func_name_index,
+                params_index,
+                body_index,
+            ));
+
+            Ok(())
+        } else {
+            Err(CompileError::new("Expected lambda expression".to_string()))
+        }
+    }
+
     /// Compile a value to bytecode
     pub fn compile_value(
         &mut self,
@@ -430,6 +493,36 @@ impl Compiler {
                                 match &elements[1] {
                                     Value::Symbol(name) => {
                                         // Simple variable definition: (define x value)
+                                        // Check if this is a recursive lambda definition
+                                        if let Value::List(lambda_parts) = &elements[2] {
+                                            if lambda_parts.len() >= 3 {
+                                                if let Value::Symbol(first) = &lambda_parts[0] {
+                                                    if first == "lambda" {
+                                                        // Check if lambda body references the function name (recursive)
+                                                        if self.lambda_references_name(
+                                                            &lambda_parts[2],
+                                                            name,
+                                                        ) {
+                                                            // This is a recursive lambda definition - use special compilation
+                                                            self.function_stack.push(name.clone());
+                                                            self.compile_recursive_lambda(
+                                                                &elements[2],
+                                                                name,
+                                                            )?;
+                                                            self.function_stack.pop();
+                                                            let name_index =
+                                                                self.add_string(name.clone());
+                                                            self.emit(Opcode::DefineVar(
+                                                                name_index,
+                                                            ));
+                                                            return Ok(());
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Regular non-recursive definition
                                         self.compile_value(&elements[2], false)?;
                                         let name_index = self.add_string(name.clone());
                                         self.emit(Opcode::DefineVar(name_index));
@@ -461,8 +554,19 @@ impl Compiler {
                                         // Track function name for recursion detection
                                         self.function_stack.push(func_name.clone());
 
-                                        // Compile the lambda
-                                        self.compile_value(&lambda_expr, false)?;
+                                        // Check if this function definition is recursive
+                                        if self.lambda_references_name(&elements[2], &func_name) {
+                                            // Recursive function - use special compilation
+                                            self.function_stack.push(func_name.clone());
+                                            self.compile_recursive_lambda(
+                                                &lambda_expr,
+                                                &func_name,
+                                            )?;
+                                            self.function_stack.pop();
+                                        } else {
+                                            // Non-recursive function - compile normally
+                                            self.compile_value(&lambda_expr, false)?;
+                                        }
 
                                         // Pop function name
                                         self.function_stack.pop();

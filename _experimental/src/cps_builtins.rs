@@ -3,26 +3,11 @@
 
 use crate::value::Value;
 
-/// Call a continuation with given arguments
-pub fn call_continuation(continuation: &Value, args: &[Value]) -> Result<Value, String> {
-    match continuation {
-        Value::Builtin { func, .. } => {
-            // Builtin continuation (like identity)
-            func(args)
-        }
-        Value::Procedure { .. } => {
-            // User-defined continuation - need to call through VM
-            // For now, return error - this will be handled by VM integration
-            Err("User-defined continuations not yet supported in builtin wrappers".to_string())
-        }
-        _ => Err(format!(
-            "Expected procedure as continuation, got {}",
-            continuation.type_name()
-        )),
-    }
-}
+// Note: CPS builtins no longer handle continuations directly.
+// They return values normally, and the CPS-transformed calling code
+// handles continuation calls through the VM's CallCont mechanism.
 
-/// Identity continuation builtin: (lambda (x) x)
+/// Identity function: returns its argument unchanged
 pub fn identity_builtin(args: &[Value]) -> Result<Value, String> {
     if args.len() != 1 {
         return Err(format!("identity expects 1 argument, got {}", args.len()));
@@ -36,21 +21,16 @@ pub fn identity_builtin(args: &[Value]) -> Result<Value, String> {
 
 // We'll implement specific CPS wrappers that work with the builtin system
 
-/// Simple add CPS wrapper for testing
+/// CPS-compatible addition - returns result directly
+/// The calling context handles continuation calls
 pub fn add_cps(args: &[Value]) -> Result<Value, String> {
-    if args.len() < 3 {
-        return Err(format!(
-            "add_cps expects at least 3 arguments (operands + continuation), got {}",
-            args.len()
-        ));
+    if args.is_empty() {
+        return Err("add_cps expects at least 1 argument".to_string());
     }
 
-    let continuation = &args[args.len() - 1];
-    let operands = &args[..args.len() - 1];
-
-    // Simple addition logic
+    // Simple addition logic - no continuation handling
     let mut sum = 0i64;
-    for operand in operands {
+    for operand in args {
         match operand {
             Value::Integer(n) => sum += n,
             Value::UInteger(n) => sum += *n as i64,
@@ -64,22 +44,17 @@ pub fn add_cps(args: &[Value]) -> Result<Value, String> {
         }
     }
 
-    let result = Value::Integer(sum);
-    call_continuation(continuation, &[result])
+    Ok(Value::Integer(sum))
 }
 
-/// CPS wrapper for multiplication
-/// (mul_cps x y ... k) -> calls k with the product
+/// CPS-compatible multiplication - returns result directly
 pub fn mul_cps(args: &[Value]) -> Result<Value, String> {
-    if args.len() < 2 {
-        return Err("mul_cps requires at least 2 arguments".to_string());
+    if args.is_empty() {
+        return Err("mul_cps requires at least 1 argument".to_string());
     }
 
-    let continuation = &args[args.len() - 1];
-    let operands = &args[..args.len() - 1];
-
     let mut product = 1i64;
-    for operand in operands {
+    for operand in args {
         match operand {
             Value::Integer(n) => product *= n,
             Value::UInteger(n) => product *= *n as i64,
@@ -92,18 +67,15 @@ pub fn mul_cps(args: &[Value]) -> Result<Value, String> {
         }
     }
 
-    let result = Value::Integer(product);
-    call_continuation(continuation, &[result])
+    Ok(Value::Integer(product))
 }
 
-/// CPS wrapper for subtraction
-/// (sub_cps x y k) -> calls k with (x - y)
+/// CPS-compatible subtraction - returns result directly
 pub fn sub_cps(args: &[Value]) -> Result<Value, String> {
-    if args.len() != 3 {
-        return Err("sub_cps requires exactly 3 arguments (x y k)".to_string());
+    if args.len() != 2 {
+        return Err("sub_cps requires exactly 2 arguments (x y)".to_string());
     }
 
-    let continuation = &args[2];
     let x = &args[0];
     let y = &args[1];
 
@@ -118,6 +90,7 @@ pub fn sub_cps(args: &[Value]) -> Result<Value, String> {
         }
         (Value::Integer(x), Value::UInteger(y)) => Value::Integer(x - *y as i64),
         (Value::UInteger(x), Value::Integer(y)) => Value::Integer(*x as i64 - y),
+        (Value::Real(x), Value::Real(y)) => Value::Real(x - y),
         _ => {
             return Err(format!(
                 "Cannot subtract {} from {}",
@@ -127,32 +100,27 @@ pub fn sub_cps(args: &[Value]) -> Result<Value, String> {
         }
     };
 
-    call_continuation(continuation, &[result])
+    Ok(result)
 }
 
-/// CPS wrapper for equality comparison
-/// (eq_cps x y k) -> calls k with #t if x == y, #f otherwise
+/// CPS-compatible equality comparison - returns result directly
 pub fn eq_cps(args: &[Value]) -> Result<Value, String> {
-    if args.len() != 3 {
-        return Err("eq_cps requires exactly 3 arguments (x y k)".to_string());
+    if args.len() != 2 {
+        return Err("eq_cps requires exactly 2 arguments (x y)".to_string());
     }
 
-    let continuation = &args[2];
     let x = &args[0];
     let y = &args[1];
 
-    let result = Value::Boolean(x == y);
-    call_continuation(continuation, &[result])
+    Ok(Value::Boolean(x == y))
 }
 
-/// CPS wrapper for less-than comparison
-/// (lt_cps x y k) -> calls k with #t if x < y, #f otherwise
+/// CPS-compatible less-than comparison - returns result directly
 pub fn lt_cps(args: &[Value]) -> Result<Value, String> {
-    if args.len() != 3 {
-        return Err("lt_cps requires exactly 3 arguments (x y k)".to_string());
+    if args.len() != 2 {
+        return Err("lt_cps requires exactly 2 arguments (x y)".to_string());
     }
 
-    let continuation = &args[2];
     let x = &args[0];
     let y = &args[1];
 
@@ -171,17 +139,15 @@ pub fn lt_cps(args: &[Value]) -> Result<Value, String> {
         }
     };
 
-    call_continuation(continuation, &[result])
+    Ok(result)
 }
 
-/// CPS wrapper for division
-/// (div_cps x y k) -> calls k with (x / y)
+/// CPS-compatible division - returns result directly
 pub fn div_cps(args: &[Value]) -> Result<Value, String> {
-    if args.len() != 3 {
-        return Err("div_cps requires exactly 3 arguments (x y k)".to_string());
+    if args.len() != 2 {
+        return Err("div_cps requires exactly 2 arguments (x y)".to_string());
     }
 
-    let continuation = &args[2];
     let x = &args[0];
     let y = &args[1];
 
@@ -224,17 +190,15 @@ pub fn div_cps(args: &[Value]) -> Result<Value, String> {
         }
     };
 
-    call_continuation(continuation, &[result])
+    Ok(result)
 }
 
-/// CPS wrapper for modulo
-/// (mod_cps x y k) -> calls k with (x mod y)
+/// CPS-compatible modulo - returns result directly
 pub fn mod_cps(args: &[Value]) -> Result<Value, String> {
-    if args.len() != 3 {
-        return Err("mod_cps requires exactly 3 arguments (x y k)".to_string());
+    if args.len() != 2 {
+        return Err("mod_cps requires exactly 2 arguments (x y)".to_string());
     }
 
-    let continuation = &args[2];
     let x = &args[0];
     let y = &args[1];
 
@@ -254,17 +218,15 @@ pub fn mod_cps(args: &[Value]) -> Result<Value, String> {
         }
     };
 
-    call_continuation(continuation, &[result])
+    Ok(result)
 }
 
-/// CPS wrapper for greater-than comparison
-/// (gt_cps x y k) -> calls k with #t if x > y, #f otherwise
+/// CPS-compatible greater-than comparison - returns result directly
 pub fn gt_cps(args: &[Value]) -> Result<Value, String> {
-    if args.len() != 3 {
-        return Err("gt_cps requires exactly 3 arguments (x y k)".to_string());
+    if args.len() != 2 {
+        return Err("gt_cps requires exactly 2 arguments (x y)".to_string());
     }
 
-    let continuation = &args[2];
     let x = &args[0];
     let y = &args[1];
 
@@ -283,17 +245,15 @@ pub fn gt_cps(args: &[Value]) -> Result<Value, String> {
         }
     };
 
-    call_continuation(continuation, &[result])
+    Ok(result)
 }
 
-/// CPS wrapper for less-than-or-equal comparison
-/// (le_cps x y k) -> calls k with #t if x <= y, #f otherwise
+/// CPS-compatible less-than-or-equal comparison - returns result directly
 pub fn le_cps(args: &[Value]) -> Result<Value, String> {
-    if args.len() != 3 {
-        return Err("le_cps requires exactly 3 arguments (x y k)".to_string());
+    if args.len() != 2 {
+        return Err("le_cps requires exactly 2 arguments (x y)".to_string());
     }
 
-    let continuation = &args[2];
     let x = &args[0];
     let y = &args[1];
 
@@ -312,17 +272,15 @@ pub fn le_cps(args: &[Value]) -> Result<Value, String> {
         }
     };
 
-    call_continuation(continuation, &[result])
+    Ok(result)
 }
 
-/// CPS wrapper for greater-than-or-equal comparison
-/// (ge_cps x y k) -> calls k with #t if x >= y, #f otherwise
+/// CPS-compatible greater-than-or-equal comparison - returns result directly
 pub fn ge_cps(args: &[Value]) -> Result<Value, String> {
-    if args.len() != 3 {
-        return Err("ge_cps requires exactly 3 arguments (x y k)".to_string());
+    if args.len() != 2 {
+        return Err("ge_cps requires exactly 2 arguments (x y)".to_string());
     }
 
-    let continuation = &args[2];
     let x = &args[0];
     let y = &args[1];
 
@@ -341,17 +299,15 @@ pub fn ge_cps(args: &[Value]) -> Result<Value, String> {
         }
     };
 
-    call_continuation(continuation, &[result])
+    Ok(result)
 }
 
-/// CPS wrapper for car (first element of list)
-/// (car_cps lst k) -> calls k with first element of lst
+/// CPS-compatible car (first element of list) - returns result directly
 pub fn car_cps(args: &[Value]) -> Result<Value, String> {
-    if args.len() != 2 {
-        return Err("car_cps requires exactly 2 arguments (lst k)".to_string());
+    if args.len() != 1 {
+        return Err("car_cps requires exactly 1 argument (lst)".to_string());
     }
 
-    let continuation = &args[1];
     let lst = &args[0];
 
     let result = match lst {
@@ -366,17 +322,15 @@ pub fn car_cps(args: &[Value]) -> Result<Value, String> {
         }
     };
 
-    call_continuation(continuation, &[result])
+    Ok(result)
 }
 
-/// CPS wrapper for cdr (rest of list after first element)
-/// (cdr_cps lst k) -> calls k with rest of lst
+/// CPS-compatible cdr (rest of list after first element) - returns result directly
 pub fn cdr_cps(args: &[Value]) -> Result<Value, String> {
-    if args.len() != 2 {
-        return Err("cdr_cps requires exactly 2 arguments (lst k)".to_string());
+    if args.len() != 1 {
+        return Err("cdr_cps requires exactly 1 argument (lst)".to_string());
     }
 
-    let continuation = &args[1];
     let lst = &args[0];
 
     let result = match lst {
@@ -395,17 +349,15 @@ pub fn cdr_cps(args: &[Value]) -> Result<Value, String> {
         }
     };
 
-    call_continuation(continuation, &[result])
+    Ok(result)
 }
 
-/// CPS wrapper for cons (construct list)
-/// (cons_cps elem lst k) -> calls k with new list [elem, ...lst]
+/// CPS-compatible cons (construct list) - returns result directly
 pub fn cons_cps(args: &[Value]) -> Result<Value, String> {
-    if args.len() != 3 {
-        return Err("cons_cps requires exactly 3 arguments (elem lst k)".to_string());
+    if args.len() != 2 {
+        return Err("cons_cps requires exactly 2 arguments (elem lst)".to_string());
     }
 
-    let continuation = &args[2];
     let elem = &args[0];
     let lst = &args[1];
 
@@ -423,38 +375,28 @@ pub fn cons_cps(args: &[Value]) -> Result<Value, String> {
         }
     };
 
-    call_continuation(continuation, &[result])
+    Ok(result)
 }
 
-/// CPS wrapper for list construction
-/// (list_cps elem1 elem2 ... k) -> calls k with new list
+/// CPS-compatible list construction - returns result directly
 pub fn list_cps(args: &[Value]) -> Result<Value, String> {
-    if args.is_empty() {
-        return Err("list_cps requires at least 1 argument (the continuation)".to_string());
-    }
-
-    let continuation = &args[args.len() - 1];
-    let elements = &args[..args.len() - 1];
-
-    let result = Value::List(elements.to_vec());
-
-    call_continuation(continuation, &[result])
+    // All arguments become list elements - no continuation parameter
+    let result = Value::List(args.to_vec());
+    Ok(result)
 }
 
-/// CPS wrapper for display (basic output)
-/// (display_cps value k) -> displays value and calls k with unspecified
+/// CPS-compatible display (basic output) - returns unspecified directly
 pub fn display_cps(args: &[Value]) -> Result<Value, String> {
-    if args.len() != 2 {
-        return Err("display_cps requires exactly 2 arguments (value k)".to_string());
+    if args.len() != 1 {
+        return Err("display_cps requires exactly 1 argument (value)".to_string());
     }
 
-    let continuation = &args[1];
     let value = &args[0];
 
     // Display the value (in a real implementation, this would go to stdout)
     print!("{}", value);
 
-    call_continuation(continuation, &[Value::Unspecified])
+    Ok(Value::Unspecified)
 }
 
 /// Type alias for CPS builtin function

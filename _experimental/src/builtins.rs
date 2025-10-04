@@ -42,6 +42,9 @@ pub fn create_builtins() -> std::collections::HashMap<String, crate::Value> {
 
     let mut builtins = HashMap::new();
 
+    // Special builtin variables
+    builtins.insert("$$-unspecified".to_string(), Value::Unspecified);
+
     // Arithmetic operations
     builtins.insert(
         "+".to_string(),

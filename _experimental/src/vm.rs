@@ -180,6 +180,11 @@ pub enum Opcode {
     /// Used when continuation is known at compile time
     /// Arg: signed offset from current instruction
     ContJump(i16),
+
+    /// Create a recursive procedure that can reference itself
+    /// Args: name constant index, params constant index, body constant index
+    /// Creates a procedure with self-reference in its environment
+    MakeRecursiveProcedure(usize, usize, usize),
 }
 
 /// Instruction with inline source location for debugging
@@ -441,6 +446,12 @@ impl BytecodeModule {
             Opcode::MakeVector(count) => format!("MAKE_VECTOR {}", count),
             Opcode::MakeCont(target, vars) => format!("MAKE_CONT {} {}", target, vars),
             Opcode::ContJump(offset) => format!("CONT_JUMP {}", offset),
+            Opcode::MakeRecursiveProcedure(name_idx, params_idx, body_idx) => {
+                format!(
+                    "MAKE_RECURSIVE_PROC {} {} {}",
+                    name_idx, params_idx, body_idx
+                )
+            }
         }
     }
 }
@@ -480,20 +491,85 @@ impl VM {
 
         if enable_cps {
             // Load CPS builtins to replace regular builtins (e.g., + becomes add_cps)
+            // Note: CPS builtins no longer take continuation parameters - they return values directly
             let cps_builtins = cps_builtins::get_cps_builtins();
             for (name, func) in cps_builtins {
                 let cps_builtin = Value::Builtin {
                     name: name.to_string(),
-                    arity: crate::value::Arity::AtLeast(1), // At least the continuation
+                    arity: crate::value::Arity::AtLeast(0), // Flexible arity, no continuation needed
                     func,
                 };
                 vm.current_env.define(name.to_string(), cps_builtin);
             }
         }
 
+        // Load function prelude (use CPS prelude if CPS is enabled)
+        if enable_cps {
+            if let Err(e) = vm.load_cps_function_prelude() {
+                eprintln!("Fatal error loading CPS function prelude: {}", e);
+                std::process::exit(1);
+            }
+        } else {
+            if let Err(e) = vm.load_function_prelude() {
+                eprintln!("Fatal error loading function prelude: {}", e);
+                std::process::exit(1);
+            }
+        }
+
+        vm
+    }
+
+    /// Create a new VM with a provided environment and CPS mode setting
+    /// This allows sharing environment state between multiple VM executions
+    pub fn new_with_env(env: Rc<Environment>, enable_cps: bool) -> Self {
+        let mut vm = VM {
+            stack: Vec::new(),
+            call_stack: Vec::new(),
+            ip: 0,
+            current_env: env.clone(),
+            global_env: env,
+            recursion_depth: std::collections::HashMap::new(),
+            cps_mode: enable_cps,
+            continuation_pool: ContinuationPool::new(),
+        };
+
         // Load function prelude
         if let Err(e) = vm.load_function_prelude() {
             eprintln!("Fatal error loading function prelude: {}", e);
+            std::process::exit(1);
+        }
+
+        vm
+    }
+
+    /// Create a new VM with a provided environment pre-configured with CPS builtins
+    /// This matches the behavior of new_with_cps(true) but with a provided environment
+    pub fn new_with_cps_env(env: Rc<Environment>) -> Self {
+        // Add CPS builtins to the provided environment
+        let cps_builtins = crate::cps_builtins::get_cps_builtins();
+        for (name, func) in cps_builtins {
+            let cps_builtin = Value::Builtin {
+                name: name.to_string(),
+                arity: crate::value::Arity::AtLeast(0),
+                func,
+            };
+            env.define(name.to_string(), cps_builtin);
+        }
+
+        let mut vm = VM {
+            stack: Vec::new(),
+            call_stack: Vec::new(),
+            ip: 0,
+            current_env: env.clone(),
+            global_env: env,
+            recursion_depth: std::collections::HashMap::new(),
+            cps_mode: true,
+            continuation_pool: ContinuationPool::new(),
+        };
+
+        // Load CPS function prelude (includes both regular and CPS functions like identity)
+        if let Err(e) = vm.load_cps_function_prelude() {
+            eprintln!("Fatal error loading CPS function prelude: {}", e);
             std::process::exit(1);
         }
 
@@ -562,6 +638,82 @@ impl VM {
             Err(e) => {
                 return Err(RuntimeError::new(format!(
                     "Failed to parse function prelude: {}\nThe interpreter cannot continue with a broken prelude.", 
+                    e
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn load_cps_function_prelude(&mut self) -> Result<(), RuntimeError> {
+        use crate::compiler::compile;
+        use crate::parser::parse_multiple;
+
+        // Load regular functions first (compiled normally)
+        const FUNCTION_PRELUDE: &str = include_str!("../prelude/functions.scm");
+        match parse_multiple(FUNCTION_PRELUDE) {
+            Ok(expressions) => {
+                for expression in expressions {
+                    match compile(
+                        &expression,
+                        "<prelude>".to_string(),
+                        self.current_env.clone(),
+                    ) {
+                        Ok(module) => {
+                            if let Err(e) = self.execute(&module) {
+                                return Err(RuntimeError::new(format!(
+                                    "Failed to execute prelude function '{}': {}\nThe interpreter cannot continue with a broken prelude.", 
+                                    expression, e
+                                )));
+                            }
+                        }
+                        Err(e) => {
+                            return Err(RuntimeError::new(format!(
+                                "Failed to compile prelude function '{}': {}\nThe interpreter cannot continue with a broken prelude.", 
+                                expression, e
+                            )));
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(RuntimeError::new(format!(
+                    "Failed to parse function prelude: {}\nThe interpreter cannot continue with a broken prelude.", 
+                    e
+                )));
+            }
+        }
+
+        // Load CPS-specific functions (compiled normally, not with CPS transformation)
+        const CPS_FUNCTION_PRELUDE: &str = include_str!("../prelude/cps_functions.scm");
+        match parse_multiple(CPS_FUNCTION_PRELUDE) {
+            Ok(expressions) => {
+                for expression in expressions {
+                    match compile(
+                        &expression,
+                        "<cps_prelude>".to_string(),
+                        self.current_env.clone(),
+                    ) {
+                        Ok(module) => {
+                            if let Err(e) = self.execute(&module) {
+                                return Err(RuntimeError::new(format!(
+                                    "Failed to execute CPS prelude function '{}': {}\nThe interpreter cannot continue with a broken prelude.", 
+                                    expression, e
+                                )));
+                            }
+                        }
+                        Err(e) => {
+                            return Err(RuntimeError::new(format!(
+                                "Failed to compile CPS prelude function '{}': {}\nThe interpreter cannot continue with a broken prelude.", 
+                                expression, e
+                            )));
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(RuntimeError::new(format!(
+                    "Failed to parse CPS function prelude: {}\nThe interpreter cannot continue with a broken prelude.", 
                     e
                 )));
             }
@@ -1446,6 +1598,90 @@ impl VM {
 
                     self.ip = new_ip;
                     continue; // Skip normal IP increment
+                }
+
+                Opcode::MakeRecursiveProcedure(name_idx, params_idx, body_idx) => {
+                    // Validate indices
+                    if *name_idx >= module.constants.len()
+                        || *params_idx >= module.constants.len()
+                        || *body_idx >= module.constants.len()
+                    {
+                        return Err(self.create_runtime_error(
+                            "Invalid constant index for recursive procedure".to_string(),
+                            module,
+                        ));
+                    }
+
+                    // Extract the function name
+                    let func_name = match &module.constants[*name_idx] {
+                        Value::String(name) => name.clone(),
+                        _ => {
+                            return Err(self.create_runtime_error(
+                                "Expected string for function name".to_string(),
+                                module,
+                            ))
+                        }
+                    };
+
+                    // Extract parameters
+                    let params = &module.constants[*params_idx];
+                    let param_names = match params {
+                        Value::List(param_list) => {
+                            let mut names = Vec::new();
+                            for param in param_list {
+                                if let Value::Symbol(name) = param {
+                                    names.push(name.clone());
+                                } else {
+                                    return Err(self.create_runtime_error(
+                                        "Parameter must be a symbol".to_string(),
+                                        module,
+                                    ));
+                                }
+                            }
+                            names
+                        }
+                        _ => {
+                            return Err(self.create_runtime_error(
+                                "Parameters must be a list".to_string(),
+                                module,
+                            ))
+                        }
+                    };
+
+                    // Extract body
+                    let body = module.constants[*body_idx].clone();
+
+                    // Create a procedure with a self-referential environment
+                    // We create the environment with the function name pointing to a placeholder,
+                    // then create the procedure, then update the environment to point to the actual procedure
+                    let proc_env = Environment::with_parent(self.current_env.clone());
+
+                    // Define the function name with a placeholder first
+                    proc_env.define(func_name.clone(), Value::Unspecified);
+                    let proc_env_rc = Rc::new(proc_env);
+
+                    // Create the procedure
+                    let procedure = Value::Procedure {
+                        params: param_names,
+                        body: Rc::new(body),
+                        env: proc_env_rc.clone(),
+                        variadic: false,
+                    };
+
+                    // **R7RS DEVIATION:** This creates a self-referential environment by modifying
+                    // an existing environment after creation. This is needed for recursive functions
+                    // but deviates from pure functional environment semantics.
+                    // The environment stores a reference to the procedure containing the environment,
+                    // creating a circular reference that enables self-recursion.
+                    // Now update the environment to point to the actual procedure
+                    if let Err(err) = proc_env_rc.set(&func_name, procedure.clone()) {
+                        return Err(self.create_runtime_error(
+                            format!("Failed to set recursive function: {}", err),
+                            module,
+                        ));
+                    }
+
+                    self.stack.push(procedure);
                 }
             }
 

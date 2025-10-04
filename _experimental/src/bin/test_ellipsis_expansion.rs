@@ -19,11 +19,11 @@ fn main() {
     // Test cases for ellipsis expansion - REMOVED: Now covered in tests/basic_expressions.scm
     println!("Ellipsis expansion tests moved to tests/basic_expressions.scm");
     println!("Run 'cargo test test_all_scheme_files' to see all test results.");
-    
+
     // Keep the following as a simple demonstration of the macro expansion process only
     let demo_case = "(and #t #f)";
     println!("\nDemo: Macro expansion process for {}", demo_case);
-    
+
     match parse(demo_case) {
         Ok(ast) => {
             println!("Original AST: {}", ast);

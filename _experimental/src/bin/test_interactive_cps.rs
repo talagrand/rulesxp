@@ -42,12 +42,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Test cases that would be typed in REPL - REMOVED: Now covered in tests/*.scm files
-    println!("REPL-style evaluation tests moved to tests/basic_expressions.scm and tests/literals.scm");
+    println!(
+        "REPL-style evaluation tests moved to tests/basic_expressions.scm and tests/literals.scm"
+    );
     println!("Run 'cargo test test_all_scheme_files' to see all test results.");
-    
+
     // Keep one demo case to show CPS transformation
     let demo_cases = vec!["(define y 100)", "y"];
-    
+
     println!("Demo: CPS transformation with variable definition and access:");
     println!();
 

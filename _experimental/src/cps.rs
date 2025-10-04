@@ -255,7 +255,7 @@ impl CPSTransformer {
                 ]),
                 self.make_continuation_call(
                     continuation,
-                    vec![Value::Symbol("unspecified".to_string())],
+                    vec![Value::Symbol("$$-unspecified".to_string())],
                 ),
             ]),
         ]);
@@ -269,7 +269,7 @@ impl CPSTransformer {
             // Empty begin returns unspecified
             return self.make_continuation_call(
                 continuation,
-                vec![Value::Symbol("unspecified".to_string())],
+                vec![Value::Symbol("$$-unspecified".to_string())],
             );
         }
 
@@ -319,13 +319,48 @@ impl CPSTransformer {
     ) -> Value {
         if arg_index >= args.len() {
             // All arguments transformed - make the call
+            // NEW APPROACH: For builtins, call continuation with result instead of passing continuation to builtin
             let mut call = vec![function.clone()];
             // Add argument variables v0, v1, v2, ...
             for i in 0..args.len() {
                 call.push(Value::Symbol(format!("v{}", i)));
             }
-            call.push(continuation.clone());
-            return Value::List(call);
+
+            // Check if this is a known builtin that doesn't take continuation parameters
+            let is_builtin = match function {
+                Value::Symbol(name) => {
+                    // List of builtins that have been updated to not take continuations
+                    matches!(
+                        name.as_str(),
+                        "+" | "*"
+                            | "-"
+                            | "/"
+                            | "mod"
+                            | "="
+                            | "<"
+                            | ">"
+                            | "<="
+                            | ">="
+                            | "car"
+                            | "cdr"
+                            | "cons"
+                            | "list"
+                            | "display"
+                    )
+                }
+                _ => false,
+            };
+
+            if is_builtin {
+                // For updated builtins: call continuation with result of builtin
+                // Generate: (k (builtin v0 v1 v2))
+                return self.make_continuation_call(continuation, vec![Value::List(call)]);
+            } else {
+                // For user-defined functions or unupdated builtins: pass continuation as parameter
+                // Generate: (function v0 v1 v2 k)
+                call.push(continuation.clone());
+                return Value::List(call);
+            }
         }
 
         // Transform current argument

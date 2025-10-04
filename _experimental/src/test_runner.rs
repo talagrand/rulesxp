@@ -51,20 +51,26 @@ impl TestRunner {
     }
 
     /// Parse and expand macros in source code
-    fn parse_and_expand(&self, source_code: &str, vm_env: Rc<Environment>) -> Result<Vec<Value>, TestError> {
+    fn parse_and_expand(
+        &self,
+        source_code: &str,
+        vm_env: Rc<Environment>,
+    ) -> Result<Vec<Value>, TestError> {
         // Parse the source code first
         let parsed = parser::parse_multiple(source_code)
             .map_err(|e| TestError::ParseError(format!("{:?}", e)))?;
 
         // Create macro expander and load prelude
         let mut macro_expander = MacroExpander::new(vm_env);
-        macro_expander.load_prelude()
+        macro_expander
+            .load_prelude()
             .map_err(|e| TestError::MacroError(format!("{}", e)))?;
 
         // Expand macros for each expression
         let mut expanded = Vec::new();
         for expr in parsed {
-            let expanded_expr = macro_expander.expand(&expr)
+            let expanded_expr = macro_expander
+                .expand(&expr)
                 .map_err(|e| TestError::MacroError(format!("{}", e)))?;
             expanded.push(expanded_expr);
         }
@@ -108,7 +114,7 @@ impl TestRunner {
         // Parse and expand macros, capturing errors as output
         let env = Rc::new(Environment::new());
         let mut all_bytecode = String::new();
-        
+
         match self.parse_and_expand(source_code, env.clone()) {
             Ok(expanded) => {
                 for (i, expr) in expanded.iter().enumerate() {
@@ -150,7 +156,7 @@ impl TestRunner {
     fn test_result(&self, test_name: &str, source_code: &str) -> Result<TestResult, TestError> {
         // Create VM in non-CPS mode for regular tests
         let mut vm = VM::new_with_cps(false);
-        
+
         // Parse and expand macros, capturing errors as output
         let mut results = Vec::new();
         match self.parse_and_expand(source_code, vm.current_env()) {

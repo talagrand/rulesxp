@@ -902,33 +902,51 @@ impl MacroExpander {
     ///
     /// These are loaded from prelude/macros.scm at startup and are essential
     /// for a complete R7RS-compliant Scheme implementation.
+    /// Load prelude macros for standard (non-CPS) Scheme
     pub fn load_prelude(&mut self) -> Result<(), MacroError> {
+        // Standard R7RS macro prelude only
+        const STANDARD_MACRO_PRELUDE: &str = include_str!("../prelude/macros.scm");
+
+        self.load_prelude_from_str(STANDARD_MACRO_PRELUDE, "standard prelude")
+    }
+
+    /// Load prelude macros for CPS mode
+    pub fn load_cps_prelude(&mut self) -> Result<(), MacroError> {
         // Combined macro prelude including both standard R7RS and CPS macros
-        // This provides all macros needed for both normal Scheme and CPS operations
+        // This provides all macros needed for CPS operations
         const COMBINED_MACRO_PRELUDE: &str = concat!(
             include_str!("../prelude/macros.scm"),
             "\n",
             include_str!("../prelude/cps_macros.scm")
         );
 
+        self.load_prelude_from_str(COMBINED_MACRO_PRELUDE, "CPS prelude")
+    }
+
+    /// Internal helper to load prelude from a string
+    fn load_prelude_from_str(
+        &mut self,
+        prelude_str: &str,
+        prelude_name: &str,
+    ) -> Result<(), MacroError> {
         use crate::parser::parse_multiple;
 
         // Parse and load all macro definitions
-        match parse_multiple(COMBINED_MACRO_PRELUDE) {
+        match parse_multiple(prelude_str) {
             Ok(expressions) => {
                 for ast in expressions {
                     if let Err(e) = self.expand_once(&ast) {
                         return Err(MacroError(format!(
-                            "Failed to load prelude macro '{}': {}\nThe interpreter cannot continue with a broken prelude.", 
-                            ast, e
+                            "Failed to load {} macro '{}': {}\nThe interpreter cannot continue with a broken prelude.", 
+                            prelude_name, ast, e
                         )));
                     }
                 }
             }
             Err(e) => {
                 return Err(MacroError(format!(
-                    "Failed to parse prelude macros: {}\nThe interpreter cannot continue with a broken prelude.", 
-                    e
+                    "Failed to parse {} macros: {}\nThe interpreter cannot continue with a broken prelude.", 
+                    prelude_name, e
                 )));
             }
         }

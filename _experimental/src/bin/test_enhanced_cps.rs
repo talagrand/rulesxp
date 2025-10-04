@@ -22,7 +22,10 @@ fn main() {
     let test_cases = vec![
         // Keep only CPS-specific transformations that aren't easily testable in .scm files
         ("(to-cps (call/cc f))", "Call with current continuation"),
-        ("(to-cps (letrec ((f (lambda (x) x))) (f 5)))", "Letrec transformation"),
+        (
+            "(to-cps (letrec ((f (lambda (x) x))) (f 5)))",
+            "Letrec transformation",
+        ),
     ];
 
     for (input, description) in test_cases {

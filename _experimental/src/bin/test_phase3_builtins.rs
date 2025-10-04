@@ -23,12 +23,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test arithmetic operations - REMOVED: Now covered in tests/builtin_functions.scm
     println!("**Arithmetic Operations:** (covered in tests/builtin_functions.scm)");
 
-    // Test comparison operations - REMOVED: Now covered in tests/builtin_functions.scm  
+    // Test comparison operations - REMOVED: Now covered in tests/builtin_functions.scm
     println!("**Comparison Operations:** (covered in tests/builtin_functions.scm)");
 
     println!();
 
-    // Test nested CPS calls - REMOVED: Now covered in tests/builtin_functions.scm  
+    // Test nested CPS calls - REMOVED: Now covered in tests/builtin_functions.scm
     println!("**Nested CPS Operations:** (covered in tests/builtin_functions.scm with expressions like (+ (* 2 3) 4))");
 
     println!();

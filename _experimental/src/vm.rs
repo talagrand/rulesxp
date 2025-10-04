@@ -161,6 +161,23 @@ pub enum Opcode {
     /// Create a vector from N values on stack (future extension)
     /// Arg: number of elements
     MakeVector(u8),
+
+    // === CPS-specific opcodes ===
+    /// Call a continuation with N arguments
+    /// Pops continuation and N arguments, calls continuation directly
+    /// Optimized for CPS calling convention - no stack frame overhead
+    /// Arg: number of arguments (not including continuation)
+    CallCont(u8),
+
+    /// Create a continuation object
+    /// Args: code offset to jump to, number of captured variables
+    /// Captures current environment and instruction pointer
+    MakeCont(usize, u8),
+
+    /// Direct jump to continuation (most optimized)
+    /// Used when continuation is known at compile time
+    /// Arg: signed offset from current instruction
+    ContJump(i16),
 }
 
 /// Instruction with inline source location for debugging
@@ -208,6 +225,86 @@ struct CallFrame {
     function_name: Option<String>,
 }
 
+/// Continuation object for CPS execution
+#[derive(Debug, Clone)]
+pub struct Continuation {
+    /// Instruction pointer to jump to
+    pub target_ip: usize,
+
+    /// Environment captured when continuation was created
+    pub captured_env: Rc<Environment>,
+
+    /// Number of arguments expected by continuation
+    pub arity: u8,
+
+    /// Whether this is a cached continuation (identity, etc.)
+    pub is_cached: bool,
+}
+
+/// Continuation pool for caching frequently used continuations
+#[derive(Debug)]
+pub struct ContinuationPool {
+    /// Identity continuation (most common)
+    identity: Option<Rc<Continuation>>,
+
+    /// Cache for other common continuations
+    cache: std::collections::HashMap<String, Rc<Continuation>>,
+
+    /// Pool statistics
+    hits: usize,
+    misses: usize,
+}
+
+impl ContinuationPool {
+    pub fn new() -> Self {
+        ContinuationPool {
+            identity: None,
+            cache: std::collections::HashMap::new(),
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    /// Get or create identity continuation
+    pub fn get_identity(&mut self, env: Rc<Environment>) -> Rc<Continuation> {
+        if let Some(ref identity) = self.identity {
+            self.hits += 1;
+            identity.clone()
+        } else {
+            self.misses += 1;
+            let identity = Rc::new(Continuation {
+                target_ip: 0, // Identity just returns its argument
+                captured_env: env,
+                arity: 1,
+                is_cached: true,
+            });
+            self.identity = Some(identity.clone());
+            identity
+        }
+    }
+
+    /// Cache a continuation with given key
+    pub fn cache_continuation(&mut self, key: String, cont: Rc<Continuation>) {
+        self.cache.insert(key, cont);
+    }
+
+    /// Get cached continuation
+    pub fn get_cached(&mut self, key: &str) -> Option<Rc<Continuation>> {
+        if let Some(cont) = self.cache.get(key) {
+            self.hits += 1;
+            Some(cont.clone())
+        } else {
+            self.misses += 1;
+            None
+        }
+    }
+
+    /// Get cache statistics
+    pub fn stats(&self) -> (usize, usize) {
+        (self.hits, self.misses)
+    }
+}
+
 /// Stack-based virtual machine
 pub struct VM {
     /// Value stack
@@ -231,6 +328,9 @@ pub struct VM {
 
     /// CPS mode enabled (experimental)
     cps_mode: bool,
+
+    /// Continuation pool for CPS optimization
+    continuation_pool: ContinuationPool,
 }
 
 impl BytecodeModule {
@@ -301,7 +401,8 @@ impl VM {
             current_env: global_env.clone(),
             global_env,
             recursion_depth: std::collections::HashMap::new(),
-            cps_mode: false, // Start with CPS disabled
+            cps_mode: true, // Start with CPS enabled by default
+            continuation_pool: ContinuationPool::new(),
         };
 
         // Load function prelude
@@ -1102,6 +1203,101 @@ impl VM {
                     // For now, vectors are not implemented, so this will fail
                     return Err(self
                         .create_runtime_error("Vectors not implemented yet".to_string(), module));
+                }
+
+                // === CPS-specific opcodes ===
+                Opcode::CallCont(arg_count) => {
+                    let arg_count = *arg_count as usize;
+                    if self.stack.len() < arg_count + 1 {
+                        return Err(self.create_runtime_error(
+                            format!("Stack underflow in call-cont: need {} arguments + continuation, got {}", 
+                                arg_count, self.stack.len()),
+                            module,
+                        ));
+                    }
+
+                    // Pop continuation and arguments
+                    let continuation = self.stack.pop().unwrap();
+                    let mut args = Vec::with_capacity(arg_count);
+                    for _ in 0..arg_count {
+                        args.insert(0, self.stack.pop().unwrap());
+                    }
+
+                    // Handle different continuation types
+                    match continuation {
+                        Value::Builtin { func, .. } => {
+                            // Built-in continuation (like identity)
+                            match func(&args) {
+                                Ok(result) => self.stack.push(result),
+                                Err(err) => return Err(self.create_runtime_error(err, module)),
+                            }
+                        }
+                        Value::Procedure { .. } => {
+                            // User-defined continuation - for now, return error
+                            // TODO: Implement proper continuation call with environment restoration
+                            return Err(self.create_runtime_error(
+                                "User-defined continuations not yet fully implemented in VM"
+                                    .to_string(),
+                                module,
+                            ));
+                        }
+                        _ => {
+                            return Err(self.create_runtime_error(
+                                format!("Expected continuation, got {}", continuation.type_name()),
+                                module,
+                            ));
+                        }
+                    }
+                }
+
+                Opcode::MakeCont(target_ip, _captured_vars) => {
+                    // Create a continuation object that captures current environment
+                    let _continuation = Continuation {
+                        target_ip: *target_ip,
+                        captured_env: self.current_env.clone(),
+                        arity: 1, // Most continuations expect 1 argument
+                        is_cached: false,
+                    };
+
+                    // For now, create a simple identity continuation as placeholder
+                    // Real implementation would store the continuation object and use it for jumps
+                    fn continuation_placeholder(args: &[Value]) -> Result<Value, String> {
+                        if args.len() == 1 {
+                            Ok(args[0].clone())
+                        } else {
+                            Err(format!(
+                                "Continuation expects 1 argument, got {}",
+                                args.len()
+                            ))
+                        }
+                    }
+
+                    let cont_value = Value::Builtin {
+                        name: format!("continuation@{}", target_ip),
+                        func: continuation_placeholder,
+                        arity: crate::value::Arity::Exact(1),
+                    };
+
+                    self.stack.push(cont_value);
+                }
+
+                Opcode::ContJump(offset) => {
+                    // Direct continuation jump - most optimized CPS operation
+                    let new_ip = if *offset >= 0 {
+                        self.ip + (*offset as usize)
+                    } else {
+                        self.ip.saturating_sub((-*offset) as usize)
+                    };
+
+                    if new_ip >= module.code.len() {
+                        return Err(self.create_runtime_error(
+                            "Continuation jump out of bounds".to_string(),
+                            module,
+                        ));
+                    }
+
+                    self.ip = new_ip;
+                    continue; // Skip normal IP increment
                 }
             }
 

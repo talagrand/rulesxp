@@ -98,9 +98,46 @@ impl CPSTransformer {
         ])
     }
 
-    /// Create continuation call: (continuation args...)
+    /// Create continuation call using explicit AST annotation
+    ///
+    /// **DESIGN DECISION: Explicit AST Annotations vs. Signature Detection**
+    ///
+    /// Most CPS implementations use "signature detection" - they generate normal-looking
+    /// lambda expressions like (lambda (x k) (k (+ x 1))) and rely on the compiler
+    /// to detect CPS patterns through heuristics (e.g., "last parameter starting with 'k'").
+    ///
+    /// **Why We Use Explicit Annotations Instead:**
+    ///
+    /// 1. **Engineering Over Aesthetics**: While (k result) looks cleaner than
+    ///    ($$-cont-call k result), the explicit form eliminates ALL ambiguity for the compiler.
+    ///    
+    /// 2. **No Pattern Matching Fragility**: Signature detection breaks if users name
+    ///    continuation parameters differently, or if CPS transformation changes. Our approach
+    ///    works regardless of naming conventions.
+    ///    
+    /// 3. **Direct Opcode Emission**: Compiler sees ($$-cont-call k result) and immediately
+    ///    emits ContJump opcode. No heuristics, no guessing, no performance overhead from
+    ///    pattern analysis.
+    ///    
+    /// 4. **Academic Purity is Overrated**: The "interoperability with manual CPS code"
+    ///    argument is theoretical - users almost never write CPS functions manually.
+    ///    CPS is a compiler internal transformation, not a user-facing feature.
+    ///    
+    /// 5. **Better Error Messages**: When compilation fails, error points to specific
+    ///    $$-cont-call form rather than generic function call that compiler had to guess about.
+    ///
+    /// **Trade-offs We Accept:**
+    /// - CPS-transformed code looks less "pure" (has compiler internals visible)
+    /// - Deviates from academic CPS literature conventions
+    /// - Internal symbols use namespace ($$-prefix prevents user conflicts)
+    ///
+    /// **Result**: Robust, unambiguous, fast compilation of native CPS opcodes.
     fn make_continuation_call(&self, continuation: &Value, args: Vec<Value>) -> Value {
-        let mut call = vec![continuation.clone()];
+        // Generate explicit continuation call annotation
+        let mut call = vec![
+            Value::Symbol("$$-cont-call".to_string()),
+            continuation.clone(),
+        ];
         call.extend(args);
         Value::List(call)
     }
@@ -180,10 +217,14 @@ impl CPSTransformer {
             self.transform_with_continuation(&begin_expr, &cont_param)
         };
 
+        // Generate explicit CPS lambda annotation instead of regular lambda
+        // This allows the compiler to immediately recognize CPS forms and emit
+        // native MakeCont opcodes without pattern matching or heuristics
         let cps_lambda = Value::List(vec![
-            Value::Symbol("lambda".to_string()),
-            Value::List(cps_params),
-            cps_body,
+            Value::Symbol("$$-cps-lambda".to_string()),
+            Value::List(cps_params[..cps_params.len() - 1].to_vec()), // Regular parameters
+            cont_param.clone(),                                       // Continuation parameter
+            cps_body, // Body with explicit cont-calls
         ]);
 
         // Pass the CPS lambda to the current continuation

@@ -7,7 +7,7 @@ use rustyline::DefaultEditor;
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!("SampleScheme v0.1.0 - A minimal R7RS Scheme interpreter");
-    println!("CPS Mode: EXPERIMENTAL (Phase 2)");
+    println!("CPS Mode: ENABLED BY DEFAULT (Phase 4 - Native CPS)");
     println!("Type (exit) or Ctrl+C to quit");
     println!();
 

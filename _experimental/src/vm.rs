@@ -1,4 +1,5 @@
 // Virtual machine module - executes bytecode
+use crate::cps_builtins;
 use crate::value::{Environment, Value};
 use std::rc::Rc;
 
@@ -227,6 +228,9 @@ pub struct VM {
 
     /// Track recursion depth for warnings
     recursion_depth: std::collections::HashMap<String, usize>,
+
+    /// CPS mode enabled (experimental)
+    cps_mode: bool,
 }
 
 impl BytecodeModule {
@@ -297,6 +301,7 @@ impl VM {
             current_env: global_env.clone(),
             global_env,
             recursion_depth: std::collections::HashMap::new(),
+            cps_mode: false, // Start with CPS disabled
         };
 
         // Load function prelude
@@ -306,6 +311,33 @@ impl VM {
         }
 
         vm
+    }
+
+    /// Enable CPS mode (experimental)
+    pub fn enable_cps_mode(&mut self) {
+        self.cps_mode = true;
+
+        // Load CPS builtins into environment
+        let cps_builtins = cps_builtins::get_cps_builtins();
+        for (name, func) in cps_builtins {
+            let cps_builtin = Value::Builtin {
+                name: name.to_string(),
+                arity: crate::value::Arity::AtLeast(1), // At least the continuation
+                func,
+            };
+            self.current_env.define(name.to_string(), cps_builtin);
+        }
+    }
+
+    /// Disable CPS mode
+    pub fn disable_cps_mode(&mut self) {
+        self.cps_mode = false;
+        // Note: CPS builtins remain in environment but won't be used in non-CPS compilation
+    }
+
+    /// Check if CPS mode is enabled
+    pub fn is_cps_mode(&self) -> bool {
+        self.cps_mode
     }
 
     /// Load the function prelude into the VM environment

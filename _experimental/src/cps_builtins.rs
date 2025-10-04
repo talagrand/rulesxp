@@ -174,6 +174,289 @@ pub fn lt_cps(args: &[Value]) -> Result<Value, String> {
     call_continuation(continuation, &[result])
 }
 
+/// CPS wrapper for division
+/// (div_cps x y k) -> calls k with (x / y)
+pub fn div_cps(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err("div_cps requires exactly 3 arguments (x y k)".to_string());
+    }
+
+    let continuation = &args[2];
+    let x = &args[0];
+    let y = &args[1];
+
+    let result = match (x, y) {
+        (Value::Integer(x), Value::Integer(y)) => {
+            if *y == 0 {
+                return Err("Division by zero".to_string());
+            }
+            // Integer division in Scheme typically returns exact result
+            if x % y == 0 {
+                Value::Integer(x / y)
+            } else {
+                Value::Real(*x as f64 / *y as f64)
+            }
+        }
+        (Value::Real(x), Value::Real(y)) => {
+            if *y == 0.0 {
+                return Err("Division by zero".to_string());
+            }
+            Value::Real(x / y)
+        }
+        (Value::Integer(x), Value::Real(y)) => {
+            if *y == 0.0 {
+                return Err("Division by zero".to_string());
+            }
+            Value::Real(*x as f64 / y)
+        }
+        (Value::Real(x), Value::Integer(y)) => {
+            if *y == 0 {
+                return Err("Division by zero".to_string());
+            }
+            Value::Real(x / *y as f64)
+        }
+        _ => {
+            return Err(format!(
+                "Cannot divide {} by {}",
+                x.type_name(),
+                y.type_name()
+            ))
+        }
+    };
+
+    call_continuation(continuation, &[result])
+}
+
+/// CPS wrapper for modulo
+/// (mod_cps x y k) -> calls k with (x mod y)
+pub fn mod_cps(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err("mod_cps requires exactly 3 arguments (x y k)".to_string());
+    }
+
+    let continuation = &args[2];
+    let x = &args[0];
+    let y = &args[1];
+
+    let result = match (x, y) {
+        (Value::Integer(x), Value::Integer(y)) => {
+            if *y == 0 {
+                return Err("Modulo by zero".to_string());
+            }
+            Value::Integer(x % y)
+        }
+        _ => {
+            return Err(format!(
+                "Modulo requires integers, got {} and {}",
+                x.type_name(),
+                y.type_name()
+            ))
+        }
+    };
+
+    call_continuation(continuation, &[result])
+}
+
+/// CPS wrapper for greater-than comparison
+/// (gt_cps x y k) -> calls k with #t if x > y, #f otherwise
+pub fn gt_cps(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err("gt_cps requires exactly 3 arguments (x y k)".to_string());
+    }
+
+    let continuation = &args[2];
+    let x = &args[0];
+    let y = &args[1];
+
+    let result = match (x, y) {
+        (Value::Integer(x), Value::Integer(y)) => Value::Boolean(x > y),
+        (Value::UInteger(x), Value::UInteger(y)) => Value::Boolean(x > y),
+        (Value::Integer(x), Value::UInteger(y)) => Value::Boolean(*x > *y as i64),
+        (Value::UInteger(x), Value::Integer(y)) => Value::Boolean((*x as i64) > *y),
+        (Value::Real(x), Value::Real(y)) => Value::Boolean(x > y),
+        _ => {
+            return Err(format!(
+                "Cannot compare {} with {}",
+                x.type_name(),
+                y.type_name()
+            ))
+        }
+    };
+
+    call_continuation(continuation, &[result])
+}
+
+/// CPS wrapper for less-than-or-equal comparison
+/// (le_cps x y k) -> calls k with #t if x <= y, #f otherwise
+pub fn le_cps(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err("le_cps requires exactly 3 arguments (x y k)".to_string());
+    }
+
+    let continuation = &args[2];
+    let x = &args[0];
+    let y = &args[1];
+
+    let result = match (x, y) {
+        (Value::Integer(x), Value::Integer(y)) => Value::Boolean(x <= y),
+        (Value::UInteger(x), Value::UInteger(y)) => Value::Boolean(x <= y),
+        (Value::Integer(x), Value::UInteger(y)) => Value::Boolean(*x <= *y as i64),
+        (Value::UInteger(x), Value::Integer(y)) => Value::Boolean((*x as i64) <= *y),
+        (Value::Real(x), Value::Real(y)) => Value::Boolean(x <= y),
+        _ => {
+            return Err(format!(
+                "Cannot compare {} with {}",
+                x.type_name(),
+                y.type_name()
+            ))
+        }
+    };
+
+    call_continuation(continuation, &[result])
+}
+
+/// CPS wrapper for greater-than-or-equal comparison
+/// (ge_cps x y k) -> calls k with #t if x >= y, #f otherwise
+pub fn ge_cps(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err("ge_cps requires exactly 3 arguments (x y k)".to_string());
+    }
+
+    let continuation = &args[2];
+    let x = &args[0];
+    let y = &args[1];
+
+    let result = match (x, y) {
+        (Value::Integer(x), Value::Integer(y)) => Value::Boolean(x >= y),
+        (Value::UInteger(x), Value::UInteger(y)) => Value::Boolean(x >= y),
+        (Value::Integer(x), Value::UInteger(y)) => Value::Boolean(*x >= *y as i64),
+        (Value::UInteger(x), Value::Integer(y)) => Value::Boolean((*x as i64) >= *y),
+        (Value::Real(x), Value::Real(y)) => Value::Boolean(x >= y),
+        _ => {
+            return Err(format!(
+                "Cannot compare {} with {}",
+                x.type_name(),
+                y.type_name()
+            ))
+        }
+    };
+
+    call_continuation(continuation, &[result])
+}
+
+/// CPS wrapper for car (first element of list)
+/// (car_cps lst k) -> calls k with first element of lst
+pub fn car_cps(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err("car_cps requires exactly 2 arguments (lst k)".to_string());
+    }
+
+    let continuation = &args[1];
+    let lst = &args[0];
+
+    let result = match lst {
+        Value::List(ref elements) => {
+            if elements.is_empty() {
+                return Err("Cannot take car of empty list".to_string());
+            }
+            elements[0].clone()
+        }
+        _ => {
+            return Err(format!("car requires a list, got {}", lst.type_name()));
+        }
+    };
+
+    call_continuation(continuation, &[result])
+}
+
+/// CPS wrapper for cdr (rest of list after first element)
+/// (cdr_cps lst k) -> calls k with rest of lst
+pub fn cdr_cps(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err("cdr_cps requires exactly 2 arguments (lst k)".to_string());
+    }
+
+    let continuation = &args[1];
+    let lst = &args[0];
+
+    let result = match lst {
+        Value::List(ref elements) => {
+            if elements.is_empty() {
+                return Err("Cannot take cdr of empty list".to_string());
+            }
+            if elements.len() == 1 {
+                Value::List(vec![])
+            } else {
+                Value::List(elements[1..].to_vec())
+            }
+        }
+        _ => {
+            return Err(format!("cdr requires a list, got {}", lst.type_name()));
+        }
+    };
+
+    call_continuation(continuation, &[result])
+}
+
+/// CPS wrapper for cons (construct list)
+/// (cons_cps elem lst k) -> calls k with new list [elem, ...lst]
+pub fn cons_cps(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err("cons_cps requires exactly 3 arguments (elem lst k)".to_string());
+    }
+
+    let continuation = &args[2];
+    let elem = &args[0];
+    let lst = &args[1];
+
+    let result = match lst {
+        Value::List(ref elements) => {
+            let mut new_elements = vec![elem.clone()];
+            new_elements.extend_from_slice(elements);
+            Value::List(new_elements)
+        }
+        _ => {
+            return Err(format!(
+                "cons requires a list as second argument, got {}",
+                lst.type_name()
+            ));
+        }
+    };
+
+    call_continuation(continuation, &[result])
+}
+
+/// CPS wrapper for list construction
+/// (list_cps elem1 elem2 ... k) -> calls k with new list
+pub fn list_cps(args: &[Value]) -> Result<Value, String> {
+    if args.is_empty() {
+        return Err("list_cps requires at least 1 argument (the continuation)".to_string());
+    }
+
+    let continuation = &args[args.len() - 1];
+    let elements = &args[..args.len() - 1];
+
+    let result = Value::List(elements.to_vec());
+
+    call_continuation(continuation, &[result])
+}
+
+/// CPS wrapper for display (basic output)
+/// (display_cps value k) -> displays value and calls k with unspecified
+pub fn display_cps(args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err("display_cps requires exactly 2 arguments (value k)".to_string());
+    }
+
+    let continuation = &args[1];
+    let value = &args[0];
+
+    // Display the value (in a real implementation, this would go to stdout)
+    print!("{}", value);
+
+    call_continuation(continuation, &[Value::Unspecified])
+}
+
 /// Type alias for CPS builtin function
 type CPSBuiltinFn = fn(&[Value]) -> Result<Value, String>;
 
@@ -186,9 +469,21 @@ pub fn get_cps_builtins() -> Vec<(&'static str, CPSBuiltinFn)> {
         ("+", add_cps),
         ("*", mul_cps),
         ("-", sub_cps),
+        ("/", div_cps),
+        ("mod", mod_cps),
         // Comparison operations
         ("=", eq_cps),
         ("<", lt_cps),
+        (">", gt_cps),
+        ("<=", le_cps),
+        (">=", ge_cps),
+        // List operations
+        ("car", car_cps),
+        ("cdr", cdr_cps),
+        ("cons", cons_cps),
+        ("list", list_cps),
+        // I/O operations
+        ("display", display_cps),
     ]
 }
 
@@ -306,5 +601,129 @@ mod tests {
 
         let result = lt_cps(&[Value::Integer(5), Value::Integer(3), identity]).unwrap();
         assert_eq!(result, Value::Boolean(false));
+    }
+
+    #[test]
+    fn test_div_cps() {
+        let identity = Value::Builtin {
+            name: "identity".to_string(),
+            arity: crate::value::Arity::Exact(1),
+            func: identity_builtin,
+        };
+
+        let result = div_cps(&[Value::Integer(12), Value::Integer(3), identity.clone()]).unwrap();
+        assert_eq!(result, Value::Integer(4));
+
+        let result = div_cps(&[Value::Integer(7), Value::Integer(2), identity]).unwrap();
+        assert_eq!(result, Value::Real(3.5));
+    }
+
+    #[test]
+    fn test_mod_cps() {
+        let identity = Value::Builtin {
+            name: "identity".to_string(),
+            arity: crate::value::Arity::Exact(1),
+            func: identity_builtin,
+        };
+
+        let result = mod_cps(&[Value::Integer(10), Value::Integer(3), identity]).unwrap();
+        assert_eq!(result, Value::Integer(1));
+    }
+
+    #[test]
+    fn test_gt_cps() {
+        let identity = Value::Builtin {
+            name: "identity".to_string(),
+            arity: crate::value::Arity::Exact(1),
+            func: identity_builtin,
+        };
+
+        let result = gt_cps(&[Value::Integer(5), Value::Integer(3), identity.clone()]).unwrap();
+        assert_eq!(result, Value::Boolean(true));
+
+        let result = gt_cps(&[Value::Integer(3), Value::Integer(5), identity]).unwrap();
+        assert_eq!(result, Value::Boolean(false));
+    }
+
+    #[test]
+    fn test_car_cps() {
+        let identity = Value::Builtin {
+            name: "identity".to_string(),
+            arity: crate::value::Arity::Exact(1),
+            func: identity_builtin,
+        };
+
+        let list = Value::List(vec![
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Integer(3),
+        ]);
+        let result = car_cps(&[list, identity]).unwrap();
+        assert_eq!(result, Value::Integer(1));
+    }
+
+    #[test]
+    fn test_cdr_cps() {
+        let identity = Value::Builtin {
+            name: "identity".to_string(),
+            arity: crate::value::Arity::Exact(1),
+            func: identity_builtin,
+        };
+
+        let list = Value::List(vec![
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Integer(3),
+        ]);
+        let result = cdr_cps(&[list, identity]).unwrap();
+        assert_eq!(
+            result,
+            Value::List(vec![Value::Integer(2), Value::Integer(3)])
+        );
+    }
+
+    #[test]
+    fn test_cons_cps() {
+        let identity = Value::Builtin {
+            name: "identity".to_string(),
+            arity: crate::value::Arity::Exact(1),
+            func: identity_builtin,
+        };
+
+        let list = Value::List(vec![Value::Integer(2), Value::Integer(3)]);
+        let result = cons_cps(&[Value::Integer(1), list, identity]).unwrap();
+        assert_eq!(
+            result,
+            Value::List(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3)
+            ])
+        );
+    }
+
+    #[test]
+    fn test_list_cps() {
+        let identity = Value::Builtin {
+            name: "identity".to_string(),
+            arity: crate::value::Arity::Exact(1),
+            func: identity_builtin,
+        };
+
+        let result = list_cps(&[
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Integer(3),
+            identity,
+        ])
+        .unwrap();
+        assert_eq!(
+            result,
+            Value::List(vec![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3)
+            ])
+        );
     }
 }

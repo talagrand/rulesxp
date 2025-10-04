@@ -15,7 +15,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut rl = DefaultEditor::new()?;
     let mut macro_expander = MacroExpander::new(vm.current_env());
     let mut cps_transformer = CPSTransformer::new();
-    let mut cps_mode = false; // Start with CPS disabled until Phase 3 is complete
 
     // Load R7RS standard macro prelude (derived expressions)
     // This loads all forms listed in macros::STANDARD_DERIVED_EXPRESSIONS
@@ -46,13 +45,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if line == "(cps-on)" {
-                    cps_mode = true;
+                    vm.enable_cps_mode();
                     println!("CPS mode enabled (experimental)");
                     continue;
                 }
 
                 if line == "(cps-off)" {
-                    cps_mode = false;
+                    vm.disable_cps_mode();
                     println!("CPS mode disabled");
                     continue;
                 }
@@ -67,7 +66,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         match macro_expander.expand(&ast) {
                             Ok(expanded_ast) => {
                                 // Compile with or without CPS transformation
-                                let compilation_result = if cps_mode {
+                                let compilation_result = if vm.is_cps_mode() {
                                     // Transform to CPS
                                     let cps_ast = cps_transformer.transform_program(&expanded_ast);
                                     compile(&cps_ast, line.to_string(), vm.current_env())

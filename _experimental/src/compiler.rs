@@ -1,4 +1,5 @@
 // Compiler module - converts AST to bytecode
+use crate::cps::CPSTransformer;
 use crate::value::{Environment, Value};
 use crate::vm::{BytecodeModule, Instruction, Opcode};
 use std::rc::Rc;
@@ -525,6 +526,18 @@ pub fn compile(
     compiler.compile_value(value, true)?; // Top-level is in tail position
     compiler.emit(Opcode::Return);
     Ok(compiler.finish())
+}
+
+/// Compile with automatic CPS transformation
+/// This is the recommended compilation path for Phase 2+ of the CPS implementation
+pub fn compile_with_cps(
+    value: &Value,
+    source_code: String,
+    env: Rc<Environment>,
+) -> Result<BytecodeModule, CompileError> {
+    let mut cps_transformer = CPSTransformer::new();
+    let cps_value = cps_transformer.transform_program(value);
+    compile(&cps_value, source_code, env)
 }
 
 #[cfg(test)]

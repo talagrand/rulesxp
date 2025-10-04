@@ -17,14 +17,14 @@ fn main() {
     }
 
     println!("\n=== NESTED ELLIPSIS DETAILED BREAKDOWN ===");
-    
+
     // Demonstrate the specific problem
     println!("1. What R7RS requires for do loops:");
     println!("   Pattern: ((var init step-expr) ...)");
     println!("   Where step-expr is OPTIONAL");
-    println!("");
+    println!();
     println!("   Examples:");
-    println!("   - ((i 0 (+ i 1))) - with step");  
+    println!("   - ((i 0 (+ i 1))) - with step");
     println!("   - ((i 0)) - without step");
     println!("   - ((i 0 (+ i 1)) (sum 0 (+ sum i))) - multiple with steps");
     println!();
@@ -51,12 +51,10 @@ fn main() {
     let simple_nested = "(define-syntax test-nested (syntax-rules () ((test-nested ((a b) ...) result) (quote nested))))";
     println!("\n3. Even simpler nested ellipsis:");
     match parse(simple_nested) {
-        Ok(ast) => {
-            match macro_expander.expand(&ast) {
-                Ok(_) => println!("   ✓ Simple nested pattern works"),
-                Err(e) => println!("   ❌ Simple nested fails: {}", e),
-            }
-        }
+        Ok(ast) => match macro_expander.expand(&ast) {
+            Ok(_) => println!("   ✓ Simple nested pattern works"),
+            Err(e) => println!("   ❌ Simple nested fails: {}", e),
+        },
         Err(e) => println!("   ❌ Parse fails: {}", e),
     }
 
@@ -64,12 +62,10 @@ fn main() {
     let true_nested = "(define-syntax test-double (syntax-rules () ((test-double ((a b ...) ...) result) (quote double-nested))))";
     println!("\n4. True nested ellipsis ((a b ...) ...):");
     match parse(true_nested) {
-        Ok(ast) => {
-            match macro_expander.expand(&ast) {
-                Ok(_) => println!("   ✓ Double nested pattern works"),
-                Err(e) => println!("   ❌ Double nested fails: {}", e),
-            }
-        }
+        Ok(ast) => match macro_expander.expand(&ast) {
+            Ok(_) => println!("   ✓ Double nested pattern works"),
+            Err(e) => println!("   ❌ Double nested fails: {}", e),
+        },
         Err(e) => println!("   ❌ Parse fails: {}", e),
     }
 
@@ -99,12 +95,24 @@ fn main() {
             match macro_expander.expand(&ast) {
                 Ok(_) => {
                     println!("   ✓ Complex CPS macro definition succeeds");
-                    
+
                     // Test some expansions
                     test_cps_expansion(&mut macro_expander, "(complex-cps 42 identity)", "Atom");
-                    test_cps_expansion(&mut macro_expander, "(complex-cps (lambda () 42) identity)", "Zero-arg lambda");
-                    test_cps_expansion(&mut macro_expander, "(complex-cps (lambda (x) x) identity)", "One-arg lambda");
-                    test_cps_expansion(&mut macro_expander, "(complex-cps (if #t 1 2) identity)", "If expression");
+                    test_cps_expansion(
+                        &mut macro_expander,
+                        "(complex-cps (lambda () 42) identity)",
+                        "Zero-arg lambda",
+                    );
+                    test_cps_expansion(
+                        &mut macro_expander,
+                        "(complex-cps (lambda (x) x) identity)",
+                        "One-arg lambda",
+                    );
+                    test_cps_expansion(
+                        &mut macro_expander,
+                        "(complex-cps (if #t 1 2) identity)",
+                        "If expression",
+                    );
                 }
                 Err(e) => println!("   ❌ Complex CPS fails: {}", e),
             }
@@ -130,18 +138,18 @@ fn main() {
 
     // Show what the error looks like
     println!("\n9. The actual error message:");
-    let failing_pattern = "(define-syntax fail-test (syntax-rules () ((fail-test ((a b ...) ...) result) result)))";
+    let failing_pattern =
+        "(define-syntax fail-test (syntax-rules () ((fail-test ((a b ...) ...) result) result)))";
     match parse(failing_pattern) {
-        Ok(ast) => {
-            match macro_expander.expand(&ast) {
-                Ok(_) => println!("   Unexpectedly succeeded!"),
-                Err(e) => println!("   Error: {}", e),
-            }
-        }
+        Ok(ast) => match macro_expander.expand(&ast) {
+            Ok(_) => println!("   Unexpectedly succeeded!"),
+            Err(e) => println!("   Error: {}", e),
+        },
         Err(e) => println!("   Parse error: {}", e),
     }
 
-    println!(r#"
+    println!(
+        r#"
 === CONCLUSION ===
 
 The nested ellipsis limitation blocks:
@@ -158,25 +166,24 @@ in a complete implementation.
 The workaround is to implement specific, limited versions of complex
 constructs (like our simplified 'do' macro) rather than the full
 R7RS-compliant versions.
-"#);
+"#
+    );
 }
 
 fn test_cps_expansion(macro_expander: &mut MacroExpander, input: &str, description: &str) {
     print!("     {}: ", description);
     match parse(input) {
-        Ok(ast) => {
-            match macro_expander.expand(&ast) {
-                Ok(expanded) => {
-                    let expanded_str = format!("{}", expanded);
-                    if expanded_str.len() > 60 {
-                        println!("✓ Success (expansion too long to show)");
-                    } else {
-                        println!("✓ {} -> {}", input, expanded);
-                    }
+        Ok(ast) => match macro_expander.expand(&ast) {
+            Ok(expanded) => {
+                let expanded_str = format!("{}", expanded);
+                if expanded_str.len() > 60 {
+                    println!("✓ Success (expansion too long to show)");
+                } else {
+                    println!("✓ {} -> {}", input, expanded);
                 }
-                Err(e) => println!("❌ Failed: {}", e),
             }
-        }
+            Err(e) => println!("❌ Failed: {}", e),
+        },
         Err(e) => println!("❌ Parse failed: {}", e),
     }
 }

@@ -1,4 +1,5 @@
 // REPL module - Interactive Read-Eval-Print Loop with rustyline
+use crate::cps::CPSTransformer;
 use crate::macros::MacroExpander;
 use crate::{compile, parse, VM};
 use rustyline::error::ReadlineError;
@@ -6,12 +7,15 @@ use rustyline::DefaultEditor;
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!("SampleScheme v0.1.0 - A minimal R7RS Scheme interpreter");
+    println!("CPS Mode: EXPERIMENTAL (Phase 2)");
     println!("Type (exit) or Ctrl+C to quit");
     println!();
 
     let mut vm = VM::new();
     let mut rl = DefaultEditor::new()?;
     let mut macro_expander = MacroExpander::new(vm.current_env());
+    let mut cps_transformer = CPSTransformer::new();
+    let mut cps_mode = false; // Start with CPS disabled until Phase 3 is complete
 
     // Load R7RS standard macro prelude (derived expressions)
     // This loads all forms listed in macros::STANDARD_DERIVED_EXPRESSIONS
@@ -41,6 +45,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     break;
                 }
 
+                if line == "(cps-on)" {
+                    cps_mode = true;
+                    println!("CPS mode enabled (experimental)");
+                    continue;
+                }
+
+                if line == "(cps-off)" {
+                    cps_mode = false;
+                    println!("CPS mode disabled");
+                    continue;
+                }
+
                 // Add to history
                 rl.add_history_entry(line)?;
 
@@ -50,7 +66,17 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         // Expand macros
                         match macro_expander.expand(&ast) {
                             Ok(expanded_ast) => {
-                                match compile(&expanded_ast, line.to_string(), vm.current_env()) {
+                                // Compile with or without CPS transformation
+                                let compilation_result = if cps_mode {
+                                    // Transform to CPS
+                                    let cps_ast = cps_transformer.transform_program(&expanded_ast);
+                                    compile(&cps_ast, line.to_string(), vm.current_env())
+                                } else {
+                                    // Standard compilation (no CPS)
+                                    compile(&expanded_ast, line.to_string(), vm.current_env())
+                                };
+
+                                match compilation_result {
                                     Ok(module) => {
                                         match vm.execute(&module) {
                                             Ok(result) => {

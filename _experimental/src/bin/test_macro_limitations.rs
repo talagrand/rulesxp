@@ -18,7 +18,7 @@ fn main() {
     }
 
     println!("\n=== NESTED ELLIPSIS LIMITATIONS ===");
-    
+
     // Test 1: Standard R7RS `do` macro with nested ellipsis
     println!("Test 1: Full R7RS do macro");
     let full_do_macro = r#"
@@ -30,9 +30,13 @@ fn main() {
            (begin expr ...)
            (begin command ... (loop step ... ...)))))))
     "#;
-    
-    test_macro_definition(&mut macro_expander, full_do_macro, "Full do macro with nested ellipsis");
-    
+
+    test_macro_definition(
+        &mut macro_expander,
+        full_do_macro,
+        "Full do macro with nested ellipsis",
+    );
+
     // Test 2: Multiple binding forms with steps
     println!("\nTest 2: Let with optional step values");
     let let_with_steps = r#"
@@ -42,10 +46,14 @@ fn main() {
      (let loop ((var init) ...)
        (begin body ...)))))
     "#;
-    
-    test_macro_definition(&mut macro_expander, let_with_steps, "Let with optional step values");
-    
-    // Test 3: Function definition with variable argument lists  
+
+    test_macro_definition(
+        &mut macro_expander,
+        let_with_steps,
+        "Let with optional step values",
+    );
+
+    // Test 3: Function definition with variable argument lists
     println!("\nTest 3: Function with variable rest arguments");
     let func_with_rest = r#"
 (define-syntax defun-rest
@@ -55,11 +63,15 @@ fn main() {
        (lambda (arg ... . rest-args)
          body ...)))))
     "#;
-    
-    test_macro_definition(&mut macro_expander, func_with_rest, "Function with variable rest arguments");
+
+    test_macro_definition(
+        &mut macro_expander,
+        func_with_rest,
+        "Function with variable rest arguments",
+    );
 
     println!("\n=== PATTERN COMPLEXITY LIMITATIONS ===");
-    
+
     // Test 4: CPS transformation with complex pattern matching
     println!("Test 4: Advanced CPS with multiple continuation patterns");
     let complex_cps = r#"
@@ -85,9 +97,13 @@ fn main() {
     ; Catch-all
     ((cps-multi expr k) (k expr))))
     "#;
-    
-    test_macro_definition(&mut macro_expander, complex_cps, "Complex CPS with multiple patterns");
-    
+
+    test_macro_definition(
+        &mut macro_expander,
+        complex_cps,
+        "Complex CPS with multiple patterns",
+    );
+
     // Test 5: Syntax with context-dependent patterns
     println!("\nTest 5: Context-dependent macro patterns");
     let context_macro = r#"
@@ -106,11 +122,15 @@ fn main() {
      (let ((current-src source))
        body ...))))
     "#;
-    
-    test_macro_definition(&mut macro_expander, context_macro, "Context-dependent patterns");
+
+    test_macro_definition(
+        &mut macro_expander,
+        context_macro,
+        "Context-dependent patterns",
+    );
 
     println!("\n=== TESTING WHAT ACTUALLY WORKS ===");
-    
+
     // Test 6: Simple patterns that work
     println!("Test 6: Simple macro that should work");
     let simple_macro = r#"
@@ -119,10 +139,14 @@ fn main() {
     ((simple-when test body ...)
      (if test (begin body ...)))))
     "#;
-    
+
     test_macro_definition(&mut macro_expander, simple_macro, "Simple when macro");
-    
-    if test_macro_expansion(&mut macro_expander, "(simple-when #t 1 2 3)", "Simple when expansion") {
+
+    if test_macro_expansion(
+        &mut macro_expander,
+        "(simple-when #t 1 2 3)",
+        "Simple when expansion",
+    ) {
         println!("✓ Simple macro works correctly");
     }
 
@@ -143,7 +167,7 @@ fn test_macro_definition(macro_expander: &mut MacroExpander, macro_def: &str, de
                 Ok(expanded) => {
                     println!("✓ Parsed successfully");
                     println!("    Expansion: {}", expanded);
-                    
+
                     // The expansion of a define-syntax should register the macro
                     // but we can't easily test this without executing it
                 }
@@ -154,21 +178,23 @@ fn test_macro_definition(macro_expander: &mut MacroExpander, macro_def: &str, de
     }
 }
 
-fn test_macro_expansion(macro_expander: &mut MacroExpander, input: &str, description: &str) -> bool {
+fn test_macro_expansion(
+    macro_expander: &mut MacroExpander,
+    input: &str,
+    description: &str,
+) -> bool {
     print!("  Testing {}: ", description);
     match parse(input) {
-        Ok(ast) => {
-            match macro_expander.expand(&ast) {
-                Ok(expanded) => {
-                    println!("✓ {} -> {}", input, expanded);
-                    true
-                }
-                Err(e) => {
-                    println!("❌ Expansion failed: {}", e);
-                    false
-                }
+        Ok(ast) => match macro_expander.expand(&ast) {
+            Ok(expanded) => {
+                println!("✓ {} -> {}", input, expanded);
+                true
             }
-        }
+            Err(e) => {
+                println!("❌ Expansion failed: {}", e);
+                false
+            }
+        },
         Err(e) => {
             println!("❌ Parse failed: {}", e);
             false

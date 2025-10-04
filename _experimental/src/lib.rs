@@ -41,6 +41,8 @@
 
 pub mod builtins;
 pub mod compiler;
+pub mod cps;
+pub mod cps_builtins;
 pub mod macros;
 pub mod parser;
 pub mod repl;

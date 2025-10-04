@@ -1332,38 +1332,53 @@ impl VM {
                                     _ => {
                                         // Check if this is a builtin function call that we can optimize
                                         if let Value::Symbol(ref name) = elements[0] {
-                                            if let Some(builtin_value) = self.current_env.lookup(name) {
-                                                if let Value::Builtin { name: _, arity: _, func } = builtin_value {
+                                            if let Some(builtin_value) =
+                                                self.current_env.lookup(name)
+                                            {
+                                                if let Value::Builtin {
+                                                    name: _,
+                                                    arity: _,
+                                                    func,
+                                                } = builtin_value
+                                                {
                                                     // This is a builtin function - check if all args are literals/symbols
                                                     // that we can evaluate immediately without stack frames
                                                     let args = &elements[1..];
-                                                    if args.iter().all(|arg| self.is_immediate_value(arg)) {
+                                                    if args
+                                                        .iter()
+                                                        .all(|arg| self.is_immediate_value(arg))
+                                                    {
                                                         // All arguments are immediate - evaluate and call builtin directly
                                                         let mut eval_args = Vec::new();
                                                         for arg in args {
-                                                            match self.evaluate_immediate_value(arg) {
+                                                            match self.evaluate_immediate_value(arg)
+                                                            {
                                                                 Ok(val) => eval_args.push(val),
                                                                 Err(e) => return Err(e),
                                                             }
                                                         }
-                                                        
+
                                                         // Call builtin directly - no stack needed!
                                                         match func(&eval_args) {
                                                             Ok(result) => {
                                                                 result_stack.push(result);
                                                                 continue; // Skip to next frame
-                                                            },
+                                                            }
                                                             Err(e) => {
-                                                                return Err(self.create_simple_runtime_error(format!(
-                                                                    "Builtin '{}' error: {}", name, e
-                                                                )));
+                                                                return Err(self
+                                                                    .create_simple_runtime_error(
+                                                                        format!(
+                                                                        "Builtin '{}' error: {}",
+                                                                        name, e
+                                                                    ),
+                                                                    ));
                                                             }
                                                         }
                                                     }
                                                 }
                                             }
                                         }
-                                        
+
                                         // Regular function application (non-optimizable case)
                                         self.setup_application_stack(&mut eval_stack, &elements);
                                     }
@@ -1414,7 +1429,7 @@ impl VM {
                     last_result: _,
                 } => {
                     // The result of the previous expression should be on the result stack
-                    if let Some(_) = result_stack.pop() {
+                    if let Some(last_result) = result_stack.pop() {
                         if let Some(next_expr) = remaining.pop() {
                             // More expressions to evaluate
                             eval_stack.push(EvalFrame::BeginContinue {
@@ -1422,8 +1437,10 @@ impl VM {
                                 last_result: Value::List(vec![]),
                             });
                             eval_stack.push(EvalFrame::Evaluate(next_expr));
+                        } else {
+                            // No more expressions - put the last result back on stack as final result
+                            result_stack.push(last_result);
                         }
-                        // If no more expressions, the result from the last expression is already on stack
                     } else {
                         return Err(self.create_simple_runtime_error(
                             "Internal error: missing result for begin".to_string(),
@@ -1616,9 +1633,12 @@ impl VM {
     fn is_immediate_value(&self, value: &Value) -> bool {
         match value {
             // Literals are immediate
-            Value::Integer(_) | Value::UInteger(_) | Value::Real(_) | 
-            Value::Boolean(_) | Value::String(_) => true,
-            // Simple symbols are immediate  
+            Value::Integer(_)
+            | Value::UInteger(_)
+            | Value::Real(_)
+            | Value::Boolean(_)
+            | Value::String(_) => true,
+            // Simple symbols are immediate
             Value::Symbol(_) => true,
             // Quoted values are immediate
             Value::List(elements) if !elements.is_empty() => {
@@ -1627,22 +1647,25 @@ impl VM {
                 } else {
                     false
                 }
-            },
+            }
             _ => false,
         }
     }
-    
+
     /// Evaluate an immediate value without using stack frames
     fn evaluate_immediate_value(&self, value: &Value) -> Result<Value, RuntimeError> {
         match value {
             // Literals evaluate to themselves
-            Value::Integer(_) | Value::UInteger(_) | Value::Real(_) | 
-            Value::Boolean(_) | Value::String(_) => Ok(value.clone()),
+            Value::Integer(_)
+            | Value::UInteger(_)
+            | Value::Real(_)
+            | Value::Boolean(_)
+            | Value::String(_) => Ok(value.clone()),
             // Symbols are variable lookups
-            Value::Symbol(name) => {
-                match self.current_env.lookup(name) {
-                    Some(val) => Ok(val),
-                    None => Err(self.create_simple_runtime_error(format!("Undefined variable: {}", name))),
+            Value::Symbol(name) => match self.current_env.lookup(name) {
+                Some(val) => Ok(val),
+                None => {
+                    Err(self.create_simple_runtime_error(format!("Undefined variable: {}", name)))
                 }
             },
             // Quote expressions
@@ -1652,9 +1675,13 @@ impl VM {
                         return Ok(elements[1].clone());
                     }
                 }
-                Err(self.create_simple_runtime_error("Cannot evaluate complex expression immediately".to_string()))
-            },
-            _ => Err(self.create_simple_runtime_error("Cannot evaluate complex expression immediately".to_string())),
+                Err(self.create_simple_runtime_error(
+                    "Cannot evaluate complex expression immediately".to_string(),
+                ))
+            }
+            _ => Err(self.create_simple_runtime_error(
+                "Cannot evaluate complex expression immediately".to_string(),
+            )),
         }
     }
 

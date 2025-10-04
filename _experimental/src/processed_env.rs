@@ -1,0 +1,169 @@
+// ProcessedEnvironment - Environment for ProcessedValues with arena-tied lifetimes
+// This environment stores ProcessedValues directly using arena references
+// to maintain string interning benefits and eliminate unsafe lifetime conversions.
+
+use crate::processed_ast::StringSymbol;
+use crate::super_builtins::ProcessedValue;
+use std::collections::HashMap;
+use std::rc::Rc;
+use string_interner::{Symbol, StringInterner, DefaultBackend};
+
+/// Environment that stores ProcessedValues with arena-tied lifetimes
+/// All stored values reference data in the ProcessedAST arena
+#[derive(Debug, Clone)]
+pub struct ProcessedEnvironment<'ast> {
+    /// Variable bindings - maps interned symbols to arena-referenced ProcessedValues
+    bindings: HashMap<StringSymbol, ProcessedValue<'ast>>,
+    /// Parent environment for lexical scoping
+    parent: Option<Rc<ProcessedEnvironment<'ast>>>,
+}
+
+impl<'ast> ProcessedEnvironment<'ast> {
+    /// Create a new empty environment
+    pub fn new() -> Self {
+        ProcessedEnvironment {
+            bindings: HashMap::new(),
+            parent: None,
+        }
+    }
+
+    /// Create a new environment with a parent
+    pub fn with_parent(parent: Rc<ProcessedEnvironment<'ast>>) -> Self {
+        ProcessedEnvironment {
+            bindings: HashMap::new(),
+            parent: Some(parent),
+        }
+    }
+
+    /// Define a variable using StringSymbol
+    pub fn define(&mut self, symbol: StringSymbol, value: ProcessedValue<'ast>) {
+        self.bindings.insert(symbol, value);
+    }
+
+    /// Look up a variable by StringSymbol
+    pub fn lookup(&self, symbol: StringSymbol) -> Option<&ProcessedValue<'ast>> {
+        if let Some(value) = self.bindings.get(&symbol) {
+            Some(value)
+        } else if let Some(parent) = &self.parent {
+            parent.lookup(symbol)
+        } else {
+            None
+        }
+    }
+
+    /// Get number of bindings in this environment (not including parent)
+    pub fn binding_count(&self) -> usize {
+        self.bindings.len()
+    }
+
+    /// Check if this environment has any parent
+    pub fn has_parent(&self) -> bool {
+        self.parent.is_some()
+    }
+
+    /// Get the number of bindings in the current environment (not including parent)
+    pub fn local_len(&self) -> usize {
+        self.bindings.len()
+    }
+
+
+
+
+}
+
+impl<'ast> Default for ProcessedEnvironment<'ast> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_environment_creation() {
+        let env = ProcessedEnvironment::new();
+        assert_eq!(env.binding_count(), 0);
+        assert!(!env.has_parent());
+    }
+
+    #[test]
+    fn test_variable_definition_and_lookup() {
+        let mut env = ProcessedEnvironment::new();
+
+        // Define a variable
+        let value = ProcessedValue::Integer(42);
+        let mut interner = StringInterner::<DefaultBackend>::new();
+        let test_var_symbol = interner.get_or_intern("test_var");
+        env.define(test_var_symbol, value);
+
+        // Look it up
+        let result = env.lookup(test_var_symbol);
+        assert!(result.is_some());
+
+        if let Some(ProcessedValue::Integer(i)) = result {
+            assert_eq!(*i, 42);
+        } else {
+            panic!("Expected integer value");
+        }
+    }
+
+    #[test]
+    fn test_parent_child_environment() {
+        let mut interner = StringInterner::<DefaultBackend>::new();
+        let mut parent_env = ProcessedEnvironment::new();
+        let parent_var = interner.get_or_intern("parent_var");
+        let child_var = interner.get_or_intern("child_var");
+        parent_env.define(parent_var, ProcessedValue::Boolean(true));
+
+        let mut child_env = ProcessedEnvironment::with_parent(Rc::new(parent_env));
+        child_env.define(child_var, ProcessedValue::Integer(10));
+
+        // Child should have its own variables
+        assert!(child_env.lookup(child_var).is_some());
+
+        // Child should see parent variables
+        assert!(child_env.lookup(parent_var).is_some());
+
+        // Verify child has parent
+        assert!(child_env.has_parent());
+    }
+
+    #[test]
+    fn test_symbol_based_operations() {
+        let mut env = ProcessedEnvironment::new();
+
+        // Define using StringSymbol
+        let symbol = StringSymbol::try_from_usize(123).unwrap();
+        let value = ProcessedValue::Real(std::f64::consts::PI);
+        env.define(symbol, value);
+
+        // Look up using the same symbol
+        let result = env.lookup(symbol);
+        assert!(result.is_some());
+
+        if let Some(ProcessedValue::Real(r)) = result {
+            assert!((r - std::f64::consts::PI).abs() < f64::EPSILON);
+        } else {
+            panic!("Expected real value");
+        }
+    }
+    #[test]
+    fn test_variable_shadowing() {
+        let mut interner = StringInterner::<DefaultBackend>::new();
+        let mut parent_env = ProcessedEnvironment::new();
+        let shared_var = interner.get_or_intern("shared_var");
+        parent_env.define(shared_var, ProcessedValue::Integer(100));
+
+        let mut child_env = ProcessedEnvironment::with_parent(Rc::new(parent_env));
+        child_env.define(shared_var, ProcessedValue::Integer(200));
+
+        // Child should see its own value, not parent's
+        if let Some(ProcessedValue::Integer(i)) = child_env.lookup(shared_var) {
+            assert_eq!(*i, 200);
+        } else {
+            panic!("Expected child's shadowed value");
+        }
+    }
+}

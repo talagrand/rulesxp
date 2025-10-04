@@ -205,6 +205,16 @@ pub fn create_builtins() -> std::collections::HashMap<String, crate::Value> {
         },
     );
 
+    // List construction
+    builtins.insert(
+        "list".to_string(),
+        Value::Builtin {
+            name: "list".to_string(),
+            arity: Arity::AtLeast(0),
+            func: |args| Ok(Value::List(args.to_vec())),
+        },
+    );
+
     // Predicates
     builtins.insert(
         "null?".to_string(),

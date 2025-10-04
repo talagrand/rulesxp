@@ -169,9 +169,11 @@ pub enum Opcode {
     /// Arg: number of arguments (not including continuation)
     CallCont(u8),
 
-    /// Create a continuation object
+    /// Create a continuation object for first-class continuations
     /// Args: code offset to jump to, number of captured variables
     /// Captures current environment and instruction pointer
+    /// NOTE: Reserved for call/cc implementation - not used for basic CPS transformation
+    /// Basic CPS uses regular function calls with continuation parameters
     MakeCont(usize, u8),
 
     /// Direct jump to continuation (most optimized)
@@ -377,6 +379,72 @@ impl BytecodeModule {
     }
 }
 
+impl std::fmt::Display for BytecodeModule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, instr) in self.code.iter().enumerate() {
+            writeln!(f, "{:08}: {}", i, self.format_instruction(&instr.opcode))?;
+        }
+        Ok(())
+    }
+}
+
+impl BytecodeModule {
+    /// Format a single instruction with constants and strings context
+    fn format_instruction(&self, opcode: &Opcode) -> String {
+        match opcode {
+            Opcode::LoadConst(idx) => {
+                let value = self
+                    .constants
+                    .get(*idx)
+                    .map(|v| format!("{}", v))
+                    .unwrap_or_else(|| format!("INVALID[{}]", idx));
+                format!("LOAD_CONST {} ; {}", idx, value)
+            }
+            Opcode::LoadVar(idx) => {
+                let name = self
+                    .strings
+                    .get(*idx)
+                    .map(|s| s.as_str())
+                    .unwrap_or("INVALID");
+                format!("LOAD_VAR {} ; {}", idx, name)
+            }
+            Opcode::StoreVar(idx) => {
+                let name = self
+                    .strings
+                    .get(*idx)
+                    .map(|s| s.as_str())
+                    .unwrap_or("INVALID");
+                format!("STORE_VAR {} ; {}", idx, name)
+            }
+            Opcode::DefineVar(idx) => {
+                let name = self
+                    .strings
+                    .get(*idx)
+                    .map(|s| s.as_str())
+                    .unwrap_or("INVALID");
+                format!("DEFINE_VAR {} ; {}", idx, name)
+            }
+            Opcode::Call(argc) => format!("CALL {}", argc),
+            Opcode::TailCall(argc) => format!("TAIL_CALL {}", argc),
+            Opcode::CallCont(argc) => format!("CALL_CONT {}", argc),
+            Opcode::Return => "RETURN".to_string(),
+            Opcode::Jump(offset) => format!("JUMP {}", offset),
+            Opcode::JumpIfFalse(offset) => format!("JUMP_IF_FALSE {}", offset),
+            Opcode::MakeClosure(target, vars) => format!("MAKE_CLOSURE {} {}", target, vars),
+            Opcode::Pop => "POP".to_string(),
+            Opcode::Dup => "DUP".to_string(),
+            Opcode::Cons => "CONS".to_string(),
+            Opcode::Car => "CAR".to_string(),
+            Opcode::Cdr => "CDR".to_string(),
+            Opcode::MakeList(count) => format!("MAKE_LIST {}", count),
+            Opcode::LoadNil => "LOAD_NIL".to_string(),
+            Opcode::MakeVector(count) => format!("MAKE_VECTOR {}", count),
+            Opcode::MakeCont(target, vars) => format!("MAKE_CONT {} {}", target, vars),
+            Opcode::ContJump(offset) => format!("CONT_JUMP {}", offset),
+        }
+    }
+}
+
 impl Default for VM {
     fn default() -> Self {
         Self::new()
@@ -385,6 +453,11 @@ impl Default for VM {
 
 impl VM {
     pub fn new() -> Self {
+        Self::new_with_cps(true)
+    }
+
+    /// Create a new VM with or without CPS mode
+    pub fn new_with_cps(enable_cps: bool) -> Self {
         let global_env = Environment::new();
 
         // Load built-in procedures into global environment
@@ -401,9 +474,22 @@ impl VM {
             current_env: global_env.clone(),
             global_env,
             recursion_depth: std::collections::HashMap::new(),
-            cps_mode: true, // Start with CPS enabled by default
+            cps_mode: enable_cps,
             continuation_pool: ContinuationPool::new(),
         };
+
+        if enable_cps {
+            // Load CPS builtins to replace regular builtins (e.g., + becomes add_cps)
+            let cps_builtins = cps_builtins::get_cps_builtins();
+            for (name, func) in cps_builtins {
+                let cps_builtin = Value::Builtin {
+                    name: name.to_string(),
+                    arity: crate::value::Arity::AtLeast(1), // At least the continuation
+                    func,
+                };
+                vm.current_env.define(name.to_string(), cps_builtin);
+            }
+        }
 
         // Load function prelude
         if let Err(e) = vm.load_function_prelude() {
@@ -1232,14 +1318,76 @@ impl VM {
                                 Err(err) => return Err(self.create_runtime_error(err, module)),
                             }
                         }
-                        Value::Procedure { .. } => {
-                            // User-defined continuation - for now, return error
-                            // TODO: Implement proper continuation call with environment restoration
-                            return Err(self.create_runtime_error(
-                                "User-defined continuations not yet fully implemented in VM"
-                                    .to_string(),
-                                module,
-                            ));
+                        Value::Procedure {
+                            params,
+                            body,
+                            env,
+                            variadic,
+                        } => {
+                            // User-defined continuation - treat as regular function call
+                            // This is exactly what we want for CPS-transformed code!
+
+                            // Verify argument count
+                            if variadic {
+                                if args.len() < params.len() - 1 {
+                                    return Err(self.create_runtime_error(
+                                        format!(
+                                            "Wrong number of arguments to continuation: expected at least {}, got {}",
+                                            params.len() - 1,
+                                            args.len()
+                                        ),
+                                        module,
+                                    ));
+                                }
+                            } else if args.len() != params.len() {
+                                return Err(self.create_runtime_error(
+                                    format!(
+                                        "Wrong number of arguments to continuation: expected {}, got {}",
+                                        params.len(),
+                                        args.len()
+                                    ),
+                                    module,
+                                ));
+                            }
+
+                            // Create new environment for continuation
+                            let call_env = Rc::new(Environment::with_parent(env.clone()));
+
+                            // Bind parameters to arguments
+                            if variadic {
+                                // Bind regular args
+                                for (i, param) in params.iter().enumerate().take(params.len() - 1) {
+                                    if i < args.len() {
+                                        call_env.define(param.clone(), args[i].clone());
+                                    }
+                                }
+                                // Bind rest args as list
+                                let rest_args = if args.len() >= params.len() - 1 {
+                                    args[params.len() - 1..].to_vec()
+                                } else {
+                                    vec![]
+                                };
+                                call_env
+                                    .define(params.last().unwrap().clone(), Value::List(rest_args));
+                            } else {
+                                // Bind all parameters
+                                for (param, arg) in params.iter().zip(args.iter()) {
+                                    call_env.define(param.clone(), arg.clone());
+                                }
+                            }
+
+                            // Execute continuation body in its environment
+                            let old_env = self.current_env.clone();
+                            self.current_env = call_env;
+
+                            let result = self.execute_value_in_current_env(&body);
+
+                            self.current_env = old_env;
+
+                            match result {
+                                Ok(value) => self.stack.push(value),
+                                Err(err) => return Err(err),
+                            }
                         }
                         _ => {
                             return Err(self.create_runtime_error(

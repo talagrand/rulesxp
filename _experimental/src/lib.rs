@@ -46,6 +46,7 @@ pub mod cps_builtins;
 pub mod macros;
 pub mod parser;
 pub mod repl;
+pub mod test_runner;
 pub mod value;
 pub mod vm;
 

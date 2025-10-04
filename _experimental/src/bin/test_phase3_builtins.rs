@@ -20,74 +20,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
 
-    // Test arithmetic operations
-    println!("**Arithmetic Operations:**");
+    // Test arithmetic operations - REMOVED: Now covered in tests/builtin_functions.scm
+    println!("**Arithmetic Operations:** (covered in tests/builtin_functions.scm)");
 
-    // Addition: (+ 5 3 2) → 10
-    let result = add_cps(&[
-        Value::Integer(5),
-        Value::Integer(3),
-        Value::Integer(2),
-        identity.clone(),
-    ])?;
-    println!("(+ 5 3 2) = {}", result);
-
-    // Multiplication: (* 4 3) → 12
-    let result = mul_cps(&[Value::Integer(4), Value::Integer(3), identity.clone()])?;
-    println!("(* 4 3) = {}", result);
-
-    // Subtraction: (- 10 3) → 7
-    let result = sub_cps(&[Value::Integer(10), Value::Integer(3), identity.clone()])?;
-    println!("(- 10 3) = {}", result);
+    // Test comparison operations - REMOVED: Now covered in tests/builtin_functions.scm  
+    println!("**Comparison Operations:** (covered in tests/builtin_functions.scm)");
 
     println!();
 
-    // Test comparison operations
-    println!("**Comparison Operations:**");
-
-    // Equality: (= 42 42) → #t
-    let result = eq_cps(&[Value::Integer(42), Value::Integer(42), identity.clone()])?;
-    println!("(= 42 42) = {}", result);
-
-    // Equality: (= 42 24) → #f
-    let result = eq_cps(&[Value::Integer(42), Value::Integer(24), identity.clone()])?;
-    println!("(= 42 24) = {}", result);
-
-    // Less than: (< 3 5) → #t
-    let result = lt_cps(&[Value::Integer(3), Value::Integer(5), identity.clone()])?;
-    println!("(< 3 5) = {}", result);
-
-    // Less than: (< 5 3) → #f
-    let result = lt_cps(&[Value::Integer(5), Value::Integer(3), identity.clone()])?;
-    println!("(< 5 3) = {}", result);
-
-    println!();
-
-    // Test nested CPS calls (continuation chaining)
-    println!("**Nested CPS Operations:**");
-
-    // Simulate: (+ (* 2 3) 4)
-    // First: (* 2 3) with continuation that adds 4
-    println!("Simulating: (+ (* 2 3) 4)");
-
-    // Step 1: Create continuation that adds 4
-    let add_four_continuation = Value::Builtin {
-        name: "add_with_4".to_string(),
-        arity: Arity::Exact(1),
-        func: |args: &[Value]| -> Result<Value, String> {
-            if args.len() != 1 {
-                return Err("add_with_4 expects 1 argument".to_string());
-            }
-            match &args[0] {
-                Value::Integer(n) => Ok(Value::Integer(n + 4)),
-                _ => Err("add_with_4 expects integer".to_string()),
-            }
-        },
-    };
-
-    // Step 2: (* 2 3 add_four_continuation) should give us 10
-    let result = mul_cps(&[Value::Integer(2), Value::Integer(3), add_four_continuation])?;
-    println!("Result: {}", result);
+    // Test nested CPS calls - REMOVED: Now covered in tests/builtin_functions.scm  
+    println!("**Nested CPS Operations:** (covered in tests/builtin_functions.scm with expressions like (+ (* 2 3) 4))");
 
     println!();
 

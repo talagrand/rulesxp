@@ -17,26 +17,12 @@ fn main() {
         }
     }
 
+    // Basic test cases REMOVED: Now covered in tests/*.scm files
+    // Run 'cargo test test_all_scheme_files' to see comprehensive testing
     let test_cases = vec![
-        // Basic value transformation
-        ("(to-cps 42)", "Number literal"),
-        ("(to-cps #t)", "Boolean literal"),
-        ("(to-cps x)", "Variable reference"),
-        // Quote transformation
-        ("(to-cps (quote hello))", "Quoted symbol"),
-        ("(to-cps '(a b c))", "Quoted list"),
-        // Lambda transformation
-        ("(to-cps (lambda (x) x))", "Simple lambda"),
-        ("(to-cps (lambda (x y) (+ x y)))", "Multi-arg lambda"),
-        // If transformation
-        ("(to-cps (if #t 42 0))", "Simple if expression"),
-        (
-            "(to-cps (if (> x 0) x (- x)))",
-            "Complex if with expressions",
-        ),
-        // Application (should use basic rule)
-        ("(to-cps (+ 1 2))", "Function application"),
-        ("(to-cps (cons a b))", "Multi-arg application"),
+        // Keep only CPS-specific transformations that aren't easily testable in .scm files
+        ("(to-cps (call/cc f))", "Call with current continuation"),
+        ("(to-cps (letrec ((f (lambda (x) x))) (f 5)))", "Letrec transformation"),
     ];
 
     for (input, description) in test_cases {

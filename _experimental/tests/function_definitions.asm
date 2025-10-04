@@ -1,0 +1,65 @@
+00000000: LOAD_CONST 0 ; #<procedure>
+00000001: DEFINE_VAR 0 ; identity
+00000002: LOAD_CONST 1 ; #<unspecified>
+00000003: RETURN
+
+--- Expression 2 ---
+00000000: LOAD_CONST 0 ; #<procedure>
+00000001: RETURN
+
+--- Expression 3 ---
+00000000: LOAD_CONST 0 ; #<procedure>
+00000001: RETURN
+
+--- Expression 4 ---
+00000000: LOAD_CONST 0 ; 42
+00000001: LOAD_CONST 1 ; #<procedure>
+00000002: TAIL_CALL 1
+00000003: RETURN
+
+--- Expression 5 ---
+00000000: LOAD_CONST 0 ; 3
+00000001: LOAD_CONST 1 ; 4
+00000002: LOAD_CONST 2 ; #<procedure>
+00000003: TAIL_CALL 2
+00000004: RETURN
+
+--- Expression 6 ---
+00000000: LOAD_CONST 0 ; #<procedure>
+00000001: DEFINE_VAR 0 ; square
+00000002: LOAD_CONST 1 ; #<unspecified>
+00000003: RETURN
+
+--- Expression 7 ---
+00000000: LOAD_CONST 0 ; 5
+00000001: LOAD_VAR 0 ; square
+00000002: TAIL_CALL 1
+00000003: RETURN
+
+--- Expression 8 ---
+00000000: LOAD_CONST 0 ; 1
+00000001: LOAD_CONST 1 ; 2
+00000002: LOAD_VAR 0 ; +
+00000003: CALL 2
+00000004: DEFINE_VAR 1 ; test-expr
+00000005: LOAD_CONST 2 ; #<unspecified>
+00000006: RETURN
+
+--- Expression 9 ---
+00000000: LOAD_VAR 0 ; test-expr
+00000001: RETURN
+
+--- Expression 10 ---
+00000000: LOAD_CONST 0 ; #<procedure>
+00000001: RETURN
+
+--- Expression 11 ---
+00000000: LOAD_CONST 0 ; #<procedure>
+00000001: DEFINE_VAR 0 ; get-forty-two
+00000002: LOAD_CONST 1 ; #<unspecified>
+00000003: RETURN
+
+--- Expression 12 ---
+00000000: LOAD_VAR 0 ; get-forty-two
+00000001: TAIL_CALL 0
+00000002: RETURN

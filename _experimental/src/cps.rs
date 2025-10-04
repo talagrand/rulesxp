@@ -89,13 +89,11 @@ impl CPSTransformer {
         self.transform_with_continuation(value, &identity_continuation)
     }
 
-    /// Create identity continuation: (lambda (x) x)
+    /// Create identity continuation: use builtin identity function
     fn make_identity_continuation(&self) -> Value {
-        Value::List(vec![
-            Value::Symbol("lambda".to_string()),
-            Value::List(vec![Value::Symbol("x".to_string())]),
-            Value::Symbol("x".to_string()),
-        ])
+        // Use the builtin identity function instead of (lambda (x) x)
+        // This avoids the "user-defined continuations not supported" error
+        Value::Symbol("identity".to_string())
     }
 
     /// Create continuation call using explicit AST annotation

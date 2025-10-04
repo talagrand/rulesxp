@@ -41,23 +41,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Warning: Could not load macro prelude: {}", e);
     }
 
-    // Test cases that would be typed in REPL
-    let test_cases = vec![
-        "42",
-        "(+ 1 2)",
-        "(* 3 4)",
-        "(if #t 10 20)",
-        "(if #f 10 20)",
-        "(define x 42)",
-        // Note: We'll comment out variable access for now since it requires
-        // proper environment handling in CPS
-        // "x",
-    ];
-
-    println!("Testing REPL-style evaluation with CPS transformation:");
+    // Test cases that would be typed in REPL - REMOVED: Now covered in tests/*.scm files
+    println!("REPL-style evaluation tests moved to tests/basic_expressions.scm and tests/literals.scm");
+    println!("Run 'cargo test test_all_scheme_files' to see all test results.");
+    
+    // Keep one demo case to show CPS transformation
+    let demo_cases = vec!["(define y 100)", "y"];
+    
+    println!("Demo: CPS transformation with variable definition and access:");
     println!();
 
-    for case in test_cases {
+    for case in demo_cases {
         print!("scheme> {}", case);
         match test_repl_line(case, &mut vm, &mut macro_expander, &mut cps_transformer) {
             Ok(result) => {

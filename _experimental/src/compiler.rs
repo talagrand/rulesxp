@@ -11,6 +11,17 @@ pub struct CompileError {
     pub source: Option<String>,
 }
 
+/// Result of continuation analysis for optimization decisions
+#[derive(Debug, Clone)]
+enum ContinuationAnalysis {
+    /// Identity continuation: (lambda (x) x) or 'identity' builtin
+    Identity,
+    /// Simple jump continuation that can use ContJump opcode
+    SimpleJump { target_offset: i16 },
+    /// Complex continuation that requires CallCont
+    Complex,
+}
+
 impl CompileError {
     pub fn new(message: String) -> Self {
         CompileError {
@@ -137,6 +148,97 @@ impl Compiler {
             opcode,
             source_offset: self.current_offset,
         });
+    }
+
+    /// Analyze continuation to determine if it can be optimized with ContJump
+    fn analyze_continuation(&self, continuation: &Value) -> ContinuationAnalysis {
+        match continuation {
+            // Identity continuation: (lambda (x) x)
+            Value::List(cont_elements) if cont_elements.len() == 3 => {
+                if let (Value::Symbol(op), Value::List(params), Value::Symbol(body)) =
+                    (&cont_elements[0], &cont_elements[1], &cont_elements[2])
+                {
+                    if op == "lambda" && params.len() == 1 {
+                        if let Value::Symbol(param) = &params[0] {
+                            if body == param {
+                                return ContinuationAnalysis::Identity;
+                            }
+                        }
+                    }
+                }
+
+                // Check for simple continuation patterns that can use ContJump
+                if let Some(offset) = self.analyze_simple_jump_continuation(cont_elements) {
+                    return ContinuationAnalysis::SimpleJump {
+                        target_offset: offset,
+                    };
+                }
+            }
+            // Simple symbol (builtin continuation like 'identity')
+            Value::Symbol(name) if name == "identity" => {
+                return ContinuationAnalysis::Identity;
+            }
+            // Named continuation - could be a simple jump target
+            Value::Symbol(_name) => {
+                // TODO: Look up continuation in environment to see if it's a simple lambda
+                // For now, treat as complex to be safe
+            }
+            _ => {}
+        }
+
+        ContinuationAnalysis::Complex
+    }
+
+    /// Analyze lambda continuation to see if it can be optimized as a direct jump
+    fn analyze_simple_jump_continuation(&self, cont_elements: &[Value]) -> Option<i16> {
+        // Pattern: (lambda (x) (return-continuation x))
+        // This is a simple pass-through that can be optimized to a direct jump
+
+        if cont_elements.len() != 3 {
+            return None;
+        }
+
+        if let (Value::Symbol(op), Value::List(params), Value::List(body)) =
+            (&cont_elements[0], &cont_elements[1], &cont_elements[2])
+        {
+            if op != "lambda" || params.len() != 1 {
+                return None;
+            }
+
+            // Check if body is a simple continuation call: (k x)
+            if body.len() == 2 {
+                if let (Value::Symbol(_cont_name), Value::Symbol(arg_name)) = (&body[0], &body[1]) {
+                    if let Value::Symbol(param_name) = &params[0] {
+                        if arg_name == param_name {
+                            // This is a simple pass-through continuation
+                            // For now, we don't have the infrastructure to calculate exact offsets
+                            // In a full implementation, we'd:
+                            // 1. Look up the target continuation in the environment
+                            // 2. Calculate the jump offset to its code location
+                            // 3. Return that offset
+
+                            // TODO: Implement full continuation target resolution
+                            // For now, fall back to CallCont for safety
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Calculate jump offset for direct continuation calls
+    /// Returns offset from current instruction to the continuation target
+    fn calculate_continuation_offset(&self, _continuation: &Value) -> Option<i16> {
+        // TODO: Implement sophisticated continuation target analysis
+        // For now, we only optimize identity continuations (which don't need jumps)
+        // Future enhancements could detect:
+        // 1. Known lambda continuations with simple bodies
+        // 2. Return continuations that just pass values up the stack
+        // 3. Tail call continuations that can be converted to direct jumps
+        None
     }
 
     /// Compile a value to bytecode
@@ -429,13 +531,12 @@ impl Compiler {
                                 /*
                                  * Handle CPS lambda form: ($$-cps-lambda (params) cont-param body)
                                  *
-                                 * Unlike regular lambdas, CPS lambdas:
-                                 * 1. Have explicit continuation parameter (not just "last param")
-                                 * 2. Generate MakeCont opcode for continuation parameter
-                                 * 3. Enable direct ContJump optimization in body
+                                 * Key insight: CPS lambdas are just regular lambdas with continuation parameters.
+                                 * The CPS transformation already did the hard work of restructuring the code.
+                                 * We just need to combine the regular params + continuation param and compile
+                                 * as a normal lambda. No special MakeCont opcodes needed!
                                  *
-                                 * This eliminates the need for fragile signature detection or
-                                 * heuristics about which parameters are continuations.
+                                 * This is much simpler and faster than creating continuation objects.
                                  */
                                 if elements.len() != 4 {
                                     return Err(CompileError::new(
@@ -449,8 +550,8 @@ impl Compiler {
                                 let cont_param = &elements[2];
                                 let body = &elements[3];
 
-                                // Parse regular parameters
-                                let params = match regular_params {
+                                // Parse regular parameters and combine with continuation parameter
+                                let all_params = match regular_params {
                                     Value::List(param_list) => {
                                         let mut params = Vec::new();
                                         for param in param_list {
@@ -465,7 +566,19 @@ impl Compiler {
                                                 }
                                             }
                                         }
-                                        (params, false) // No variadic support in CPS for now
+
+                                        // Add continuation parameter
+                                        if let Value::Symbol(cont_name) = cont_param {
+                                            params.push(cont_name.clone());
+                                        } else {
+                                            return Err(CompileError::new(
+                                                "Continuation parameter must be a symbol"
+                                                    .to_string(),
+                                            )
+                                            .with_expression(value));
+                                        }
+
+                                        params
                                     }
                                     _ => {
                                         return Err(CompileError::new(
@@ -475,20 +588,7 @@ impl Compiler {
                                     }
                                 };
 
-                                // Emit MakeCont for continuation parameter
-                                // This creates a continuation object that can be called with ContJump
-                                // 
-                                // TODO: CRITICAL - Calculate proper continuation target and captured variables:
-                                // - target_ip: Should point to the start of the continuation's body code
-                                // - captured_vars: Should count free variables in the continuation closure
-                                // - This requires proper continuation analysis and closure capture detection
-                                // 
-                                // CURRENT STATE: Using MAX placeholders that will cause obvious runtime errors
-                                // This prevents subtle bugs but requires implementing proper continuation compilation
-                                self.emit(Opcode::MakeCont(usize::MAX, u8::MAX)); // Placeholders - will cause obvious errors if not fixed
-
-                                // Compile the CPS lambda body
-                                // The body should contain $$-cont-call forms that will emit ContJump
+                                // Compile as regular lambda - no special CPS opcodes needed
                                 let mut lambda_compiler = Compiler::new(
                                     self.source_code.clone(),
                                     self.current_env.clone(),
@@ -499,17 +599,12 @@ impl Compiler {
                                 lambda_compiler.compile_value(body, true)?; // Body is in tail position
                                 lambda_compiler.emit(Opcode::Return);
 
-                                // Create the CPS procedure
-                                let mut all_params = params.0;
-                                if let Value::Symbol(cont_name) = cont_param {
-                                    all_params.push(cont_name.clone());
-                                }
-
+                                // Create regular procedure - continuation parameter is just another parameter
                                 let closure = Value::Procedure {
                                     params: all_params,
                                     body: Rc::new(body.clone()),
                                     env: self.current_env.clone(),
-                                    variadic: params.1,
+                                    variadic: false, // CPS lambdas are not variadic
                                 };
 
                                 let closure_index = self.add_constant(closure);
@@ -535,46 +630,34 @@ impl Compiler {
                                     .with_expression(value));
                                 }
 
-                                // Check if this is an identity continuation: (lambda (x) x)
+                                // Analyze continuation for optimization opportunities
                                 let continuation = &elements[1];
-                                let is_identity_continuation = match continuation {
-                                    Value::List(cont_elements) if cont_elements.len() == 3 => {
-                                        if let (Value::Symbol(op), Value::List(params), Value::Symbol(body)) = 
-                                            (&cont_elements[0], &cont_elements[1], &cont_elements[2]) {
-                                            op == "lambda" && params.len() == 1 && 
-                                            if let Value::Symbol(param) = &params[0] {
-                                                body == param
-                                            } else {
-                                                false
-                                            }
-                                        } else {
-                                            false
-                                        }
-                                    }
-                                    _ => false,
-                                };
+                                let cont_analysis = self.analyze_continuation(continuation);
 
-                                if is_identity_continuation {
-                                    // Identity continuation - just compile the argument and return it
-                                    if elements.len() > 2 {
-                                        self.compile_value(&elements[2], is_tail_position)?;
+                                match cont_analysis {
+                                    ContinuationAnalysis::Identity => {
+                                        // Identity continuation - just compile the argument and return it
+                                        if elements.len() > 2 {
+                                            self.compile_value(&elements[2], is_tail_position)?;
+                                        }
+                                        // Value is already on stack, no jump needed
                                     }
-                                    // Value is already on stack, no jump needed
-                                } else {
-                                    // Complex continuation - use CallCont for now
-                                    // 
-                                    // TODO: OPTIMIZATION - Implement direct ContJump for known continuations:
-                                    // - Analyze continuation structure to determine if it's a simple jump target
-                                    // - Calculate proper jump offset for direct continuation calls
-                                    // - Emit ContJump(offset) instead of CallCont for better performance
-                                    // - This would eliminate function call overhead for continuation calls
-                                    //
-                                    // CURRENT STATE: Using CallCont as fallback (works but less optimal)
-                                    for arg in &elements[2..] {
-                                        self.compile_value(arg, false)?;
+                                    ContinuationAnalysis::SimpleJump { target_offset } => {
+                                        // Simple jump continuation - use ContJump for optimal performance
+                                        for arg in &elements[2..] {
+                                            self.compile_value(arg, false)?;
+                                        }
+                                        self.emit(Opcode::ContJump(target_offset));
                                     }
-                                    self.compile_value(continuation, false)?;
-                                    self.emit(Opcode::CallCont((elements.len() - 2) as u8));
+                                    ContinuationAnalysis::Complex => {
+                                        // Complex continuation - use CallCont (works but less optimal)
+                                        // This handles user-defined continuations and complex lambda forms
+                                        for arg in &elements[2..] {
+                                            self.compile_value(arg, false)?;
+                                        }
+                                        self.compile_value(continuation, false)?;
+                                        self.emit(Opcode::CallCont((elements.len() - 2) as u8));
+                                    }
                                 }
                             }
 

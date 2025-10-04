@@ -16,47 +16,35 @@ fn main() {
         }
     }
 
-    // Test cases for ellipsis expansion
-    let test_cases = vec![
-        ("(and)", "#t"),
-        ("(and #t)", "#t"),
-        ("(and #t #f)", "#f"),
-        ("(and #t #t #t)", "#t"),
-        ("(or)", "#f"),
-        ("(or #f)", "#f"),
-        ("(or #f #t)", "#t"),
-        ("(or #f #f #t)", "#t"),
-    ];
-
-    for (i, (input, expected)) in test_cases.iter().enumerate() {
-        println!("\nTest {}: {}", i + 1, input);
-
-        match parse(input) {
-            Ok(ast) => {
-                // Expand macros first
-                match macro_expander.expand(&ast) {
-                    Ok(expanded_ast) => {
-                        match compile(&expanded_ast, input.to_string(), vm.current_env()) {
-                            Ok(module) => match vm.execute(&module) {
-                                Ok(result) => {
-                                    let result_str = format!("{}", result);
-                                    if result_str == *expected {
-                                        println!("✓ Expected: {}, Got: {}", expected, result_str);
-                                    } else {
-                                        println!("✗ Expected: {}, Got: {}", expected, result_str);
-                                    }
-                                }
-                                Err(e) => println!("✗ Runtime error: {}", e),
-                            },
-                            Err(e) => println!("✗ Compile error: {}", e),
-                        }
+    // Test cases for ellipsis expansion - REMOVED: Now covered in tests/basic_expressions.scm
+    println!("Ellipsis expansion tests moved to tests/basic_expressions.scm");
+    println!("Run 'cargo test test_all_scheme_files' to see all test results.");
+    
+    // Keep the following as a simple demonstration of the macro expansion process only
+    let demo_case = "(and #t #f)";
+    println!("\nDemo: Macro expansion process for {}", demo_case);
+    
+    match parse(demo_case) {
+        Ok(ast) => {
+            println!("Original AST: {}", ast);
+            match macro_expander.expand(&ast) {
+                Ok(expanded_ast) => {
+                    println!("Expanded AST: {}", expanded_ast);
+                    match compile(&expanded_ast, demo_case.to_string(), vm.current_env()) {
+                        Ok(module) => match vm.execute(&module) {
+                            Ok(result) => {
+                                println!("✓ Demo result: {}", result);
+                            }
+                            Err(e) => println!("✗ Runtime error: {}", e),
+                        },
+                        Err(e) => println!("✗ Compile error: {}", e),
                     }
-                    Err(e) => println!("✗ Macro expansion error: {}", e),
                 }
+                Err(e) => println!("✗ Macro expansion error: {}", e),
             }
-            Err(e) => println!("✗ Parse error: {}", e),
         }
+        Err(e) => println!("✗ Parse error: {}", e),
     }
 
-    println!("\nEllipsis expansion test complete!");
+    println!("\nFor comprehensive ellipsis expansion testing, see tests/basic_expressions.scm");
 }

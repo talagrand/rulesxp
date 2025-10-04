@@ -12,7 +12,8 @@ fn main() {
     println!("Skipping standard prelude due to parsing issues, testing direct CPS...");
 
     // Test: Direct CPS macro usage without problematic prelude
-    let test_code = "(define (identity x) x) (define test-expr (+ 1 2)) test-expr";
+    // REMOVED: Basic function definition tests now covered in tests/function_definitions.scm
+    let test_code = "(display \"CPS parsing demonstration: \") (+ 5 5)";
 
     // Parse without macro prelude - just test basic functionality
     match parse_multiple(test_code) {

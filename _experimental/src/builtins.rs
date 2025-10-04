@@ -19,15 +19,19 @@
 // - Uses Scheme prelude system to implement many procedures in Scheme itself
 // - Only core primitives that require Rust implementation are defined here
 
-/// Comprehensive Scheme prelude - procedures implemented in Scheme itself
-/// These will be compiled and loaded before user code
-/// Now loaded from external .scm file for better maintainability
-pub const SCHEME_PRELUDE: &str = include_str!("../prelude/functions.scm");
+/// Combined function prelude including both standard functions and CPS functions
+/// This provides all functions needed for both normal Scheme and CPS operations
+const COMBINED_FUNCTION_PRELUDE: &str = concat!(
+    include_str!("../prelude/functions.scm"),
+    "\n",
+    include_str!("../prelude/cps_functions.scm")
+);
 
 /// Inject the Scheme prelude before user code
-/// This allows us to implement many built-ins in Scheme itself
+/// This includes both standard functions and CPS functions
+/// CPS macros are loaded automatically by MacroExpander::load_prelude()
 pub fn inject_prelude(user_code: &str) -> String {
-    format!("{}\n{}", SCHEME_PRELUDE, user_code)
+    format!("{}\n{}", COMBINED_FUNCTION_PRELUDE, user_code)
 }
 
 /// Built-in procedures that must be implemented in Rust

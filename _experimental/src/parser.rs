@@ -58,13 +58,17 @@ pub fn parse(input: &str) -> Result<Value, ParseError> {
 
 /// Parse multiple Scheme expressions from input, ignoring comments and empty lines
 /// Returns a vector of parsed expressions
+/// Preprocesses input to remove all comments before parsing
 pub fn parse_multiple(input: &str) -> Result<Vec<Value>, ParseError> {
+    // Preprocess to remove all comments comprehensively
+    let preprocessed = remove_all_comments(input);
+
     let mut expressions = Vec::new();
-    let mut remaining = input;
+    let mut remaining = preprocessed.as_str();
 
     while !remaining.trim().is_empty() {
-        // Skip whitespace and comments
-        remaining = skip_whitespace_and_comments(remaining);
+        // Skip remaining whitespace (comments already removed)
+        remaining = remaining.trim_start();
 
         if remaining.is_empty() {
             break;
@@ -83,35 +87,45 @@ pub fn parse_multiple(input: &str) -> Result<Vec<Value>, ParseError> {
     Ok(expressions)
 }
 
-/// Skip whitespace and comments (lines starting with ;)
-fn skip_whitespace_and_comments(input: &str) -> &str {
-    let mut remaining = input;
+/// Remove all comments from input, handling:
+/// - Line comments starting with `;`
+/// - Comments at end of lines
+/// - Comments inside multi-line expressions
+/// - Preserves string literals (comments inside strings are kept)
+fn remove_all_comments(input: &str) -> String {
+    let mut result = String::new();
+    let mut chars = input.chars().peekable();
+    let mut in_string = false;
+    let mut in_string_escape = false;
 
-    loop {
-        // Skip initial whitespace
-        remaining = remaining.trim_start();
-
-        if remaining.is_empty() {
-            break;
-        }
-
-        // Check if this line is a comment
-        if remaining.starts_with(';') {
-            // Skip to end of line
-            if let Some(newline_pos) = remaining.find('\n') {
-                remaining = &remaining[newline_pos + 1..];
-            } else {
-                // Comment goes to end of input
-                remaining = "";
-                break;
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if !in_string_escape => {
+                in_string = !in_string;
+                result.push(ch);
             }
-        } else {
-            // Not a comment line, we're done skipping
-            break;
+            '\\' if in_string => {
+                in_string_escape = !in_string_escape;
+                result.push(ch);
+            }
+            ';' if !in_string => {
+                // Start of comment - skip until end of line
+                for next_ch in chars.by_ref() {
+                    if next_ch == '\n' {
+                        result.push('\n'); // Preserve newline for line structure
+                        break;
+                    }
+                    // Skip comment characters
+                }
+            }
+            _ => {
+                in_string_escape = false;
+                result.push(ch);
+            }
         }
     }
 
-    remaining
+    result
 }
 
 /// Parse a Scheme expression (the main entry point)

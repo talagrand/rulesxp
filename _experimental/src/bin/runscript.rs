@@ -210,7 +210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let processed_ast = ProcessedAST::compile(&combined_program)?;
             println!("ProcessedAST compiled successfully");
             println!();
-            
+
             println!("=== PROCESSED AST DEBUG DUMP ===");
             println!("{}", processed_ast.debug_dump());
             println!();
@@ -267,7 +267,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let processed_ast = ProcessedAST::compile(&combined_program)?;
             println!("ProcessedAST compiled successfully");
             println!();
-            
+
             println!("=== PROCESSED AST DEBUG DUMP ===");
             println!("{}", processed_ast.debug_dump());
             println!();

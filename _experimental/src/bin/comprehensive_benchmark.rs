@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== COMPREHENSIVE EVALUATION BENCHMARK ===");
 
     // Global iteration count for all benchmarks
-    const ITERATIONS: usize = 100;
+    const ITERATIONS: usize = 1000;
     println!("Running {} iterations for all operations", ITERATIONS);
     println!();
 
@@ -213,8 +213,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 4. ProcessedAST Compilation + Direct Evaluation Benchmark
     println!("=== 4. PROCESSED AST DIRECT EVALUATION ===");
 
-
-
     let mut super_direct_compile_times = Vec::new();
     let mut super_direct_exec_times = Vec::new();
     let mut super_direct_result = ProcessedValue::Integer(0);
@@ -240,8 +238,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let processed_compile_avg =
-        super_direct_compile_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
+    let processed_compile_avg = super_direct_compile_times
+        .iter()
+        .sum::<std::time::Duration>()
+        / ITERATIONS as u32;
     let processed_compile_min = super_direct_compile_times.iter().min().unwrap();
     let processed_compile_max = super_direct_compile_times.iter().max().unwrap();
     println!(
@@ -289,7 +289,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let super_stack_avg = super_stack_exec_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
+    let super_stack_avg =
+        super_stack_exec_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
     let super_stack_min = super_stack_exec_times.iter().min().unwrap();
     let super_stack_max = super_stack_exec_times.iter().max().unwrap();
     println!(

@@ -333,13 +333,23 @@ impl ProcessedAST {
             }
             ProcessedValue::ResolvedBuiltin { name, arity, .. } => {
                 let name_str = self.interner.resolve(*name).unwrap_or("<unresolved>");
-                format!("{}ResolvedBuiltin({}, arity: {:?})", prefix, name_str, arity)
+                format!(
+                    "{}ResolvedBuiltin({}, arity: {:?})",
+                    prefix, name_str, arity
+                )
             }
-            ProcessedValue::Procedure { params, body, variadic, .. } => {
+            ProcessedValue::Procedure {
+                params,
+                body,
+                variadic,
+                ..
+            } => {
                 let mut result = format!("{}Procedure[\n", prefix);
                 result.push_str(&format!("{}  params: [", prefix));
                 for (i, param) in params.iter().enumerate() {
-                    if i > 0 { result.push_str(", "); }
+                    if i > 0 {
+                        result.push_str(", ");
+                    }
                     let param_str = self.interner.resolve(*param).unwrap_or("<unresolved>");
                     result.push_str(param_str);
                 }
@@ -350,7 +360,11 @@ impl ProcessedAST {
                 result.push_str(&format!("{}]", prefix));
                 result
             }
-            ProcessedValue::If { test, then_branch, else_branch } => {
+            ProcessedValue::If {
+                test,
+                then_branch,
+                else_branch,
+            } => {
                 let mut result = format!("{}If[\n", prefix);
                 result.push_str(&format!("{}  test:\n", prefix));
                 result.push_str(&self.dump_value(test, indent + 2));
@@ -373,11 +387,17 @@ impl ProcessedAST {
                 result.push_str(&self.dump_value(value, indent + 2));
                 result
             }
-            ProcessedValue::Lambda { params, body, variadic } => {
+            ProcessedValue::Lambda {
+                params,
+                body,
+                variadic,
+            } => {
                 let mut result = format!("{}Lambda[\n", prefix);
                 result.push_str(&format!("{}  params: [", prefix));
                 for (i, param) in params.iter().enumerate() {
-                    if i > 0 { result.push_str(", "); }
+                    if i > 0 {
+                        result.push_str(", ");
+                    }
                     let param_str = self.interner.resolve(*param).unwrap_or("<unresolved>");
                     result.push_str(param_str);
                 }
@@ -804,15 +824,19 @@ mod tests {
 
         let ast = ProcessedAST::compile(&lambda_expr).unwrap();
         println!("Lambda AST dump:\n{}", ast.debug_dump());
-        
+
         match ast.root() {
-            ProcessedValue::Lambda { params, body, variadic } => {
+            ProcessedValue::Lambda {
+                params,
+                body,
+                variadic,
+            } => {
                 assert_eq!(params.len(), 1);
                 assert!(!variadic);
-                
+
                 let param_name = ast.resolve_symbol(params[0]).unwrap();
                 assert_eq!(param_name, "x");
-                
+
                 // Body should be a list: (+ x 1)
                 match body {
                     ProcessedValue::List(items) => {
@@ -849,25 +873,32 @@ mod tests {
 
         let ast = ProcessedAST::compile(&invoke_expr).unwrap();
         println!("Lambda invocation AST dump:\n{}", ast.debug_dump());
-        
+
         match ast.root() {
             ProcessedValue::List(items) => {
                 assert_eq!(items.len(), 2);
-                
+
                 // First item should be the lambda
                 match &items[0] {
-                    ProcessedValue::Lambda { params, body, variadic } => {
+                    ProcessedValue::Lambda {
+                        params,
+                        body,
+                        variadic,
+                    } => {
                         assert_eq!(params.len(), 1);
                         assert!(!variadic);
-                        
+
                         let param_name = ast.resolve_symbol(params[0]).unwrap();
                         assert_eq!(param_name, "x");
-                        
+
                         // Verify body structure
                         match body {
                             ProcessedValue::List(body_items) => {
                                 assert_eq!(body_items.len(), 3);
-                                assert!(matches!(body_items[0], ProcessedValue::ResolvedBuiltin { .. }));
+                                assert!(matches!(
+                                    body_items[0],
+                                    ProcessedValue::ResolvedBuiltin { .. }
+                                ));
                                 assert!(matches!(body_items[1], ProcessedValue::Symbol(_)));
                                 assert!(matches!(body_items[2], ProcessedValue::Integer(1)));
                             }
@@ -876,7 +907,7 @@ mod tests {
                     }
                     _ => panic!("Expected first item to be Lambda, got: {:?}", &items[0]),
                 }
-                
+
                 // Second item should be the argument
                 assert!(matches!(items[1], ProcessedValue::Integer(5)));
             }

@@ -53,6 +53,7 @@ use crate::processed_ast::{ProcessedAST, StringSymbol};
 use crate::processed_env::ProcessedEnvironment;
 use crate::super_builtins::{ProcessedEnvironmentRef, ProcessedValue};
 use crate::vm::RuntimeError;
+use smallvec::SmallVec;
 use std::rc::Rc;
 use string_interner::Symbol;
 
@@ -70,33 +71,29 @@ pub enum EvaluationMode {
 enum SuperEvalFrame<'ast> {
     /// Evaluate an expression and push result
     Evaluate(ProcessedValue<'ast>),
-    /// Apply a function with given arguments (function first, then args)
-    Apply {
-        function: ProcessedValue<'ast>,
-        args: Vec<ProcessedValue<'ast>>,
-    },
-    /// Continue with if evaluation (test_result, then_expr, else_expr)
+    /// Apply a function with given arguments - function comes from evaluation result
+    Apply { args: SmallVec<[ProcessedValue<'ast>; 4]> },
+    /// Continue with if evaluation (then_expr, else_expr) - test result is in evaluation result
     IfContinue {
-        test_result: ProcessedValue<'ast>,
         then_expr: ProcessedValue<'ast>,
         else_expr: Option<ProcessedValue<'ast>>,
     },
-    /// Continue with begin evaluation (expressions left to evaluate, last_result)
+    /// Continue with begin evaluation using the original Cow and current index
     BeginContinue {
-        remaining: Vec<ProcessedValue<'ast>>,
-        last_result: ProcessedValue<'ast>,
+        expressions: std::borrow::Cow<'ast, [ProcessedValue<'ast>]>,
+        current_index: usize,
     },
-    /// Function argument evaluation (function, evaluated_args, remaining_args, original_env)
+    /// Function argument evaluation - most function calls have few arguments
     ArgEval {
         function: ProcessedValue<'ast>,
-        evaluated: Vec<ProcessedValue<'ast>>,
-        remaining: Vec<ProcessedValue<'ast>>,
+        evaluated: SmallVec<[ProcessedValue<'ast>; 4]>,
+        remaining: SmallVec<[ProcessedValue<'ast>; 4]>,
         original_env: ProcessedEnvironment<'ast>,
     },
-    /// Return from function call with new environment
-    ReturnWith {
-        result: ProcessedValue<'ast>,
-        restore_env: ProcessedEnvironment<'ast>,
+    /// Store define result after value evaluation completes
+    DefineStore {
+        name: StringSymbol,
+        original_env: ProcessedEnvironment<'ast>,
     },
 }
 
@@ -108,6 +105,9 @@ pub struct SuperVM {
     mode: EvaluationMode,
     /// Evaluation statistics for benchmarking
     stats: EvaluationStats,
+    /// Current environment for mutable evaluation (like old VM)
+    /// Uses Option to allow taking/replacing during evaluation
+    current_env: Option<Rc<ProcessedEnvironment<'static>>>,
 }
 
 /// Evaluation statistics for performance analysis
@@ -132,6 +132,7 @@ impl SuperVM {
             ast,
             mode,
             stats: EvaluationStats::default(),
+            current_env: None,
         }
     }
 
@@ -155,15 +156,19 @@ impl SuperVM {
         self.stats = EvaluationStats::default();
     }
 
-    /// Evaluate the root expression with an initial environment
-    /// **UNSAFE:** Root expression has 'static lifetime from ProcessedAST arena transmute
+    /// Evaluate the root expression with hybrid mutable/functional approach
     pub fn evaluate<'ast>(
         &mut self,
         env: ProcessedEnvironment<'ast>,
     ) -> Result<(ProcessedValue<'ast>, ProcessedEnvironment<'ast>), RuntimeError> {
+        // Store environment for define operations (transmute to 'static for storage)
+        let static_env: ProcessedEnvironment<'static> = unsafe { std::mem::transmute(env.clone()) };
+        self.current_env = Some(Rc::new(static_env));
+
         // **UNSAFE:** Transmute 'static to 'ast - this is safe because the arena
         // in ProcessedAST lives for the entire SuperVM lifetime which encompasses 'ast
         let root_expr: ProcessedValue<'ast> = unsafe { std::mem::transmute(self.ast.root.clone()) };
+
         match self.mode {
             EvaluationMode::Direct => self.evaluate_direct(&root_expr, env),
             EvaluationMode::Stack => self.evaluate_stack(&root_expr, env),
@@ -219,23 +224,20 @@ impl SuperVM {
                     let func = &elements[0];
                     let args = &elements[1..];
 
-                    // Evaluate function 
-                    let (func_value, _env1) = self.evaluate_direct(func, env.clone())?;
+                    // Evaluate function - this may extend environment but we use the result
+                    let (func_value, eval_env) = self.evaluate_direct(func, env)?;
 
-                    // OPTIMIZATION: Evaluate arguments in parallel conceptually -
-                    // All arguments are evaluated in the SAME original environment.
-                    // We don't thread environment changes between argument evaluations
-                    // since arguments should not affect each other's evaluation context.
-                    let mut arg_values = Vec::new();
+                    // Arguments are evaluated in parallel conceptual model (each uses original env)
+                    // Use SmallVec but pass as slice to apply_function for zero-copy benefit
+                    let mut arg_values: SmallVec<[ProcessedValue<'ast>; 4]> = SmallVec::new();
                     for arg in args {
-                        // Each argument uses the original environment, ignoring env changes
-                        // from previous argument evaluations (correct Scheme semantics)
-                        let (arg_value, _arg_env) = self.evaluate_direct(arg, env.clone())?;
+                        // Use eval_env instead of original env to maintain consistency
+                        let (arg_value, _) = self.evaluate_direct(arg, eval_env.clone())?;
                         arg_values.push(arg_value);
                     }
 
-                    // Apply function with original environment
-                    self.apply_function(func_value, arg_values, env)
+                    // Apply function with the environment from function evaluation (slice-based)
+                    self.apply_function_direct(func_value, &arg_values, eval_env)
                 }
             }
             ProcessedValue::Procedure { .. } => Ok((expr.clone(), env)),
@@ -379,17 +381,15 @@ impl SuperVM {
                                 // Set up argument evaluation chain
                                 if elements.len() == 1 {
                                     // Just the function, no args - push Apply frame then evaluate function
-                                    stack.push(SuperEvalFrame::Apply {
-                                        function: ProcessedValue::Unspecified, // Will be filled by evaluation
-                                        args: Vec::new(),
-                                    });
+                                    stack.push(SuperEvalFrame::Apply { args: SmallVec::new() });
                                     stack.push(SuperEvalFrame::Evaluate(elements[0].clone()));
                                 } else {
                                     // Function plus arguments - set up ArgEval chain
+                                    let remaining: SmallVec<[ProcessedValue<'ast>; 4]> = elements[1..].iter().cloned().collect();
                                     stack.push(SuperEvalFrame::ArgEval {
                                         function: ProcessedValue::Unspecified, // Will be filled by evaluation
-                                        evaluated: Vec::new(),
-                                        remaining: elements[1..].to_vec(),
+                                        evaluated: SmallVec::new(),
+                                        remaining,
                                         original_env: current_env.clone(),
                                     });
                                     stack.push(SuperEvalFrame::Evaluate(elements[0].clone()));
@@ -404,7 +404,6 @@ impl SuperVM {
                         } => {
                             // If form: push continuation frame and evaluate test
                             stack.push(SuperEvalFrame::IfContinue {
-                                test_result: ProcessedValue::Unspecified, // Will be filled later
                                 then_expr: (*then_branch).clone(),
                                 else_expr: else_branch.map(|e| (*e).clone()),
                             });
@@ -412,14 +411,14 @@ impl SuperVM {
                             continue;
                         }
                         ProcessedValue::Define { name, value } => {
-                            // Define form: evaluate value directly then extend environment
-                            let (eval_value, new_env) = self.evaluate_direct(value, current_env)?;
-
-                            // Direct symbol-based environment storage - no string conversion needed
-                            current_env = self.extend_environment_symbol(new_env, name, eval_value);
-
-                            // Define returns unspecified in R7RS
-                            result = ProcessedValue::Unspecified;
+                            // Define form: evaluate value using stack then extend environment  
+                            // Push a DefineStore frame to handle the result, then evaluate the value
+                            stack.push(SuperEvalFrame::DefineStore {
+                                name,
+                                original_env: current_env.clone(),
+                            });
+                            stack.push(SuperEvalFrame::Evaluate((*value).clone()));
+                            continue;
                         }
                         ProcessedValue::Lambda {
                             params,
@@ -450,45 +449,32 @@ impl SuperVM {
                                 stack.push(SuperEvalFrame::Evaluate(expressions[0].clone()));
                                 continue;
                             } else {
-                                // Multiple expressions - use BeginContinue frame
-                                // First, reverse the order so we evaluate in correct order
-                                let mut remaining_exprs = Vec::new();
-                                for expr in expressions.iter().rev() {
-                                    remaining_exprs.push(expr.clone());
-                                }
+                                // Multiple expressions - use BeginContinue frame with slice
+                                // Push BeginContinue frame to continue with remaining expressions
+                                stack.push(SuperEvalFrame::BeginContinue {
+                                    expressions: expressions.clone(),
+                                    current_index: 1, // Start from index 1 after evaluating first
+                                });
 
-                                // Pop the first expression to evaluate now
-                                let first_expr = remaining_exprs.pop().unwrap();
-
-                                // Push BeginContinue frame for the rest
-                                if !remaining_exprs.is_empty() {
-                                    stack.push(SuperEvalFrame::BeginContinue {
-                                        remaining: remaining_exprs,
-                                        last_result: ProcessedValue::Unspecified,
-                                    });
-                                }
-
-                                // Evaluate the first expression
-                                stack.push(SuperEvalFrame::Evaluate(first_expr));
+                                // Evaluate the first expression (index 0)
+                                stack.push(SuperEvalFrame::Evaluate(expressions[0].clone()));
                                 continue;
                             }
                         }
                     }
                 }
 
-                // **NEEDS-IMPLEMENTATION:** Other stack frame types
-                SuperEvalFrame::Apply { function: _, args } => {
+                SuperEvalFrame::Apply { args } => {
                     // We just evaluated something - it should be our function
                     let func_value = result;
 
-                    // Apply the function with the collected arguments
+                    // Apply the function with the collected arguments (slice-based)
                     let (apply_result, new_env) =
-                        self.apply_function(func_value, args, current_env)?;
+                        self.apply_function_stack(func_value, &args, current_env)?;
                     result = apply_result;
                     current_env = new_env;
                 }
                 SuperEvalFrame::IfContinue {
-                    test_result: _,
                     then_expr,
                     else_expr,
                 } => {
@@ -509,34 +495,33 @@ impl SuperVM {
                     }
                 }
                 SuperEvalFrame::BeginContinue {
-                    mut remaining,
-                    last_result: _,
+                    expressions,
+                    current_index,
                 } => {
                     // Continue evaluating remaining expressions in begin
-                    if remaining.is_empty() {
+                    if current_index >= expressions.len() {
                         // All expressions evaluated, result is already set
-                    } else if remaining.len() == 1 {
+                    } else if current_index == expressions.len() - 1 {
                         // Last expression - just evaluate it
-                        let last_expr = remaining.pop().unwrap();
-                        stack.push(SuperEvalFrame::Evaluate(last_expr));
+                        stack.push(SuperEvalFrame::Evaluate(expressions[current_index].clone()));
                     } else {
-                        // More expressions to evaluate
-                        let next_expr = remaining.pop().unwrap();
+                        // More expressions to evaluate after this one
+                        let current_expr = expressions[current_index].clone();
 
                         // Push another BeginContinue for the remaining expressions
                         stack.push(SuperEvalFrame::BeginContinue {
-                            remaining,
-                            last_result: result.clone(),
+                            expressions,
+                            current_index: current_index + 1,
                         });
 
-                        // Evaluate the next expression
-                        stack.push(SuperEvalFrame::Evaluate(next_expr));
+                        // Evaluate the current expression
+                        stack.push(SuperEvalFrame::Evaluate(current_expr));
                     }
                 }
                 SuperEvalFrame::ArgEval {
                     function,
                     mut evaluated,
-                    remaining,
+                    mut remaining,
                     original_env,
                 } => {
                     // We just evaluated something - add it to evaluated args
@@ -555,28 +540,27 @@ impl SuperVM {
                                 }
                                 let func = evaluated.remove(0);
                                 let (apply_result, new_env) =
-                                    self.apply_function(func, evaluated, current_env)?;
+                                    self.apply_function_stack(func, &evaluated, current_env)?;
                                 result = apply_result;
                                 current_env = new_env;
                             }
                             _ => {
                                 // Function already set, apply with all evaluated args
                                 let (apply_result, new_env) =
-                                    self.apply_function(function, evaluated, current_env)?;
+                                    self.apply_function_stack(function, &evaluated, current_env)?;
                                 result = apply_result;
                                 current_env = new_env;
                             }
                         }
                     } else {
-                        // More arguments to evaluate
-                        let mut remaining_clone = remaining;
-                        let next_arg = remaining_clone.remove(0);
+                        // More arguments to evaluate - use FIFO order (remove from front)
+                        let next_arg = remaining.remove(0);
 
-                        // Push continuation frame for next argument
+                        // Push continuation frame for remaining arguments
                         stack.push(SuperEvalFrame::ArgEval {
                             function,
                             evaluated,
-                            remaining: remaining_clone,
+                            remaining,
                             original_env: original_env.clone(),
                         });
 
@@ -588,12 +572,15 @@ impl SuperVM {
                         continue;
                     }
                 }
-                SuperEvalFrame::ReturnWith {
-                    result: ret_result,
-                    restore_env,
-                } => {
-                    result = ret_result;
-                    current_env = restore_env;
+                SuperEvalFrame::DefineStore { name, original_env } => {
+                    // Define form: value has been evaluated, now store it
+                    let eval_value = result;
+                    
+                    // Extend environment with the new binding
+                    current_env = self.extend_environment_symbol(original_env, name, eval_value);
+                    
+                    // Define returns unspecified in R7RS
+                    result = ProcessedValue::Unspecified;
                 }
             }
         }
@@ -609,15 +596,15 @@ impl SuperVM {
         value: ProcessedValue<'ast>,
     ) -> ProcessedEnvironment<'ast> {
         self.stats.environments_created += 1;
-        let mut new_env = ProcessedEnvironment::with_parent(Rc::new(current_env));
+        let new_env = ProcessedEnvironment::with_parent(Rc::new(current_env));
         new_env.define(symbol, value);
         new_env
     }
-    /// Applies a function to arguments
-    pub fn apply_function<'ast>(
+    /// Applies a function to arguments using direct evaluation (slice-based for zero-copy)
+    pub fn apply_function_direct<'ast>(
         &mut self,
         func: ProcessedValue<'ast>,
-        args: Vec<ProcessedValue<'ast>>,
+        args: &[ProcessedValue<'ast>],
         env: ProcessedEnvironment<'ast>,
     ) -> Result<(ProcessedValue<'ast>, ProcessedEnvironment<'ast>), RuntimeError> {
         match func {
@@ -658,7 +645,7 @@ impl SuperVM {
                 }
 
                 // Create new environment extending closure's captured environment
-                let mut call_env = ProcessedEnvironment::with_parent(closure_env.env.clone());
+                let call_env = ProcessedEnvironment::with_parent(closure_env.env.clone());
 
                 // Bind regular parameters to arguments
                 let regular_param_count = if variadic {
@@ -684,6 +671,80 @@ impl SuperVM {
             _ => Err(RuntimeError::new("Type error: not a procedure".to_string())),
         }
     }
+
+    /// Applies a function to arguments using stack-based evaluation (slice-based for zero-copy)
+    pub fn apply_function_stack<'ast>(
+        &mut self,
+        func: ProcessedValue<'ast>,
+        args: &[ProcessedValue<'ast>],
+        env: ProcessedEnvironment<'ast>,
+    ) -> Result<(ProcessedValue<'ast>, ProcessedEnvironment<'ast>), RuntimeError> {
+        match func {
+            ProcessedValue::ResolvedBuiltin {
+                name: _,
+                arity: _,
+                func,
+            } => {
+                // Apply builtin function directly using the function pointer
+                match func(&args) {
+                    Ok(result) => Ok((result, env)),
+                    Err(e) => Err(e),
+                }
+            }
+            ProcessedValue::Procedure {
+                params,
+                body,
+                env: closure_env,
+                variadic,
+            } => {
+                // Apply user-defined procedure (lambda)
+
+                // Check argument count (exact match for non-variadic functions)
+                if !variadic && args.len() != params.len() {
+                    return Err(RuntimeError::new(format!(
+                        "Arity mismatch: expected {} arguments, got {}",
+                        params.len(),
+                        args.len()
+                    )));
+                }
+
+                if variadic && args.len() < params.len() - 1 {
+                    return Err(RuntimeError::new(format!(
+                        "Arity mismatch: expected at least {} arguments, got {}",
+                        params.len() - 1,
+                        args.len()
+                    )));
+                }
+
+                // Create new environment extending closure's captured environment
+                let call_env = ProcessedEnvironment::with_parent(closure_env.env.clone());
+
+                // Bind regular parameters to arguments
+                let regular_param_count = if variadic {
+                    params.len() - 1
+                } else {
+                    params.len()
+                };
+
+                for (i, param) in params.iter().take(regular_param_count).enumerate() {
+                    call_env.define(*param, args[i].clone());
+                }
+
+                // **R7RS RESTRICTED:** Variadic parameters not yet supported - would need list construction
+                if variadic {
+                    return Err(RuntimeError::new(
+                        "Variadic functions not yet supported".to_string(),
+                    ));
+                }
+
+                // Evaluate body using stack-based evaluation
+                self.evaluate_stack(body, call_env)
+            }
+            _ => Err(RuntimeError::new("Type error: not a procedure".to_string())),
+        }
+    }
+
+
 }
 
 #[cfg(test)]

@@ -1,19 +1,21 @@
-// ProcessedEnvironment - Environment for ProcessedValues with arena-tied lifetimes
+// ProcessedEnvironment - Environment for ProcessedValue with arena-tied lifetimes
 // This environment stores ProcessedValues directly using arena references
 // to maintain string interning benefits and eliminate unsafe lifetime conversions.
 
 use crate::processed_ast::StringSymbol;
 use crate::super_builtins::ProcessedValue;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use string_interner::{Symbol, StringInterner, DefaultBackend};
+use string_interner::{DefaultBackend, StringInterner, Symbol};
 
 /// Environment that stores ProcessedValues with arena-tied lifetimes
 /// All stored values reference data in the ProcessedAST arena
+/// Uses RefCell for interior mutability like the old Environment
 #[derive(Debug, Clone)]
 pub struct ProcessedEnvironment<'ast> {
     /// Variable bindings - maps interned symbols to arena-referenced ProcessedValues
-    bindings: HashMap<StringSymbol, ProcessedValue<'ast>>,
+    bindings: RefCell<HashMap<StringSymbol, ProcessedValue<'ast>>>,
     /// Parent environment for lexical scoping
     parent: Option<Rc<ProcessedEnvironment<'ast>>>,
 }
@@ -22,7 +24,7 @@ impl<'ast> ProcessedEnvironment<'ast> {
     /// Create a new empty environment
     pub fn new() -> Self {
         ProcessedEnvironment {
-            bindings: HashMap::new(),
+            bindings: RefCell::new(HashMap::new()),
             parent: None,
         }
     }
@@ -30,20 +32,29 @@ impl<'ast> ProcessedEnvironment<'ast> {
     /// Create a new environment with a parent
     pub fn with_parent(parent: Rc<ProcessedEnvironment<'ast>>) -> Self {
         ProcessedEnvironment {
-            bindings: HashMap::new(),
+            bindings: RefCell::new(HashMap::new()),
             parent: Some(parent),
         }
     }
 
-    /// Define a variable using StringSymbol
-    pub fn define(&mut self, symbol: StringSymbol, value: ProcessedValue<'ast>) {
-        self.bindings.insert(symbol, value);
+    /// Create a new environment with standard library prelude
+    pub fn with_prelude(
+        _arena: &'ast bumpalo::Bump,
+        _interner: &StringInterner<DefaultBackend>,
+    ) -> Self {
+        // For now, just create empty environment - builtins are resolved at compile time
+        Self::new()
+    }
+
+    /// Define a variable using StringSymbol (mutates in place like old Environment)
+    pub fn define(&self, symbol: StringSymbol, value: ProcessedValue<'ast>) {
+        self.bindings.borrow_mut().insert(symbol, value);
     }
 
     /// Look up a variable by StringSymbol
-    pub fn lookup(&self, symbol: StringSymbol) -> Option<&ProcessedValue<'ast>> {
-        if let Some(value) = self.bindings.get(&symbol) {
-            Some(value)
+    pub fn lookup(&self, symbol: StringSymbol) -> Option<ProcessedValue<'ast>> {
+        if let Some(value) = self.bindings.borrow().get(&symbol) {
+            Some(value.clone())
         } else if let Some(parent) = &self.parent {
             parent.lookup(symbol)
         } else {
@@ -53,7 +64,7 @@ impl<'ast> ProcessedEnvironment<'ast> {
 
     /// Get number of bindings in this environment (not including parent)
     pub fn binding_count(&self) -> usize {
-        self.bindings.len()
+        self.bindings.borrow().len()
     }
 
     /// Check if this environment has any parent
@@ -63,12 +74,8 @@ impl<'ast> ProcessedEnvironment<'ast> {
 
     /// Get the number of bindings in the current environment (not including parent)
     pub fn local_len(&self) -> usize {
-        self.bindings.len()
+        self.bindings.borrow().len()
     }
-
-
-
-
 }
 
 impl<'ast> Default for ProcessedEnvironment<'ast> {
@@ -103,7 +110,7 @@ mod tests {
         assert!(result.is_some());
 
         if let Some(ProcessedValue::Integer(i)) = result {
-            assert_eq!(*i, 42);
+            assert_eq!(i, 42);
         } else {
             panic!("Expected integer value");
         }
@@ -161,7 +168,7 @@ mod tests {
 
         // Child should see its own value, not parent's
         if let Some(ProcessedValue::Integer(i)) = child_env.lookup(shared_var) {
-            assert_eq!(*i, 200);
+            assert_eq!(i, 200);
         } else {
             panic!("Expected child's shadowed value");
         }

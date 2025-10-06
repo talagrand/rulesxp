@@ -5,7 +5,7 @@ use samplescheme::{
     processed_ast::ProcessedAST,
     processed_env::ProcessedEnvironment,
     super_builtins::ProcessedValue,
-    super_vm::{EvaluationMode, SuperVM},
+    super_vm::{SuperDirectVM, SuperStackVM},
     value::{Environment, Value},
     vm::VM,
 };
@@ -226,7 +226,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Time execution separately
         let exec_start = Instant::now();
-        let mut vm = SuperVM::new(compiled_ast, EvaluationMode::Direct);
+        let mut vm = SuperDirectVM::new(compiled_ast);
         let env = ProcessedEnvironment::new();
         let result = vm.evaluate(env)?;
         super_direct_result = result.0;
@@ -277,7 +277,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Time execution separately
         let exec_start = Instant::now();
-        let mut vm = SuperVM::new(compiled_ast, EvaluationMode::Stack);
+        let mut vm = SuperStackVM::new(compiled_ast);
         let env = ProcessedEnvironment::new();
         let result = vm.evaluate(env)?;
         super_stack_result = result.0;

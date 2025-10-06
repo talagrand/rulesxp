@@ -4,7 +4,7 @@ use samplescheme::{
     parser,
     processed_ast::ProcessedAST,
     processed_env::ProcessedEnvironment,
-    super_vm::{EvaluationMode, SuperVM},
+    super_vm::{SuperDirectVM, SuperStackVM},
     value::{Environment, Value},
     vm::VM,
 };
@@ -215,8 +215,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", processed_ast.debug_dump());
             println!();
 
-            // Evaluate with SuperVM in Direct mode
-            let mut vm = SuperVM::new(processed_ast, EvaluationMode::Direct);
+            // Evaluate with SuperDirectVM
+            let mut vm = SuperDirectVM::new(processed_ast);
             let env = ProcessedEnvironment::new();
             let result = vm.evaluate(env)?;
 
@@ -272,8 +272,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", processed_ast.debug_dump());
             println!();
 
-            // Evaluate with SuperVM in Stack mode
-            let mut vm = SuperVM::new(processed_ast, EvaluationMode::Stack);
+            // Evaluate with SuperStackVM
+            let mut vm = SuperStackVM::new(processed_ast);
             let env = ProcessedEnvironment::new();
             let result = vm.evaluate(env)?;
 

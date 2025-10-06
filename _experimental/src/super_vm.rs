@@ -57,14 +57,7 @@ use smallvec::SmallVec;
 use std::rc::Rc;
 use string_interner::Symbol;
 
-/// Evaluation mode for SuperVM
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum EvaluationMode {
-    /// Direct recursive evaluation (fastest for simple expressions)
-    Direct,
-    /// Stack-based evaluation (avoids stack overflow on deep expressions)
-    Stack,
-}
+
 
 /// Stack frame for stack-based evaluation
 #[derive(Debug, Clone)]
@@ -95,14 +88,50 @@ enum SuperEvalFrame<'ast> {
         name: StringSymbol,
         original_env: ProcessedEnvironment<'ast>,
     },
+    /// Handle procedure call setup - binds parameters and prepares body evaluation
+    ProcedureCall {
+        body: ProcessedValue<'ast>,
+        call_env: ProcessedEnvironment<'ast>,
+    },
 }
 
-/// SuperVM - ProcessedAST evaluation engine
-pub struct SuperVM {
-    /// The ProcessedAST being evaluated (SuperVM owns this)
+/// SuperDirectVM - High-Performance Recursive ProcessedAST Evaluator
+/// 
+/// **STACK SAFETY WARNING:** This evaluator uses recursive function calls and can
+/// cause Rust stack overflow on deeply nested expressions. For guaranteed stack
+/// safety, use SuperStackVM instead.
+/// 
+/// **ARCHITECTURE:** Uses direct recursive evaluation where function calls directly
+/// call themselves and other evaluation methods. This provides maximum performance
+/// for expressions that don't exceed the Rust call stack limits.
+/// 
+/// **PERFORMANCE:** Fastest evaluation method - no frame allocation overhead
+/// **STACK SAFETY:** ⚠️  NOT STACK SAFE - Can overflow on deeply nested expressions
+pub struct SuperDirectVM {
+    /// The ProcessedAST being evaluated (SuperDirectVM owns this)
     ast: ProcessedAST,
-    /// Current evaluation mode
-    mode: EvaluationMode,
+    /// Evaluation statistics for benchmarking
+    stats: EvaluationStats,
+    /// Current environment for mutable evaluation (like old VM)
+    /// Uses Option to allow taking/replacing during evaluation
+    current_env: Option<Rc<ProcessedEnvironment<'static>>>,
+}
+
+/// SuperStackVM - Stack-Safe ProcessedAST Evaluator
+/// 
+/// **GUARANTEED STACK SAFETY:** This evaluator cannot cause Rust stack overflow
+/// regardless of expression nesting depth. Uses explicit frame stack to maintain
+/// evaluation state without recursive function calls.
+/// 
+/// **ARCHITECTURE INVARIANT:** This struct and ALL methods it implements must NEVER
+/// make recursive function calls. All control flow must use frame pushing/popping.
+/// Any violation of this invariant breaks the stack safety guarantee.
+/// 
+/// **PERFORMANCE:** Slightly slower than SuperDirectVM due to frame allocation
+/// **STACK SAFETY:** ✅ GUARANTEED STACK SAFE - Cannot overflow regardless of nesting
+pub struct SuperStackVM {
+    /// The ProcessedAST being evaluated (SuperStackVM owns this)
+    ast: ProcessedAST,
     /// Evaluation statistics for benchmarking
     stats: EvaluationStats,
     /// Current environment for mutable evaluation (like old VM)
@@ -125,25 +154,17 @@ pub struct EvaluationStats {
     pub max_stack_depth: usize,
 }
 
-impl SuperVM {
-    /// Create a new SuperVM with the given ProcessedAST
-    pub fn new(ast: ProcessedAST, mode: EvaluationMode) -> Self {
-        SuperVM {
+impl SuperDirectVM {
+    /// Create a new SuperDirectVM with the given ProcessedAST
+    /// 
+    /// **WARNING:** This evaluator can cause Rust stack overflow on deeply recursive code.
+    /// Use SuperStackVM for guaranteed stack safety.
+    pub fn new(ast: ProcessedAST) -> Self {
+        SuperDirectVM {
             ast,
-            mode,
             stats: EvaluationStats::default(),
             current_env: None,
         }
-    }
-
-    /// Get the current evaluation mode
-    pub fn mode(&self) -> EvaluationMode {
-        self.mode
-    }
-
-    /// Set the evaluation mode
-    pub fn set_mode(&mut self, mode: EvaluationMode) {
-        self.mode = mode;
     }
 
     /// Get evaluation statistics
@@ -156,7 +177,11 @@ impl SuperVM {
         self.stats = EvaluationStats::default();
     }
 
-    /// Evaluate the root expression with hybrid mutable/functional approach
+    /// Evaluate the root expression using direct recursive evaluation
+    /// 
+    /// **STACK SAFETY WARNING:** This method uses recursive function calls and can
+    /// cause Rust stack overflow on deeply nested expressions. For guaranteed stack
+    /// safety, use SuperStackVM instead.
     pub fn evaluate<'ast>(
         &mut self,
         env: ProcessedEnvironment<'ast>,
@@ -166,16 +191,19 @@ impl SuperVM {
         self.current_env = Some(Rc::new(static_env));
 
         // **UNSAFE:** Transmute 'static to 'ast - this is safe because the arena
-        // in ProcessedAST lives for the entire SuperVM lifetime which encompasses 'ast
+        // in ProcessedAST lives for the entire SuperDirectVM lifetime which encompasses 'ast
         let root_expr: ProcessedValue<'ast> = unsafe { std::mem::transmute(self.ast.root.clone()) };
 
-        match self.mode {
-            EvaluationMode::Direct => self.evaluate_direct(&root_expr, env),
-            EvaluationMode::Stack => self.evaluate_stack(&root_expr, env),
-        }
+        self.evaluate_direct(&root_expr, env)
     }
 
-    /// Direct recursive evaluation
+    /// Direct recursive evaluation - **WARNING: Can cause stack overflow!**
+    /// 
+    /// **ARCHITECTURE:** Uses recursive function calls that consume Rust call stack.
+    /// This method will directly call itself and other evaluation methods recursively.
+    /// 
+    /// **STACK SAFETY:** ⚠️  NOT STACK SAFE - Can overflow on deeply nested expressions
+    /// **PERFORMANCE:** Fastest evaluation method for shallow recursion
     fn evaluate_direct<'ast>(
         &mut self,
         expr: &ProcessedValue<'ast>,
@@ -320,7 +348,148 @@ impl SuperVM {
         }
     }
 
-    /// Stack-based evaluation (avoids Rust call stack growth)
+
+    /// Applies a function to arguments using direct evaluation (slice-based for zero-copy)
+    /// 
+    /// **STACK SAFETY WARNING:** This method makes recursive calls and can cause stack overflow!
+    pub fn apply_function_direct<'ast>(
+        &mut self,
+        func: ProcessedValue<'ast>,
+        args: &[ProcessedValue<'ast>],
+        env: ProcessedEnvironment<'ast>,
+    ) -> Result<(ProcessedValue<'ast>, ProcessedEnvironment<'ast>), RuntimeError> {
+        match func {
+            ProcessedValue::ResolvedBuiltin {
+                name: _,
+                arity: _,
+                func,
+            } => {
+                // Apply builtin function directly using the function pointer
+                match func(&args) {
+                    Ok(result) => Ok((result, env)),
+                    Err(e) => Err(e),
+                }
+            }
+            ProcessedValue::Procedure {
+                params,
+                body,
+                env: closure_env,
+                variadic,
+            } => {
+                // Apply user-defined procedure (lambda)
+
+                // Check argument count (exact match for non-variadic functions)
+                if !variadic && args.len() != params.len() {
+                    return Err(RuntimeError::new(format!(
+                        "Arity mismatch: expected {} arguments, got {}",
+                        params.len(),
+                        args.len()
+                    )));
+                }
+
+                if variadic && args.len() < params.len() - 1 {
+                    return Err(RuntimeError::new(format!(
+                        "Arity mismatch: expected at least {} arguments, got {}",
+                        params.len() - 1,
+                        args.len()
+                    )));
+                }
+
+                // Create new environment extending closure's captured environment
+                let call_env = ProcessedEnvironment::with_parent(closure_env.env.clone());
+
+                // Bind regular parameters to arguments
+                let regular_param_count = if variadic {
+                    params.len() - 1
+                } else {
+                    params.len()
+                };
+
+                for (i, param) in params.iter().take(regular_param_count).enumerate() {
+                    call_env.define(*param, args[i].clone());
+                }
+
+                // **R7RS RESTRICTED:** Variadic parameters not yet supported - would need list construction
+                if variadic {
+                    return Err(RuntimeError::new(
+                        "Variadic functions not yet supported".to_string(),
+                    ));
+                }
+
+                // **RECURSIVE CALL:** This is why SuperDirectVM can cause stack overflow!
+                self.evaluate_direct(body, call_env)
+            }
+            _ => Err(RuntimeError::new("Type error: not a procedure".to_string())),
+        }
+    }
+
+    /// Create a new environment extending the current one (used for define)
+    fn extend_environment_symbol<'ast>(
+        &mut self,
+        current_env: ProcessedEnvironment<'ast>,
+        symbol: StringSymbol,
+        value: ProcessedValue<'ast>,
+    ) -> ProcessedEnvironment<'ast> {
+        self.stats.environments_created += 1;
+        let new_env = ProcessedEnvironment::with_parent(Rc::new(current_env));
+        new_env.define(symbol, value);
+        new_env
+    }
+}
+
+impl SuperStackVM {
+    /// Create a new SuperStackVM with the given ProcessedAST
+    /// 
+    /// **GUARANTEED STACK SAFETY:** This evaluator cannot cause Rust stack overflow.
+    /// Uses explicit frame stack to maintain evaluation state without recursive calls.
+    pub fn new(ast: ProcessedAST) -> Self {
+        SuperStackVM {
+            ast,
+            stats: EvaluationStats::default(),
+            current_env: None,
+        }
+    }
+
+    /// Get evaluation statistics
+    pub fn stats(&self) -> &EvaluationStats {
+        &self.stats
+    }
+
+    /// Reset evaluation statistics
+    pub fn reset_stats(&mut self) {
+        self.stats = EvaluationStats::default();
+    }
+
+    /// Evaluate the root expression using stack-based evaluation
+    /// 
+    /// **GUARANTEED STACK SAFETY:** This method uses an explicit frame stack and
+    /// cannot cause Rust stack overflow regardless of expression nesting depth.
+    /// 
+    /// **ARCHITECTURE INVARIANT:** This method and all methods it calls must NEVER
+    /// make recursive function calls. All control flow must use frame pushing/popping.
+    pub fn evaluate<'ast>(
+        &mut self,
+        env: ProcessedEnvironment<'ast>,
+    ) -> Result<(ProcessedValue<'ast>, ProcessedEnvironment<'ast>), RuntimeError> {
+        // Store environment for define operations (transmute to 'static for storage)
+        let static_env: ProcessedEnvironment<'static> = unsafe { std::mem::transmute(env.clone()) };
+        self.current_env = Some(Rc::new(static_env));
+
+        // **UNSAFE:** Transmute 'static to 'ast - this is safe because the arena
+        // in ProcessedAST lives for the entire SuperStackVM lifetime which encompasses 'ast
+        let root_expr: ProcessedValue<'ast> = unsafe { std::mem::transmute(self.ast.root.clone()) };
+
+        self.evaluate_stack(&root_expr, env)
+    }
+
+    /// Stack-safe evaluation using explicit frame stack
+    /// 
+    /// **ARCHITECTURE INVARIANT:** This method and all methods it calls must NEVER
+    /// make recursive function calls. All control flow must use frame pushing/popping.
+    /// Any violation of this invariant breaks the stack safety guarantee.
+    /// 
+    /// **GUARANTEED STACK SAFETY:** This method uses an explicit frame stack and
+    /// cannot cause Rust stack overflow regardless of expression nesting depth.
     fn evaluate_stack<'ast>(
         &mut self,
         expr: &ProcessedValue<'ast>,
@@ -362,7 +531,6 @@ impl SuperVM {
                             if let Some(value) = current_env.lookup(sym) {
                                 result = value.clone();
                             } else {
-                                // **TODO:** Investigate builtin environment loading
                                 return Err(RuntimeError::new(format!(
                                     "Unbound variable: symbol_{}",
                                     sym.to_usize()
@@ -466,13 +634,74 @@ impl SuperVM {
 
                 SuperEvalFrame::Apply { args } => {
                     // We just evaluated something - it should be our function
-                    let func_value = result;
+                    let func_value = result.clone();
 
-                    // Apply the function with the collected arguments (slice-based)
-                    let (apply_result, new_env) =
-                        self.apply_function_stack(func_value, &args, current_env)?;
-                    result = apply_result;
-                    current_env = new_env;
+                    // **STACK SAFETY:** Apply function without recursive calls
+                    match func_value {
+                        ProcessedValue::ResolvedBuiltin {
+                            name: _,
+                            arity: _,
+                            func,
+                        } => {
+                            // Apply builtin function directly - no recursion needed
+                            match func(&args) {
+                                Ok(builtin_result) => {
+                                    result = builtin_result;
+                                    // Environment unchanged for builtins
+                                }
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        ProcessedValue::Procedure {
+                            params,
+                            body,
+                            env: closure_env,
+                            variadic,
+                        } => {
+                            // Check argument count (exact match for non-variadic functions)
+                            if !variadic && args.len() != params.len() {
+                                return Err(RuntimeError::new(format!(
+                                    "Arity mismatch: expected {} arguments, got {}",
+                                    params.len(),
+                                    args.len()
+                                )));
+                            }
+
+                            if variadic && args.len() < params.len() - 1 {
+                                return Err(RuntimeError::new(format!(
+                                    "Arity mismatch: expected at least {} arguments, got {}",
+                                    params.len() - 1,
+                                    args.len()
+                                )));
+                            }
+
+                            // Create new environment extending closure's captured environment
+                            let call_env = ProcessedEnvironment::with_parent(closure_env.env.clone());
+
+                            // Bind regular parameters to arguments
+                            let regular_param_count = if variadic {
+                                params.len() - 1
+                            } else {
+                                params.len()
+                            };
+
+                            for (i, param) in params.iter().take(regular_param_count).enumerate() {
+                                call_env.define(*param, args[i].clone());
+                            }
+
+                            // **R7RS RESTRICTED:** Variadic parameters not yet supported - would need list construction
+                            if variadic {
+                                return Err(RuntimeError::new(
+                                    "Variadic functions not yet supported".to_string(),
+                                ));
+                            }
+
+                            // **STACK SAFETY:** Push ProcedureCall frame instead of recursive call
+                            stack.push(SuperEvalFrame::ProcedureCall { body: body.clone(), call_env });
+                            continue;
+                        }
+                        _ => return Err(RuntimeError::new("Type error: not a procedure".to_string())),
+                    }
                 }
                 SuperEvalFrame::IfContinue {
                     then_expr,
@@ -539,17 +768,141 @@ impl SuperVM {
                                     ));
                                 }
                                 let func = evaluated.remove(0);
-                                let (apply_result, new_env) =
-                                    self.apply_function_stack(func, &evaluated, current_env)?;
-                                result = apply_result;
-                                current_env = new_env;
+                                
+                                // **STACK SAFETY:** Apply function without recursive calls
+                                match func {
+                                    ProcessedValue::ResolvedBuiltin {
+                                        name: _,
+                                        arity: _,
+                                        func,
+                                    } => {
+                                        // Apply builtin function directly - no recursion needed
+                                        match func(&evaluated) {
+                                            Ok(builtin_result) => {
+                                                result = builtin_result;
+                                                // Environment unchanged for builtins
+                                            }
+                                            Err(e) => return Err(e),
+                                        }
+                                    }
+                                    ProcessedValue::Procedure {
+                                        params,
+                                        body,
+                                        env: closure_env,
+                                        variadic,
+                                    } => {
+                                        // Check argument count (exact match for non-variadic functions)
+                                        if !variadic && evaluated.len() != params.len() {
+                                            return Err(RuntimeError::new(format!(
+                                                "Arity mismatch: expected {} arguments, got {}",
+                                                params.len(),
+                                                evaluated.len()
+                                            )));
+                                        }
+
+                                        if variadic && evaluated.len() < params.len() - 1 {
+                                            return Err(RuntimeError::new(format!(
+                                                "Arity mismatch: expected at least {} arguments, got {}",
+                                                params.len() - 1,
+                                                evaluated.len()
+                                            )));
+                                        }
+
+                                        // Create new environment extending closure's captured environment
+                                        let call_env = ProcessedEnvironment::with_parent(closure_env.env.clone());
+
+                                        // Bind regular parameters to arguments
+                                        let regular_param_count = if variadic {
+                                            params.len() - 1
+                                        } else {
+                                            params.len()
+                                        };
+
+                                        for (i, param) in params.iter().take(regular_param_count).enumerate() {
+                                            call_env.define(*param, evaluated[i].clone());
+                                        }
+
+                                        // **R7RS RESTRICTED:** Variadic parameters not yet supported - would need list construction
+                                        if variadic {
+                                            return Err(RuntimeError::new(
+                                                "Variadic functions not yet supported".to_string(),
+                                            ));
+                                        }
+
+                                        // **STACK SAFETY:** Push ProcedureCall frame instead of recursive call
+                                        stack.push(SuperEvalFrame::ProcedureCall { body: body.clone(), call_env });
+                                        continue;
+                                    }
+                                    _ => return Err(RuntimeError::new("Type error: not a procedure".to_string())),
+                                }
                             }
                             _ => {
                                 // Function already set, apply with all evaluated args
-                                let (apply_result, new_env) =
-                                    self.apply_function_stack(function, &evaluated, current_env)?;
-                                result = apply_result;
-                                current_env = new_env;
+                                match function {
+                                    ProcessedValue::ResolvedBuiltin {
+                                        name: _,
+                                        arity: _,
+                                        func,
+                                    } => {
+                                        // Apply builtin function directly - no recursion needed
+                                        match func(&evaluated) {
+                                            Ok(builtin_result) => {
+                                                result = builtin_result;
+                                                // Environment unchanged for builtins
+                                            }
+                                            Err(e) => return Err(e),
+                                        }
+                                    }
+                                    ProcessedValue::Procedure {
+                                        params,
+                                        body,
+                                        env: closure_env,
+                                        variadic,
+                                    } => {
+                                        // Check argument count (exact match for non-variadic functions)
+                                        if !variadic && evaluated.len() != params.len() {
+                                            return Err(RuntimeError::new(format!(
+                                                "Arity mismatch: expected {} arguments, got {}",
+                                                params.len(),
+                                                evaluated.len()
+                                            )));
+                                        }
+
+                                        if variadic && evaluated.len() < params.len() - 1 {
+                                            return Err(RuntimeError::new(format!(
+                                                "Arity mismatch: expected at least {} arguments, got {}",
+                                                params.len() - 1,
+                                                evaluated.len()
+                                            )));
+                                        }
+
+                                        // Create new environment extending closure's captured environment
+                                        let call_env = ProcessedEnvironment::with_parent(closure_env.env.clone());
+
+                                        // Bind regular parameters to arguments
+                                        let regular_param_count = if variadic {
+                                            params.len() - 1
+                                        } else {
+                                            params.len()
+                                        };
+
+                                        for (i, param) in params.iter().take(regular_param_count).enumerate() {
+                                            call_env.define(*param, evaluated[i].clone());
+                                        }
+
+                                        // **R7RS RESTRICTED:** Variadic parameters not yet supported - would need list construction
+                                        if variadic {
+                                            return Err(RuntimeError::new(
+                                                "Variadic functions not yet supported".to_string(),
+                                            ));
+                                        }
+
+                                        // **STACK SAFETY:** Push ProcedureCall frame instead of recursive call
+                                        stack.push(SuperEvalFrame::ProcedureCall { body: body.clone(), call_env });
+                                        continue;
+                                    }
+                                    _ => return Err(RuntimeError::new("Type error: not a procedure".to_string())),
+                                }
                             }
                         }
                     } else {
@@ -582,6 +935,14 @@ impl SuperVM {
                     // Define returns unspecified in R7RS
                     result = ProcessedValue::Unspecified;
                 }
+                SuperEvalFrame::ProcedureCall { body, call_env } => {
+                    // Procedure call: parameters are bound, now evaluate body
+                    current_env = call_env;
+                    
+                    // **STACK SAFETY:** Continue evaluation with frame push instead of recursion
+                    stack.push(SuperEvalFrame::Evaluate(body));
+                    continue;
+                }
             }
         }
 
@@ -589,6 +950,8 @@ impl SuperVM {
     }
 
     /// Create a new environment extending the current one (used for define)
+    /// 
+    /// **STACK SAFETY:** This helper method makes no recursive calls
     fn extend_environment_symbol<'ast>(
         &mut self,
         current_env: ProcessedEnvironment<'ast>,
@@ -600,151 +963,6 @@ impl SuperVM {
         new_env.define(symbol, value);
         new_env
     }
-    /// Applies a function to arguments using direct evaluation (slice-based for zero-copy)
-    pub fn apply_function_direct<'ast>(
-        &mut self,
-        func: ProcessedValue<'ast>,
-        args: &[ProcessedValue<'ast>],
-        env: ProcessedEnvironment<'ast>,
-    ) -> Result<(ProcessedValue<'ast>, ProcessedEnvironment<'ast>), RuntimeError> {
-        match func {
-            ProcessedValue::ResolvedBuiltin {
-                name: _,
-                arity: _,
-                func,
-            } => {
-                // Apply builtin function directly using the function pointer
-                match func(&args) {
-                    Ok(result) => Ok((result, env)),
-                    Err(e) => Err(e),
-                }
-            }
-            ProcessedValue::Procedure {
-                params,
-                body,
-                env: closure_env,
-                variadic,
-            } => {
-                // Apply user-defined procedure (lambda)
-
-                // Check argument count (exact match for non-variadic functions)
-                if !variadic && args.len() != params.len() {
-                    return Err(RuntimeError::new(format!(
-                        "Arity mismatch: expected {} arguments, got {}",
-                        params.len(),
-                        args.len()
-                    )));
-                }
-
-                if variadic && args.len() < params.len() - 1 {
-                    return Err(RuntimeError::new(format!(
-                        "Arity mismatch: expected at least {} arguments, got {}",
-                        params.len() - 1,
-                        args.len()
-                    )));
-                }
-
-                // Create new environment extending closure's captured environment
-                let call_env = ProcessedEnvironment::with_parent(closure_env.env.clone());
-
-                // Bind regular parameters to arguments
-                let regular_param_count = if variadic {
-                    params.len() - 1
-                } else {
-                    params.len()
-                };
-
-                for (i, param) in params.iter().take(regular_param_count).enumerate() {
-                    call_env.define(*param, args[i].clone());
-                }
-
-                // **R7RS RESTRICTED:** Variadic parameters not yet supported - would need list construction
-                if variadic {
-                    return Err(RuntimeError::new(
-                        "Variadic functions not yet supported".to_string(),
-                    ));
-                }
-
-                // Evaluate body in the new environment
-                self.evaluate_direct(body, call_env)
-            }
-            _ => Err(RuntimeError::new("Type error: not a procedure".to_string())),
-        }
-    }
-
-    /// Applies a function to arguments using stack-based evaluation (slice-based for zero-copy)
-    pub fn apply_function_stack<'ast>(
-        &mut self,
-        func: ProcessedValue<'ast>,
-        args: &[ProcessedValue<'ast>],
-        env: ProcessedEnvironment<'ast>,
-    ) -> Result<(ProcessedValue<'ast>, ProcessedEnvironment<'ast>), RuntimeError> {
-        match func {
-            ProcessedValue::ResolvedBuiltin {
-                name: _,
-                arity: _,
-                func,
-            } => {
-                // Apply builtin function directly using the function pointer
-                match func(&args) {
-                    Ok(result) => Ok((result, env)),
-                    Err(e) => Err(e),
-                }
-            }
-            ProcessedValue::Procedure {
-                params,
-                body,
-                env: closure_env,
-                variadic,
-            } => {
-                // Apply user-defined procedure (lambda)
-
-                // Check argument count (exact match for non-variadic functions)
-                if !variadic && args.len() != params.len() {
-                    return Err(RuntimeError::new(format!(
-                        "Arity mismatch: expected {} arguments, got {}",
-                        params.len(),
-                        args.len()
-                    )));
-                }
-
-                if variadic && args.len() < params.len() - 1 {
-                    return Err(RuntimeError::new(format!(
-                        "Arity mismatch: expected at least {} arguments, got {}",
-                        params.len() - 1,
-                        args.len()
-                    )));
-                }
-
-                // Create new environment extending closure's captured environment
-                let call_env = ProcessedEnvironment::with_parent(closure_env.env.clone());
-
-                // Bind regular parameters to arguments
-                let regular_param_count = if variadic {
-                    params.len() - 1
-                } else {
-                    params.len()
-                };
-
-                for (i, param) in params.iter().take(regular_param_count).enumerate() {
-                    call_env.define(*param, args[i].clone());
-                }
-
-                // **R7RS RESTRICTED:** Variadic parameters not yet supported - would need list construction
-                if variadic {
-                    return Err(RuntimeError::new(
-                        "Variadic functions not yet supported".to_string(),
-                    ));
-                }
-
-                // Evaluate body using stack-based evaluation
-                self.evaluate_stack(body, call_env)
-            }
-            _ => Err(RuntimeError::new("Type error: not a procedure".to_string())),
-        }
-    }
-
-
 }
 
 #[cfg(test)]

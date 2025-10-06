@@ -21,10 +21,11 @@
 //!
 //! **R7RS RESTRICTED:** The following features are not supported:
 //! - **Variadic functions**: Lambda forms `(lambda args body)` and `(lambda (a b . rest) body)`
-//! - **Proper tail calls**: Recursive calls may cause stack overflow in Direct mode
 //! - **Continuations**: No call/cc or dynamic-wind support
 //! - **Variable mutation**: No set! support (all bindings immutable)
 //! - **Complex forms**: Must be macro-expanded before SuperVM evaluation
+//!
+//! **R7RS COMPLIANT:** Proper tail calls are fully supported in Stack mode
 //!
 //! **Builtin Function Coverage:**
 //! - Arithmetic: `+`, `-`, `*`, `/`, `=` (5/5 core operations)
@@ -62,7 +63,7 @@ use string_interner::Symbol;
 ///
 /// **MEMORY EFFICIENCY:** Reduces Apply frame heap allocations from 1 per function call to 0,
 /// while maintaining the same frame size benefits as the previous Box<Vec> approach
-/// 
+///
 /// **INVARIANT:** start_index..end_index represents the arguments in shared_args_buffer
 /// - args[start_index] is the function (then evaluated function)
 /// - args[start_index+1..start_index+eval_offset] are evaluated arguments  
@@ -77,16 +78,21 @@ struct ApplyArgsRef {
 #[derive(Debug, Clone)]
 enum SuperEvalFrame<'ast> {
     /// Evaluate an expression and push result
-    Evaluate(ProcessedValue<'ast>),
+    Evaluate {
+        expr: ProcessedValue<'ast>,
+        in_tail_position: bool, // True if this evaluation is in tail position
+    },
     /// Continue with if evaluation (then_expr, else_expr) - test result is in evaluation result
     IfContinue {
         then_expr: ProcessedValue<'ast>,
         else_expr: Option<ProcessedValue<'ast>>,
+        in_tail_position: bool, // True if branches should be evaluated in tail position
     },
     /// Continue with begin evaluation using the original Cow and current index
     BeginContinue {
         expressions: std::borrow::Cow<'ast, [ProcessedValue<'ast>]>,
         current_index: usize,
+        in_tail_position: bool, // True if final expression should be evaluated in tail position
     },
     /// Function application with argument evaluation - handles all function calls
     ///
@@ -109,7 +115,9 @@ enum SuperEvalFrame<'ast> {
         eval_index: usize, // Index of next argument to evaluate (separates evaluated from unevaluated)
         original_env: Rc<ProcessedEnvironment<'ast>>,
         shared_args_buffer_restore_watermark: usize, // Watermark to restore when this Apply completes
+        is_tail_position: bool, // True if this is a tail call (enables optimization)
     },
+
     /// Store define result after value evaluation completes
     DefineStore {
         name: StringSymbol,
@@ -119,6 +127,7 @@ enum SuperEvalFrame<'ast> {
     ProcedureCall {
         body: ProcessedValue<'ast>,
         call_env: Rc<ProcessedEnvironment<'ast>>,
+        is_tail_call: bool, // True if this is a tail call (can reuse stack frame)
     },
     /// Restore environment after procedure call completes
     RestoreEnv { env: Rc<ProcessedEnvironment<'ast>> },
@@ -512,6 +521,11 @@ impl SuperStackVM {
         self.stats = EvaluationStats::default();
     }
 
+    /// Get the maximum stack depth reached during evaluation
+    pub fn get_max_stack_depth(&self) -> usize {
+        self.stats.max_stack_depth
+    }
+
     /// Evaluate the root expression using stack-based evaluation
     ///
     /// **GUARANTEED STACK SAFETY:** This method uses an explicit frame stack and
@@ -550,7 +564,7 @@ impl SuperStackVM {
     ) -> Result<ProcessedValue<'ast>, RuntimeError> {
         // Pre-allocate stack with reasonable capacity for performance
         let mut stack: Vec<SuperEvalFrame<'ast>> = Vec::with_capacity(128);
-        
+
         // **SHARED BUFFER OPTIMIZATION:** Watermark-based buffer management
         // Track high-water mark and use truncate for simple, efficient space management
         let mut shared_args_buffer: Vec<ProcessedValue<'ast>> = Vec::with_capacity(128);
@@ -560,17 +574,22 @@ impl SuperStackVM {
         let mut result = ProcessedValue::Unspecified;
 
         // Push initial expression to evaluate
-        stack.push(SuperEvalFrame::Evaluate(expr.clone()));
+        stack.push(SuperEvalFrame::Evaluate {
+            expr: expr.clone(),
+            in_tail_position: false, // Root expression not in tail position
+        });
 
         while let Some(frame) = stack.pop() {
             self.stats.max_stack_depth = self.stats.max_stack_depth.max(stack.len());
 
             match frame {
-                SuperEvalFrame::Evaluate(expr) => {
+                SuperEvalFrame::Evaluate {
+                    expr,
+                    in_tail_position,
+                } => {
                     self.stats.expressions_evaluated += 1;
 
                     match expr {
-                        // **OPTIMIZATION:** Most frequent first - Symbol lookups (not from profiling data!)
                         ProcessedValue::Symbol(sym) => {
                             // Symbol lookup
                             self.stats.environment_lookups += 1;
@@ -585,13 +604,13 @@ impl SuperStackVM {
                             }
                         }
 
-                        // **OPTIMIZATION:** Second most frequent - List applications
                         ProcessedValue::List(elements) => {
                             if elements.is_empty() {
                                 // Empty list evaluates to itself
                                 result = ProcessedValue::List(elements.clone());
                             } else {
                                 // Function application: use stack-based evaluation
+                                // **TAIL POSITION LOGIC:** Pass tail position to Apply frame
                                 self.stats.function_calls += 1;
 
                                 // Set up argument evaluation using Apply for all function applications
@@ -602,35 +621,45 @@ impl SuperStackVM {
                                 shared_args_buffer.extend(elements.iter().cloned());
                                 let end_index = shared_args_buffer.len();
                                 shared_args_buffer_watermark = end_index; // Update watermark
-                                
-                                let args_ref = ApplyArgsRef { start_index, end_index };
+
+                                let args_ref = ApplyArgsRef {
+                                    start_index,
+                                    end_index,
+                                };
                                 stack.push(SuperEvalFrame::Apply {
-                                    args_ref, // Reference to args in shared buffer
+                                    args_ref,      // Reference to args in shared buffer
                                     eval_index: 1, // Start at 1 (func at index 0 will be evaluated first)
                                     original_env: current_env.clone(),
                                     shared_args_buffer_restore_watermark: start_index, // Reset watermark to this level when done
+                                    is_tail_position: in_tail_position, // Pass through tail position
                                 });
-                                stack.push(SuperEvalFrame::Evaluate(elements[0].clone()));
+                                stack.push(SuperEvalFrame::Evaluate {
+                                    expr: elements[0].clone(),
+                                    in_tail_position: false,
+                                });
                                 continue;
                             }
                         }
 
-                        // **OPTIMIZATION:** Third most frequent - If expressions
                         ProcessedValue::If {
                             test,
                             then_branch,
                             else_branch,
                         } => {
                             // If form: push continuation frame and evaluate test
+                            // **TAIL POSITION LOGIC:** Pass tail position to branches
                             stack.push(SuperEvalFrame::IfContinue {
                                 then_expr: (*then_branch).clone(),
                                 else_expr: else_branch.map(|e| (*e).clone()),
+                                in_tail_position, // Pass through tail position to branches
                             });
-                            stack.push(SuperEvalFrame::Evaluate((*test).clone()));
+                            stack.push(SuperEvalFrame::Evaluate {
+                                expr: (*test).clone(),
+                                in_tail_position: false,
+                            });
                             continue;
                         }
 
-                        // **OPTIMIZATION:** Literals - less frequent but still common
                         ProcessedValue::Boolean(_)
                         | ProcessedValue::Integer(_)
                         | ProcessedValue::UInteger(_)
@@ -692,7 +721,10 @@ impl SuperStackVM {
                                         name,
                                         original_env: current_env.clone(),
                                     });
-                                    stack.push(SuperEvalFrame::Evaluate((*value).clone()));
+                                    stack.push(SuperEvalFrame::Evaluate {
+                                        expr: (*value).clone(),
+                                        in_tail_position: false,
+                                    });
                                     continue;
                                 }
                             }
@@ -719,23 +751,30 @@ impl SuperStackVM {
                         }
                         ProcessedValue::Begin { expressions } => {
                             // Begin form: evaluate expressions sequentially, return last result
+                            // **TAIL POSITION LOGIC:** Last expression inherits tail position
                             if expressions.is_empty() {
                                 // Empty begin returns unspecified
                                 result = ProcessedValue::Unspecified;
                             } else if expressions.len() == 1 {
-                                // Single expression - push it for evaluation
-                                stack.push(SuperEvalFrame::Evaluate(expressions[0].clone()));
+                                // Single expression - pass through tail position
+                                stack.push(SuperEvalFrame::Evaluate {
+                                    expr: expressions[0].clone(),
+                                    in_tail_position, // Pass through tail position
+                                });
                                 continue;
                             } else {
-                                // Multiple expressions - use BeginContinue frame with slice
-                                // Push BeginContinue frame to continue with remaining expressions
+                                // Multiple expressions - last one gets tail position
                                 stack.push(SuperEvalFrame::BeginContinue {
                                     expressions: expressions.clone(),
                                     current_index: 1, // Start from index 1 after evaluating first
+                                    in_tail_position, // Pass tail position for final expression
                                 });
 
-                                // Evaluate the first expression (index 0)
-                                stack.push(SuperEvalFrame::Evaluate(expressions[0].clone()));
+                                // Evaluate the first expression (index 0) - not in tail position
+                                stack.push(SuperEvalFrame::Evaluate {
+                                    expr: expressions[0].clone(),
+                                    in_tail_position: false,
+                                });
                                 continue;
                             }
                         }
@@ -745,6 +784,7 @@ impl SuperStackVM {
                 SuperEvalFrame::IfContinue {
                     then_expr,
                     else_expr,
+                    in_tail_position,
                 } => {
                     // The test has been evaluated, result is in 'result'
                     // **R7RS SEMANTICS:** Only #f is false, everything else is true
@@ -753,25 +793,37 @@ impl SuperStackVM {
                         _ => true, // Everything except #f is true in Scheme
                     };
 
-                    if is_true {
-                        stack.push(SuperEvalFrame::Evaluate(then_expr));
+                    let chosen_expr = if is_true {
+                        then_expr
                     } else if let Some(else_expr) = else_expr {
-                        stack.push(SuperEvalFrame::Evaluate(else_expr));
+                        else_expr
                     } else {
                         // No else branch, return unspecified
                         result = ProcessedValue::Unspecified;
-                    }
+                        continue;
+                    };
+
+                    // Evaluate chosen branch - pass through tail position
+                    stack.push(SuperEvalFrame::Evaluate {
+                        expr: chosen_expr,
+                        in_tail_position, // Pass through tail position
+                    });
                 }
                 SuperEvalFrame::BeginContinue {
                     expressions,
                     current_index,
+                    in_tail_position,
                 } => {
                     // Continue evaluating remaining expressions in begin
                     if current_index >= expressions.len() {
                         // All expressions evaluated, result is already set
                     } else if current_index == expressions.len() - 1 {
-                        // Last expression - just evaluate it
-                        stack.push(SuperEvalFrame::Evaluate(expressions[current_index].clone()));
+                        // Last expression - evaluate in appropriate position
+                        let last_expr = expressions[current_index].clone();
+                        stack.push(SuperEvalFrame::Evaluate {
+                            expr: last_expr,
+                            in_tail_position, // Use the tail position flag from BeginContinue
+                        });
                     } else {
                         // More expressions to evaluate after this one
                         let current_expr = expressions[current_index].clone();
@@ -780,10 +832,14 @@ impl SuperStackVM {
                         stack.push(SuperEvalFrame::BeginContinue {
                             expressions,
                             current_index: current_index + 1,
+                            in_tail_position, // Preserve tail position context
                         });
 
                         // Evaluate the current expression
-                        stack.push(SuperEvalFrame::Evaluate(current_expr));
+                        stack.push(SuperEvalFrame::Evaluate {
+                            expr: current_expr,
+                            in_tail_position: false,
+                        });
                     }
                 }
                 SuperEvalFrame::Apply {
@@ -791,6 +847,7 @@ impl SuperStackVM {
                     eval_index,
                     original_env,
                     shared_args_buffer_restore_watermark,
+                    is_tail_position,
                 } => {
                     // **SHARED BUFFER OPTIMIZATION:** In-place argument evaluation using shared buffer indices
                     // We just evaluated something - replace the expression at (eval_index - 1) with the result
@@ -798,7 +855,7 @@ impl SuperStackVM {
 
                     let args_len = args_ref.end_index - args_ref.start_index;
                     let result_index = args_ref.start_index + eval_index - 1;
-                    
+
                     if eval_index > 0 && eval_index <= args_len {
                         shared_args_buffer[result_index] = result.clone();
                     } else {
@@ -810,7 +867,8 @@ impl SuperStackVM {
                     if eval_index >= args_len {
                         // All arguments evaluated - now apply the function
                         // Get slices from shared buffer for function and arguments
-                        let args_slice = &shared_args_buffer[args_ref.start_index..args_ref.end_index];
+                        let args_slice =
+                            &shared_args_buffer[args_ref.start_index..args_ref.end_index];
                         let evaluated_args = &args_slice[1..]; // Skip function at index 0
 
                         // **STACK SAFETY:** Apply function without recursive calls
@@ -828,7 +886,7 @@ impl SuperStackVM {
                                     }
                                     Err(e) => return Err(e),
                                 }
-                                
+
                                 // **WATERMARK RESET:** Function complete - reset watermark to reclaim space
                                 shared_args_buffer_watermark = shared_args_buffer_restore_watermark;
                             }
@@ -880,12 +938,15 @@ impl SuperStackVM {
                                     ));
                                 }
 
-                                // **STACK SAFETY:** Push ProcedureCall frame instead of recursive call
+                                // **TAIL CALL DETECTION:** Use the is_tail_position flag from Apply frame
+                                let is_tail_call = is_tail_position;
+
                                 stack.push(SuperEvalFrame::ProcedureCall {
                                     body: (*body).clone(),
                                     call_env,
+                                    is_tail_call,
                                 });
-                                // **WATERMARK RESET:** Procedure call complete - reset watermark to reclaim space  
+                                // **WATERMARK RESET:** Procedure call complete - reset watermark to reclaim space
                                 shared_args_buffer_watermark = shared_args_buffer_restore_watermark;
                                 continue;
                             }
@@ -907,13 +968,51 @@ impl SuperStackVM {
                             eval_index: eval_index + 1, // Advance to next argument
                             original_env: original_env.clone(),
                             shared_args_buffer_restore_watermark, // Preserve the same restore point
+                            is_tail_position,                     // Preserve tail position flag
                         });
 
                         // Use original environment for argument evaluation
                         current_env = original_env;
 
                         // Evaluate the next argument
-                        stack.push(SuperEvalFrame::Evaluate(next_arg));
+                        stack.push(SuperEvalFrame::Evaluate {
+                            expr: next_arg,
+                            in_tail_position: false,
+                        });
+                        continue;
+                    }
+                }
+                SuperEvalFrame::ProcedureCall {
+                    body,
+                    call_env,
+                    is_tail_call,
+                } => {
+                    // Procedure call: parameters are bound, now evaluate body
+                    if is_tail_call {
+                        // **TAIL CALL OPTIMIZATION:** Reuse current stack frame
+                        // No need to restore environment - we're not returning to caller
+                        current_env = call_env.clone();
+
+                        // **TAIL CALL:** Procedure body is in tail position
+                        stack.push(SuperEvalFrame::Evaluate {
+                            expr: body,
+                            in_tail_position: true,
+                        });
+                        continue;
+                    } else {
+                        // **REGULAR CALL:** Store previous environment and restore it later
+                        let prev_env = current_env.clone();
+                        current_env = call_env.clone();
+
+                        // Push a frame to restore the environment after procedure evaluation
+                        stack.push(SuperEvalFrame::RestoreEnv { env: prev_env });
+
+                        // **PROCEDURE BODY IN TAIL POSITION:** All procedure bodies are evaluated in tail position
+                        // This enables tail call optimization within procedure bodies
+                        stack.push(SuperEvalFrame::Evaluate {
+                            expr: body,
+                            in_tail_position: true,
+                        });
                         continue;
                     }
                 }
@@ -926,19 +1025,6 @@ impl SuperStackVM {
 
                     // Define returns unspecified in R7RS
                     result = ProcessedValue::Unspecified;
-                }
-                SuperEvalFrame::ProcedureCall { body, call_env } => {
-                    // Procedure call: parameters are bound, now evaluate body
-                    // **ENVIRONMENT ISOLATION:** Store the previous environment and restore it later
-                    let prev_env = current_env.clone();
-                    current_env = call_env;
-
-                    // Push a frame to restore the environment after procedure evaluation
-                    stack.push(SuperEvalFrame::RestoreEnv { env: prev_env });
-
-                    // **STACK SAFETY:** Continue evaluation with frame push instead of recursion
-                    stack.push(SuperEvalFrame::Evaluate(body));
-                    continue;
                 }
                 SuperEvalFrame::RestoreEnv { env } => {
                     // Restore the previous environment after procedure call completes

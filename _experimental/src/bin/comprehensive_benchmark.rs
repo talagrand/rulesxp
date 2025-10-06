@@ -237,7 +237,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if i == 0 {
             println!("First result: {:?}", super_direct_result);
         }
-        
+
         // Keep final VM for stats
         if i == ITERATIONS - 1 {
             super_direct_final_vm = Some(vm);
@@ -294,7 +294,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if i == 0 {
             println!("First result: {:?}", super_stack_result);
         }
-        
+
         // Keep final VM for stats
         if i == ITERATIONS - 1 {
             super_stack_final_vm = Some(vm);
@@ -313,7 +313,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Total ProcessedAST Stack (compile + avg execute): {:?}",
         processed_compile_avg + super_stack_avg
     );
-    
+
     // Display execution statistics
     if let Some(vm) = super_direct_final_vm {
         println!();
@@ -325,7 +325,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Environments created: {}", stats.environments_created);
         println!("Max stack depth: {}", stats.max_stack_depth);
     }
-    
+
     if let Some(vm) = super_stack_final_vm {
         println!();
         println!("=== SUPERSTACK EXECUTION STATS ===");
@@ -336,7 +336,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Environments created: {}", stats.environments_created);
         println!("Max stack depth: {}", stats.max_stack_depth);
     }
-    
+
     println!();
 
     // Results verification

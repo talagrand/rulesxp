@@ -56,19 +56,22 @@ use crate::vm::RuntimeError;
 use std::rc::Rc;
 use string_interner::Symbol;
 
-/// Type alias for the optimized argument vector used in Apply frames
-/// Uses Box<Vec> to move argument storage to heap, significantly reducing SuperEvalFrame size
+/// Arguments for Apply frames using shared buffer indices
+/// **SHARED BUFFER OPTIMIZATION:** Instead of Box<Vec> allocation per function call,
+/// uses indices into SuperStackVM's shared_args_buffer to eliminate heap allocations
 ///
-/// **FRAME SIZE OPTIMIZATION:** Box<Vec> reduces Apply variant size from ~280+ bytes to ~24 bytes
-/// by moving argument storage off the stack. This improves:
-/// - Frame stack cache locality (more frames fit in cache lines)
-/// - Memory usage for large expressions (no wasted SmallVec inline capacity)
-/// - Elimination of large_enum_variant clippy warnings
-///
-/// **PERFORMANCE TRADEOFF:** Adds one heap allocation per function call, but this cost is
-/// amortized across the function application lifetime and significantly outweighed by
-/// improved cache behavior for the frame stack.
-type ApplyArgsVec<'ast> = Box<Vec<ProcessedValue<'ast>>>;
+/// **MEMORY EFFICIENCY:** Reduces Apply frame heap allocations from 1 per function call to 0,
+/// while maintaining the same frame size benefits as the previous Box<Vec> approach
+/// 
+/// **INVARIANT:** start_index..end_index represents the arguments in shared_args_buffer
+/// - args[start_index] is the function (then evaluated function)
+/// - args[start_index+1..start_index+eval_offset] are evaluated arguments  
+/// - args[start_index+eval_offset..end_index] are unevaluated argument expressions
+#[derive(Debug, Clone)]
+struct ApplyArgsRef {
+    start_index: usize,
+    end_index: usize,
+}
 
 /// Stack frame for stack-based evaluation
 #[derive(Debug, Clone)]
@@ -102,9 +105,10 @@ enum SuperEvalFrame<'ast> {
     /// - eval_index advances as each argument is evaluated and replaced in-place
     /// - For no-argument calls: args.len() == 1, eval_index starts at 1 and immediately triggers application
     Apply {
-        args: ApplyArgsVec<'ast>, // Combined args: [func, evaluated..., unevaluated...]
+        args_ref: ApplyArgsRef, // Reference to arguments in shared buffer
         eval_index: usize, // Index of next argument to evaluate (separates evaluated from unevaluated)
         original_env: Rc<ProcessedEnvironment<'ast>>,
+        shared_args_buffer_restore_watermark: usize, // Watermark to restore when this Apply completes
     },
     /// Store define result after value evaluation completes
     DefineStore {
@@ -546,6 +550,11 @@ impl SuperStackVM {
     ) -> Result<ProcessedValue<'ast>, RuntimeError> {
         // Pre-allocate stack with reasonable capacity for performance
         let mut stack: Vec<SuperEvalFrame<'ast>> = Vec::with_capacity(128);
+        
+        // **SHARED BUFFER OPTIMIZATION:** Watermark-based buffer management
+        // Track high-water mark and use truncate for simple, efficient space management
+        let mut shared_args_buffer: Vec<ProcessedValue<'ast>> = Vec::with_capacity(128);
+        let mut shared_args_buffer_watermark: usize = 0; // Track highest used index for space reuse
 
         let mut current_env = env;
         let mut result = ProcessedValue::Unspecified;
@@ -587,13 +596,19 @@ impl SuperStackVM {
 
                                 // Set up argument evaluation using Apply for all function applications
                                 // **UNIFIED APPROACH:** Apply handles both no-argument and with-argument function calls
-                                // **OPTIMIZATION:** Create single vector with all elements, eval_index indicates progress
-                                let args: ApplyArgsVec<'ast> =
-                                    Box::new(elements.iter().cloned().collect());
+                                // **SIMPLIFIED WATERMARK OPTIMIZATION:** Use truncate for simple space management
+                                let start_index = shared_args_buffer_watermark;
+                                shared_args_buffer.truncate(shared_args_buffer_watermark);
+                                shared_args_buffer.extend(elements.iter().cloned());
+                                let end_index = shared_args_buffer.len();
+                                shared_args_buffer_watermark = end_index; // Update watermark
+                                
+                                let args_ref = ApplyArgsRef { start_index, end_index };
                                 stack.push(SuperEvalFrame::Apply {
-                                    args, // Contains [func_expr, arg1_expr, arg2_expr, ...] (or just [func_expr] for no args)
+                                    args_ref, // Reference to args in shared buffer
                                     eval_index: 1, // Start at 1 (func at index 0 will be evaluated first)
                                     original_env: current_env.clone(),
+                                    shared_args_buffer_restore_watermark: start_index, // Reset watermark to this level when done
                                 });
                                 stack.push(SuperEvalFrame::Evaluate(elements[0].clone()));
                                 continue;
@@ -772,29 +787,34 @@ impl SuperStackVM {
                     }
                 }
                 SuperEvalFrame::Apply {
-                    mut args,
+                    args_ref,
                     eval_index,
                     original_env,
+                    shared_args_buffer_restore_watermark,
                 } => {
-                    // **OPTIMIZATION:** In-place argument evaluation using single vector
+                    // **SHARED BUFFER OPTIMIZATION:** In-place argument evaluation using shared buffer indices
                     // We just evaluated something - replace the expression at (eval_index - 1) with the result
                     // eval_index points to the NEXT argument to evaluate, so the current result goes at eval_index - 1
 
-                    if eval_index > 0 && eval_index <= args.len() {
-                        args[eval_index - 1] = result.clone();
+                    let args_len = args_ref.end_index - args_ref.start_index;
+                    let result_index = args_ref.start_index + eval_index - 1;
+                    
+                    if eval_index > 0 && eval_index <= args_len {
+                        shared_args_buffer[result_index] = result.clone();
                     } else {
                         return Err(RuntimeError::new(
                             "Apply: Invalid eval_index state".to_string(),
                         ));
                     }
 
-                    if eval_index >= args.len() {
+                    if eval_index >= args_len {
                         // All arguments evaluated - now apply the function
-                        // args[0] is the evaluated function, args[1..] are the evaluated arguments
-                        let evaluated_args = &args[1..]; // Slice of evaluated arguments
+                        // Get slices from shared buffer for function and arguments
+                        let args_slice = &shared_args_buffer[args_ref.start_index..args_ref.end_index];
+                        let evaluated_args = &args_slice[1..]; // Skip function at index 0
 
                         // **STACK SAFETY:** Apply function without recursive calls
-                        match &args[0] {
+                        match &args_slice[0] {
                             ProcessedValue::ResolvedBuiltin {
                                 name: _,
                                 arity: _,
@@ -808,6 +828,9 @@ impl SuperStackVM {
                                     }
                                     Err(e) => return Err(e),
                                 }
+                                
+                                // **WATERMARK RESET:** Function complete - reset watermark to reclaim space
+                                shared_args_buffer_watermark = shared_args_buffer_restore_watermark;
                             }
                             ProcessedValue::Procedure {
                                 params,
@@ -862,6 +885,8 @@ impl SuperStackVM {
                                     body: (*body).clone(),
                                     call_env,
                                 });
+                                // **WATERMARK RESET:** Procedure call complete - reset watermark to reclaim space  
+                                shared_args_buffer_watermark = shared_args_buffer_restore_watermark;
                                 continue;
                             }
                             _ => {
@@ -872,15 +897,16 @@ impl SuperStackVM {
                         }
                     } else {
                         // More arguments to evaluate - advance eval_index and continue
-                        // **OPTIMIZATION:** Reuse the same frame, just advance the index
-                        let next_arg =
-                            std::mem::replace(&mut args[eval_index], ProcessedValue::Unspecified);
+                        // **SHARED BUFFER OPTIMIZATION:** Get next arg from buffer and continue
+                        let next_arg_index = args_ref.start_index + eval_index;
+                        let next_arg = shared_args_buffer[next_arg_index].clone();
 
                         // Push continuation frame with advanced eval_index
                         stack.push(SuperEvalFrame::Apply {
-                            args,
+                            args_ref,
                             eval_index: eval_index + 1, // Advance to next argument
                             original_env: original_env.clone(),
+                            shared_args_buffer_restore_watermark, // Preserve the same restore point
                         });
 
                         // Use original environment for argument evaluation

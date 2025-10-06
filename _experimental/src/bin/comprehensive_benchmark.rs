@@ -216,6 +216,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut super_direct_compile_times = Vec::new();
     let mut super_direct_exec_times = Vec::new();
     let mut super_direct_result = ProcessedValue::Integer(0);
+    let mut super_direct_final_vm = None;
 
     for i in 0..ITERATIONS {
         // Time compilation separately
@@ -235,6 +236,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if i == 0 {
             println!("First result: {:?}", super_direct_result);
+        }
+        
+        // Keep final VM for stats
+        if i == ITERATIONS - 1 {
+            super_direct_final_vm = Some(vm);
         }
     }
 
@@ -268,6 +274,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut super_stack_exec_times = Vec::new();
     let mut super_stack_result = ProcessedValue::Integer(0);
+    let mut super_stack_final_vm = None;
 
     for i in 0..ITERATIONS {
         // Reuse compilation timing from Direct mode (same compilation process)
@@ -287,6 +294,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if i == 0 {
             println!("First result: {:?}", super_stack_result);
         }
+        
+        // Keep final VM for stats
+        if i == ITERATIONS - 1 {
+            super_stack_final_vm = Some(vm);
+        }
     }
 
     let super_stack_avg =
@@ -301,6 +313,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Total ProcessedAST Stack (compile + avg execute): {:?}",
         processed_compile_avg + super_stack_avg
     );
+    
+    // Display execution statistics
+    if let Some(vm) = super_direct_final_vm {
+        println!();
+        println!("=== SUPERDIRECT EXECUTION STATS ===");
+        let stats = vm.stats();
+        println!("Expressions evaluated: {}", stats.expressions_evaluated);
+        println!("Function calls: {}", stats.function_calls);
+        println!("Environment lookups: {}", stats.environment_lookups);
+        println!("Environments created: {}", stats.environments_created);
+        println!("Max stack depth: {}", stats.max_stack_depth);
+    }
+    
+    if let Some(vm) = super_stack_final_vm {
+        println!();
+        println!("=== SUPERSTACK EXECUTION STATS ===");
+        let stats = vm.stats();
+        println!("Expressions evaluated: {}", stats.expressions_evaluated);
+        println!("Function calls: {}", stats.function_calls);
+        println!("Environment lookups: {}", stats.environment_lookups);
+        println!("Environments created: {}", stats.environments_created);
+        println!("Max stack depth: {}", stats.max_stack_depth);
+    }
+    
     println!();
 
     // Results verification

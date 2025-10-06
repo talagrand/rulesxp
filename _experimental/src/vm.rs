@@ -1920,15 +1920,15 @@ impl VM {
                             let provided_args = *arg_count as usize;
 
                             if variadic {
-                                if provided_args < params.len() - 1 {
+                                // **R7RS RESTRICTED:** Only fully variadic functions supported
+                                // (lambda args body) takes any number of arguments
+                                if params.len() != 1 {
                                     return Err(self.create_runtime_error(
-                                        format!(
-                                        "Variadic procedure expects at least {} arguments, got {}",
-                                        params.len() - 1, provided_args
-                                    ),
+                                        "**R7RS RESTRICTED:** Dot notation (mixed variadic) not supported - use fully variadic functions only".to_string(),
                                         module,
                                     ));
                                 }
+                                // Fully variadic functions accept any number of arguments (0 or more)
                             } else if provided_args != params.len() {
                                 return Err(self.create_runtime_error(
                                     format!(
@@ -1954,8 +1954,15 @@ impl VM {
                             let call_env = Environment::with_parent(env.clone());
 
                             // Bind parameters to arguments
-                            for (param, arg) in params.iter().zip(args.iter()) {
-                                call_env.define(param.clone(), arg.clone());
+                            if variadic {
+                                // Fully variadic: (lambda args body) - all args go into a list
+                                let args_list = Value::List(args);
+                                call_env.define(params[0].clone(), args_list);
+                            } else {
+                                // Fixed arity: bind parameters one-to-one with arguments
+                                for (param, arg) in params.iter().zip(args.iter()) {
+                                    call_env.define(param.clone(), arg.clone());
+                                }
                             }
 
                             // Save current environment
@@ -2077,27 +2084,6 @@ impl VM {
                             // eprintln!("Debug: [TAILCALL] Calling user procedure with {} params, body: {:?}", params.len(), body);
                             let provided_args = *arg_count as usize;
 
-                            if variadic {
-                                if provided_args < params.len() - 1 {
-                                    return Err(self.create_runtime_error(
-                                        format!(
-                                        "Variadic procedure expects at least {} arguments, got {}",
-                                        params.len() - 1, provided_args
-                                    ),
-                                        module,
-                                    ));
-                                }
-                            } else if provided_args != params.len() {
-                                return Err(self.create_runtime_error(
-                                    format!(
-                                        "Procedure expects {} arguments, got {}",
-                                        params.len(),
-                                        provided_args
-                                    ),
-                                    module,
-                                ));
-                            }
-
                             // Collect arguments (they are just below the procedure)
                             let mut args = Vec::new();
                             let start_index = self.stack.len() - total_args;
@@ -2112,8 +2098,33 @@ impl VM {
                             let call_env = Environment::with_parent(env.clone());
 
                             // Bind parameters to arguments
-                            for (param, arg) in params.iter().zip(args.iter()) {
-                                call_env.define(param.clone(), arg.clone());
+                            if variadic {
+                                // **R7RS RESTRICTED:** Only fully variadic functions supported (lambda args body)
+                                // **R7RS RESTRICTED:** Dot notation (lambda (a b . rest) body) not supported
+                                if params.len() != 1 {
+                                    return Err(self.create_runtime_error(
+                                        "Dot notation (mixed variadic) not supported - use fully variadic form".to_string(),
+                                        module,
+                                    ));
+                                }
+                                // Fully variadic: (lambda args body) - all args go into a list
+                                let args_list = Value::vec_to_list(args);
+                                call_env.define(params[0].clone(), args_list);
+                            } else {
+                                // Fixed parameter count
+                                if provided_args != params.len() {
+                                    return Err(self.create_runtime_error(
+                                        format!(
+                                            "Procedure expects {} arguments, got {}",
+                                            params.len(),
+                                            provided_args
+                                        ),
+                                        module,
+                                    ));
+                                }
+                                for (param, arg) in params.iter().zip(args.iter()) {
+                                    call_env.define(param.clone(), arg.clone());
+                                }
                             }
 
                             // Save current environment

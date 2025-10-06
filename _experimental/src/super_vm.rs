@@ -20,7 +20,7 @@
 //! - Function application - Both builtin and user-defined procedures
 //!
 //! **R7RS RESTRICTED:** The following features are not supported:
-//! - **Variadic functions**: Lambda forms `(lambda args body)` and `(lambda (a b . rest) body)`
+//! - **Variadic functions**: Only fully variadic `(lambda args body)` - dot notation `(lambda (a b . rest) body)` restricted
 //! - **Continuations**: No call/cc or dynamic-wind support
 //! - **Variable mutation**: No set! support (all bindings immutable)
 //! - **Complex forms**: Must be macro-expanded before SuperVM evaluation
@@ -54,6 +54,7 @@ use crate::processed_ast::{ProcessedAST, StringSymbol};
 use crate::processed_env::ProcessedEnvironment;
 use crate::super_builtins::ProcessedValue;
 use crate::vm::{RuntimeError, StackFrame};
+use std::borrow::Cow;
 use std::rc::Rc;
 use string_interner::Symbol;
 
@@ -698,22 +699,24 @@ impl SuperDirectVM {
                 // **PERFORMANCE:** Use Rc::clone instead of expensive environment clone
                 let call_env = ProcessedEnvironment::with_parent(Rc::clone(&closure_env));
 
-                // Bind regular parameters to arguments
-                let regular_param_count = if variadic {
-                    params.len() - 1
-                } else {
-                    params.len()
-                };
-
-                for (i, param) in params.iter().take(regular_param_count).enumerate() {
-                    call_env.define(*param, args[i].clone());
-                }
-
-                // **R7RS RESTRICTED:** Variadic parameters not yet supported - would need list construction
+                // Bind parameters to arguments
                 if variadic {
-                    return Err(RuntimeError::new(
-                        "Variadic functions not yet supported".to_string(),
-                    ));
+                    // **R7RS RESTRICTED:** Only fully variadic functions supported (lambda args body)
+                    // **R7RS RESTRICTED:** Dot notation (lambda (a b . rest) body) not supported
+                    if params.len() != 1 {
+                        return Err(RuntimeError::new(
+                            "Dot notation (mixed variadic) not supported - use fully variadic form"
+                                .to_string(),
+                        ));
+                    }
+                    // Fully variadic: (lambda args body) - all args go into a list
+                    let args_list = ProcessedValue::List(Cow::Owned(args.to_vec()));
+                    call_env.define(params[0], args_list);
+                } else {
+                    // Fixed parameter count
+                    for (i, param) in params.iter().enumerate() {
+                        call_env.define(*param, args[i].clone());
+                    }
                 }
 
                 // **RECURSIVE CALL:** This is why SuperDirectVM can cause stack overflow!
@@ -1237,27 +1240,28 @@ impl SuperStackVM {
                                 ));
 
                                 // Bind regular parameters to arguments
-                                let regular_param_count = if *variadic {
-                                    params.len() - 1
-                                } else {
-                                    params.len()
-                                };
-
-                                for (i, param) in
-                                    params.iter().take(regular_param_count).enumerate()
-                                {
-                                    call_env.define(*param, evaluated_args[i].clone());
-                                }
-
-                                // **R7RS RESTRICTED:** Variadic parameters not yet supported - would need list construction
+                                // Bind parameters to arguments
                                 if *variadic {
-                                    return Err(augment_error_with_stack_trace(
-                                        RuntimeError::new(
-                                            "Variadic functions not yet supported".to_string(),
-                                        ),
-                                        &stack,
-                                        &shared_args_buffer,
-                                    ));
+                                    // **R7RS RESTRICTED:** Only fully variadic functions supported (lambda args body)
+                                    // **R7RS RESTRICTED:** Dot notation (lambda (a b . rest) body) not supported
+                                    if params.len() != 1 {
+                                        return Err(augment_error_with_stack_trace(
+                                            RuntimeError::new(
+                                                "Dot notation (mixed variadic) not supported - use fully variadic form".to_string(),
+                                            ),
+                                            &stack,
+                                            &shared_args_buffer,
+                                        ));
+                                    }
+                                    // Fully variadic: (lambda args body) - all args go into a list
+                                    let args_list =
+                                        ProcessedValue::List(Cow::Owned(evaluated_args.to_vec()));
+                                    call_env.define(params[0], args_list);
+                                } else {
+                                    // Fixed parameter count
+                                    for (i, param) in params.iter().enumerate() {
+                                        call_env.define(*param, evaluated_args[i].clone());
+                                    }
                                 }
 
                                 // **TAIL CALL DETECTION:** Use the is_tail_position flag from Apply frame

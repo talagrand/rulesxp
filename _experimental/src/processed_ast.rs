@@ -139,6 +139,7 @@ impl ProcessedAST {
         let cdr_sym = interner.get_or_intern("cdr");
         let cons_sym = interner.get_or_intern("cons");
         let list_sym = interner.get_or_intern("list");
+        let null_sym = interner.get_or_intern("null?");
 
         builtins.insert(
             add_sym,
@@ -256,6 +257,15 @@ impl ProcessedAST {
                 name: list_sym,
                 arity: ProcessedArity::AtLeast(0),
                 func: builtin_functions::list_super,
+            },
+        );
+
+        builtins.insert(
+            null_sym,
+            ProcessedValue::ResolvedBuiltin {
+                name: null_sym,
+                arity: ProcessedArity::Exact(1),
+                func: builtin_functions::null_super,
             },
         );
 
@@ -658,7 +668,7 @@ impl<'arena> ProcessedCompiler<'arena> {
             ));
         }
 
-        let params = match &elements[1] {
+        let (params, variadic) = match &elements[1] {
             Value::List(param_list) => {
                 let mut param_symbols = Vec::new();
                 for param in param_list {
@@ -670,10 +680,11 @@ impl<'arena> ProcessedCompiler<'arena> {
                         ));
                     }
                 }
-                param_symbols
+                (param_symbols, false) // List of parameters = fixed arity
             }
             Value::Symbol(single_param) => {
-                vec![self.interner.get_or_intern(single_param)]
+                // Single symbol = fully variadic
+                (vec![self.interner.get_or_intern(single_param)], true)
             }
             _ => {
                 return Err(ProcessedCompileError::new(
@@ -703,7 +714,7 @@ impl<'arena> ProcessedCompiler<'arena> {
         Ok(ProcessedValue::Lambda {
             params: Cow::Borrowed(params_slice),
             body,
-            variadic: false, // **R7RS RESTRICTED:** Variadic functions (lambda args body) and (lambda (a b . rest) body) not supported
+            variadic, // **R7RS RESTRICTED:** Only fully variadic functions (lambda args body) supported, dot notation not supported
         })
     }
 

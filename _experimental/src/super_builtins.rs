@@ -497,6 +497,23 @@ pub mod builtin_functions {
         Ok(ProcessedValue::List(Cow::Owned(args.to_vec())))
     }
 
+    /// Null predicate for ProcessedValue (check if value is empty list)
+    pub fn null_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
+        if args.len() != 1 {
+            return Err(RuntimeError::new(format!(
+                "Arity error: null? requires exactly 1 argument, got {}",
+                args.len()
+            )));
+        }
+
+        let result = match &args[0] {
+            ProcessedValue::List(elements) => elements.is_empty(),
+            _ => false,
+        };
+
+        Ok(ProcessedValue::Boolean(result))
+    }
+
     // **R7RS RESTRICTED:** The following builtin functions are not implemented:
     // - Boolean operators: and, or (should be special forms, not functions)
     // - Type predicates: null?, pair?, number?, string?, symbol?, boolean?

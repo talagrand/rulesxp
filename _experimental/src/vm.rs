@@ -936,11 +936,8 @@ impl VM {
     pub fn evaluate_ast(&mut self, expression: &Value) -> Result<Value, RuntimeError> {
         match expression {
             // Literals evaluate to themselves
-            Value::Integer(_)
-            | Value::UInteger(_)
-            | Value::Real(_)
-            | Value::Boolean(_)
-            | Value::String(_) => Ok(expression.clone()),
+            // **R7RS RESTRICTED:** Only i64 integers supported, no u64 or floats
+            Value::Integer(_) | Value::Boolean(_) | Value::String(_) => Ok(expression.clone()),
 
             // Symbols are variable lookups
             Value::Symbol(name) => match self.current_env.lookup(name) {
@@ -1178,11 +1175,8 @@ impl VM {
                 EvalFrame::Evaluate(expr) => {
                     match expr {
                         // Literals evaluate to themselves
-                        Value::Integer(_)
-                        | Value::UInteger(_)
-                        | Value::Real(_)
-                        | Value::Boolean(_)
-                        | Value::String(_) => {
+                        // **R7RS RESTRICTED:** Only i64 integers supported, no u64 or floats
+                        Value::Integer(_) | Value::Boolean(_) | Value::String(_) => {
                             result_stack.push(expr.clone());
                         }
 
@@ -1633,11 +1627,8 @@ impl VM {
     fn is_immediate_value(&self, value: &Value) -> bool {
         match value {
             // Literals are immediate
-            Value::Integer(_)
-            | Value::UInteger(_)
-            | Value::Real(_)
-            | Value::Boolean(_)
-            | Value::String(_) => true,
+            // **R7RS RESTRICTED:** Only i64 integers supported, no u64 or floats
+            Value::Integer(_) | Value::Boolean(_) | Value::String(_) => true,
             // Simple symbols are immediate
             Value::Symbol(_) => true,
             // Quoted values are immediate
@@ -1656,11 +1647,8 @@ impl VM {
     fn evaluate_immediate_value(&self, value: &Value) -> Result<Value, RuntimeError> {
         match value {
             // Literals evaluate to themselves
-            Value::Integer(_)
-            | Value::UInteger(_)
-            | Value::Real(_)
-            | Value::Boolean(_)
-            | Value::String(_) => Ok(value.clone()),
+            Value::Integer(_) | Value::Boolean(_) | Value::String(_) => Ok(value.clone()),
+            // **R7RS RESTRICTED:** Only i64 integers supported, no u64 or floats
             // Symbols are variable lookups
             Value::Symbol(name) => match self.current_env.lookup(name) {
                 Some(val) => Ok(val),

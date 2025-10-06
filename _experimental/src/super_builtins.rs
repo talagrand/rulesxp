@@ -12,19 +12,14 @@ use string_interner::{DefaultBackend, DefaultSymbol, StringInterner};
 pub type StringSymbol = DefaultSymbol;
 
 /// ProcessedValue enum - arena-allocated values for SuperVM
+/// **R7RS RESTRICTED:** Numeric tower simplified to i64 integers only for implementation simplicity
 #[derive(Debug, Clone)]
 pub enum ProcessedValue<'ast> {
     /// Boolean values (#t and #f)
     Boolean(bool),
 
-    /// Signed exact integers
+    /// Signed exact integers (i64 only)
     Integer(i64),
-
-    /// Unsigned exact integers  
-    UInteger(u64),
-
-    /// Inexact real numbers (f64)
-    Real(f64),
 
     /// Interned string (for compiled/static data)
     String(StringSymbol),
@@ -116,8 +111,6 @@ impl<'ast> ProcessedValue<'ast> {
         match self {
             ProcessedValue::Boolean(_) => "boolean",
             ProcessedValue::Integer(_) => "integer",
-            ProcessedValue::UInteger(_) => "unsigned-integer",
-            ProcessedValue::Real(_) => "real",
             ProcessedValue::String(_) | ProcessedValue::OwnedString(_) => "string",
             ProcessedValue::Symbol(_) | ProcessedValue::OwnedSymbol(_) => "symbol",
             ProcessedValue::List(_) => "list",
@@ -151,8 +144,6 @@ impl<'ast> PartialEq for ProcessedValue<'ast> {
         match (self, other) {
             (ProcessedValue::Boolean(a), ProcessedValue::Boolean(b)) => a == b,
             (ProcessedValue::Integer(a), ProcessedValue::Integer(b)) => a == b,
-            (ProcessedValue::UInteger(a), ProcessedValue::UInteger(b)) => a == b,
-            (ProcessedValue::Real(a), ProcessedValue::Real(b)) => a == b,
             (ProcessedValue::String(a), ProcessedValue::String(b)) => a == b,
             (ProcessedValue::Symbol(a), ProcessedValue::Symbol(b)) => a == b,
             (ProcessedValue::OwnedString(a), ProcessedValue::OwnedString(b)) => a == b,
@@ -175,56 +166,35 @@ pub mod builtin_functions {
     use super::*;
 
     /// Addition builtin for ProcessedValue
+    /// **R7RS RESTRICTED:** Only supports i64 integers for simplicity
     pub fn add_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.is_empty() {
             return Ok(ProcessedValue::Integer(0));
         }
 
         let mut result = 0i64;
-        let mut is_real = false;
-        let mut real_result = 0.0f64;
 
         for arg in args {
             match arg {
                 ProcessedValue::Integer(n) => {
-                    if is_real {
-                        real_result += *n as f64;
-                    } else {
-                        result += n;
-                    }
-                }
-                ProcessedValue::UInteger(n) => {
-                    if is_real {
-                        real_result += *n as f64;
-                    } else {
-                        result += *n as i64;
-                    }
-                }
-                ProcessedValue::Real(n) => {
-                    if !is_real {
-                        real_result = result as f64 + n;
-                        is_real = true;
-                    } else {
-                        real_result += n;
-                    }
+                    result = result
+                        .checked_add(*n)
+                        .ok_or_else(|| RuntimeError::new("Integer overflow in addition"))?;
                 }
                 _ => {
                     return Err(RuntimeError::new(format!(
-                        "Type error: + requires numbers, got {}",
+                        "Type error: + requires integers, got {}",
                         arg.type_name()
                     )));
                 }
             }
         }
 
-        if is_real {
-            Ok(ProcessedValue::Real(real_result))
-        } else {
-            Ok(ProcessedValue::Integer(result))
-        }
+        Ok(ProcessedValue::Integer(result))
     }
 
     /// Subtraction builtin for ProcessedValue
+    /// **R7RS RESTRICTED:** Only supports i64 integers for simplicity
     pub fn sub_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.is_empty() {
             return Err(RuntimeError::new(
@@ -235,103 +205,73 @@ pub mod builtin_functions {
         if args.len() == 1 {
             // Negation
             match &args[0] {
-                ProcessedValue::Integer(n) => Ok(ProcessedValue::Integer(-n)),
-                ProcessedValue::UInteger(n) => Ok(ProcessedValue::Integer(-(*n as i64))),
-                ProcessedValue::Real(n) => Ok(ProcessedValue::Real(-n)),
+                ProcessedValue::Integer(n) => n
+                    .checked_neg()
+                    .map(ProcessedValue::Integer)
+                    .ok_or_else(|| RuntimeError::new("Integer overflow in negation")),
                 _ => Err(RuntimeError::new(format!(
-                    "Type error: - requires numbers, got {}",
+                    "Type error: - requires integers, got {}",
                     args[0].type_name()
                 ))),
             }
         } else {
             // Subtraction
             let mut result = match &args[0] {
-                ProcessedValue::Integer(n) => *n as f64,
-                ProcessedValue::UInteger(n) => *n as f64,
-                ProcessedValue::Real(n) => *n,
+                ProcessedValue::Integer(n) => *n,
                 _ => {
                     return Err(RuntimeError::new(format!(
-                        "Type error: - requires numbers, got {}",
+                        "Type error: - requires integers, got {}",
                         args[0].type_name()
                     )));
                 }
             };
 
-            let mut is_real = matches!(&args[0], ProcessedValue::Real(_));
-
             for arg in &args[1..] {
                 match arg {
-                    ProcessedValue::Integer(n) => result -= *n as f64,
-                    ProcessedValue::UInteger(n) => result -= *n as f64,
-                    ProcessedValue::Real(n) => {
-                        result -= n;
-                        is_real = true;
+                    ProcessedValue::Integer(n) => {
+                        result = result
+                            .checked_sub(*n)
+                            .ok_or_else(|| RuntimeError::new("Integer overflow in subtraction"))?;
                     }
                     _ => {
                         return Err(RuntimeError::new(format!(
-                            "Type error: - requires numbers, got {}",
+                            "Type error: - requires integers, got {}",
                             arg.type_name()
                         )));
                     }
                 }
             }
 
-            if is_real || result.fract() != 0.0 {
-                Ok(ProcessedValue::Real(result))
-            } else {
-                Ok(ProcessedValue::Integer(result as i64))
-            }
+            Ok(ProcessedValue::Integer(result))
         }
     }
 
     /// Multiplication builtin for ProcessedValue
+    /// **R7RS RESTRICTED:** Only supports i64 integers for simplicity
     pub fn mul_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.is_empty() {
             return Ok(ProcessedValue::Integer(1));
         }
 
         let mut result = 1i64;
-        let mut is_real = false;
-        let mut real_result = 1.0f64;
 
         for arg in args {
             match arg {
                 ProcessedValue::Integer(n) => {
-                    if is_real {
-                        real_result *= *n as f64;
-                    } else {
-                        result *= n;
-                    }
-                }
-                ProcessedValue::UInteger(n) => {
-                    if is_real {
-                        real_result *= *n as f64;
-                    } else {
-                        result *= *n as i64;
-                    }
-                }
-                ProcessedValue::Real(n) => {
-                    if !is_real {
-                        real_result = result as f64 * n;
-                        is_real = true;
-                    } else {
-                        real_result *= n;
-                    }
+                    result = result
+                        .checked_mul(*n)
+                        .ok_or_else(|| RuntimeError::new("Integer overflow in multiplication"))?;
                 }
                 _ => {
                     return Err(RuntimeError::new(format!(
-                        "Type error: * requires numbers, got {}",
+                        "Type error: * requires integers, got {}",
                         arg.type_name()
                     )));
                 }
             }
         }
 
-        if is_real {
-            Ok(ProcessedValue::Real(real_result))
-        } else {
-            Ok(ProcessedValue::Integer(result))
-        }
+        Ok(ProcessedValue::Integer(result))
     }
 
     /// Equality builtin for ProcessedValue
@@ -345,14 +285,10 @@ pub mod builtin_functions {
 
         let result = match (&args[0], &args[1]) {
             (ProcessedValue::Integer(a), ProcessedValue::Integer(b)) => a == b,
-            (ProcessedValue::UInteger(a), ProcessedValue::UInteger(b)) => a == b,
-            (ProcessedValue::Real(a), ProcessedValue::Real(b)) => a == b,
-            (ProcessedValue::Integer(a), ProcessedValue::Real(b)) => *a as f64 == *b,
-            (ProcessedValue::Real(a), ProcessedValue::Integer(b)) => *a == *b as f64,
             (ProcessedValue::Boolean(a), ProcessedValue::Boolean(b)) => a == b,
             _ => {
                 return Err(RuntimeError::new(format!(
-                    "Type error: = requires numbers or booleans, got {} and {}",
+                    "Type error: = requires integers or booleans, got {} and {}",
                     args[0].type_name(),
                     args[1].type_name()
                 )));
@@ -362,81 +298,8 @@ pub mod builtin_functions {
         Ok(ProcessedValue::Boolean(result))
     }
 
-    /// Division builtin for ProcessedValue
-    pub fn div_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
-        if args.is_empty() {
-            return Err(RuntimeError::new(
-                "Arity error: / requires at least 1 argument",
-            ));
-        }
-
-        if args.len() == 1 {
-            // (/ x) returns 1/x
-            match &args[0] {
-                ProcessedValue::Integer(n) => {
-                    if *n == 0 {
-                        return Err(RuntimeError::new("Division by zero".to_string()));
-                    }
-                    Ok(ProcessedValue::Real(1.0 / (*n as f64)))
-                }
-                ProcessedValue::UInteger(n) => {
-                    if *n == 0 {
-                        return Err(RuntimeError::new("Division by zero"));
-                    }
-                    Ok(ProcessedValue::Real(1.0 / (*n as f64)))
-                }
-                ProcessedValue::Real(n) => {
-                    if *n == 0.0 {
-                        return Err(RuntimeError::new("Division by zero"));
-                    }
-                    Ok(ProcessedValue::Real(1.0 / n))
-                }
-                _ => Err(RuntimeError::new(format!(
-                    "Type error: / requires numbers, got {}",
-                    args[0].type_name()
-                ))),
-            }
-        } else {
-            // (/ x y z ...) returns x / y / z / ...
-            let mut result = match &args[0] {
-                ProcessedValue::Integer(n) => *n as f64,
-                ProcessedValue::UInteger(n) => *n as f64,
-                ProcessedValue::Real(n) => *n,
-                _ => {
-                    return Err(RuntimeError::new(format!(
-                        "Type error: / requires numbers, got {}",
-                        args[0].type_name()
-                    )));
-                }
-            };
-
-            for arg in &args[1..] {
-                let divisor = match arg {
-                    ProcessedValue::Integer(n) => *n as f64,
-                    ProcessedValue::UInteger(n) => *n as f64,
-                    ProcessedValue::Real(n) => *n,
-                    _ => {
-                        return Err(RuntimeError::new(format!(
-                            "Type error: / requires numbers, got {}",
-                            arg.type_name()
-                        )));
-                    }
-                };
-
-                if divisor == 0.0 {
-                    return Err(RuntimeError::new("Division by zero".to_string()));
-                }
-                result /= divisor;
-            }
-
-            // Check if result is a whole number
-            if result.fract() == 0.0 && result.is_finite() {
-                Ok(ProcessedValue::Integer(result as i64))
-            } else {
-                Ok(ProcessedValue::Real(result))
-            }
-        }
-    }
+    // **R7RS RESTRICTED:** Division and modulo operations removed for simplicity
+    // Integer division behavior is surprising and error-prone
 
     /// Less than builtin for ProcessedValue
     pub fn lt_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
@@ -449,15 +312,9 @@ pub mod builtin_functions {
 
         let result = match (&args[0], &args[1]) {
             (ProcessedValue::Integer(a), ProcessedValue::Integer(b)) => a < b,
-            (ProcessedValue::UInteger(a), ProcessedValue::UInteger(b)) => a < b,
-            (ProcessedValue::Real(a), ProcessedValue::Real(b)) => a < b,
-            (ProcessedValue::Integer(a), ProcessedValue::Real(b)) => (*a as f64) < *b,
-            (ProcessedValue::Real(a), ProcessedValue::Integer(b)) => *a < (*b as f64),
-            (ProcessedValue::Integer(a), ProcessedValue::UInteger(b)) => (*a as u64) < *b,
-            (ProcessedValue::UInteger(a), ProcessedValue::Integer(b)) => *a < (*b as u64),
             _ => {
                 return Err(RuntimeError::new(format!(
-                    "Type error: < requires numbers, got {} and {}",
+                    "Type error: < requires integers, got {} and {}",
                     args[0].type_name(),
                     args[1].type_name()
                 )));
@@ -478,15 +335,9 @@ pub mod builtin_functions {
 
         let result = match (&args[0], &args[1]) {
             (ProcessedValue::Integer(a), ProcessedValue::Integer(b)) => a > b,
-            (ProcessedValue::UInteger(a), ProcessedValue::UInteger(b)) => a > b,
-            (ProcessedValue::Real(a), ProcessedValue::Real(b)) => a > b,
-            (ProcessedValue::Integer(a), ProcessedValue::Real(b)) => (*a as f64) > *b,
-            (ProcessedValue::Real(a), ProcessedValue::Integer(b)) => *a > (*b as f64),
-            (ProcessedValue::Integer(a), ProcessedValue::UInteger(b)) => (*a as u64) > *b,
-            (ProcessedValue::UInteger(a), ProcessedValue::Integer(b)) => *a > (*b as u64),
             _ => {
                 return Err(RuntimeError::new(format!(
-                    "Type error: > requires numbers, got {} and {}",
+                    "Type error: > requires integers, got {} and {}",
                     args[0].type_name(),
                     args[1].type_name()
                 )));
@@ -507,15 +358,9 @@ pub mod builtin_functions {
 
         let result = match (&args[0], &args[1]) {
             (ProcessedValue::Integer(a), ProcessedValue::Integer(b)) => a <= b,
-            (ProcessedValue::UInteger(a), ProcessedValue::UInteger(b)) => a <= b,
-            (ProcessedValue::Real(a), ProcessedValue::Real(b)) => a <= b,
-            (ProcessedValue::Integer(a), ProcessedValue::Real(b)) => (*a as f64) <= *b,
-            (ProcessedValue::Real(a), ProcessedValue::Integer(b)) => *a <= (*b as f64),
-            (ProcessedValue::Integer(a), ProcessedValue::UInteger(b)) => (*a as u64) <= *b,
-            (ProcessedValue::UInteger(a), ProcessedValue::Integer(b)) => *a <= (*b as u64),
             _ => {
                 return Err(RuntimeError::new(format!(
-                    "Type error: <= requires numbers, got {} and {}",
+                    "Type error: <= requires integers, got {} and {}",
                     args[0].type_name(),
                     args[1].type_name()
                 )));
@@ -536,15 +381,9 @@ pub mod builtin_functions {
 
         let result = match (&args[0], &args[1]) {
             (ProcessedValue::Integer(a), ProcessedValue::Integer(b)) => a >= b,
-            (ProcessedValue::UInteger(a), ProcessedValue::UInteger(b)) => a >= b,
-            (ProcessedValue::Real(a), ProcessedValue::Real(b)) => a >= b,
-            (ProcessedValue::Integer(a), ProcessedValue::Real(b)) => (*a as f64) >= *b,
-            (ProcessedValue::Real(a), ProcessedValue::Integer(b)) => *a >= (*b as f64),
-            (ProcessedValue::Integer(a), ProcessedValue::UInteger(b)) => (*a as u64) >= *b,
-            (ProcessedValue::UInteger(a), ProcessedValue::Integer(b)) => *a >= (*b as u64),
             _ => {
                 return Err(RuntimeError::new(format!(
-                    "Type error: >= requires numbers, got {} and {}",
+                    "Type error: >= requires integers, got {} and {}",
                     args[0].type_name(),
                     args[1].type_name()
                 )));

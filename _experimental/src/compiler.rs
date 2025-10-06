@@ -311,12 +311,8 @@ impl Compiler {
         is_tail_position: bool,
     ) -> Result<(), CompileError> {
         match value {
-            Value::Boolean(_)
-            | Value::Integer(_)
-            | Value::UInteger(_)
-            | Value::Real(_)
-            | Value::String(_)
-            | Value::Unspecified => {
+            Value::Boolean(_) | Value::Integer(_) | Value::String(_) | Value::Unspecified => {
+                // **R7RS RESTRICTED:** Only i64 integers supported, no u64 or floats
                 // Literal values
                 let const_index = self.add_constant(value.clone());
                 self.emit(Opcode::LoadConst(const_index));

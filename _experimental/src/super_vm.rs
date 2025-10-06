@@ -442,8 +442,7 @@ impl SuperDirectVM {
             // Literals evaluate to themselves
             ProcessedValue::Boolean(b) => Ok(ProcessedValue::Boolean(*b)),
             ProcessedValue::Integer(i) => Ok(ProcessedValue::Integer(*i)),
-            ProcessedValue::UInteger(u) => Ok(ProcessedValue::UInteger(*u)),
-            ProcessedValue::Real(r) => Ok(ProcessedValue::Real(*r)),
+            // **R7RS RESTRICTED:** Only i64 integers supported, no u64 or floats
             ProcessedValue::OwnedString(s) => Ok(ProcessedValue::OwnedString(s.clone())),
             ProcessedValue::OwnedSymbol(s) => Ok(ProcessedValue::OwnedSymbol(s.clone())),
 
@@ -890,14 +889,13 @@ impl SuperStackVM {
 
                         ProcessedValue::Boolean(_)
                         | ProcessedValue::Integer(_)
-                        | ProcessedValue::UInteger(_)
-                        | ProcessedValue::Real(_)
                         | ProcessedValue::OwnedString(_)
                         | ProcessedValue::OwnedSymbol(_)
                         | ProcessedValue::String(_)
                         | ProcessedValue::ResolvedBuiltin { .. }
                         | ProcessedValue::Procedure { .. }
                         | ProcessedValue::Unspecified => {
+                            // **R7RS RESTRICTED:** Only i64 integers supported, no u64 or floats
                             result = expr;
                         }
 
@@ -1470,7 +1468,7 @@ mod tests {
     #[test]
     fn test_stack_evaluation() {
         // Test stack-based evaluation for simple expressions
-        let value = Value::Real(std::f64::consts::PI);
+        let value = Value::Integer(42); // **R7RS RESTRICTED:** Only i64 integers supported
         let ast1 = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let ast2 = ProcessedAST::compile(&value).expect("Failed to compile AST");
 
@@ -1485,10 +1483,10 @@ mod tests {
 
         // Results should be identical
         match (&result1, &result2) {
-            (ProcessedValue::Real(r1), ProcessedValue::Real(r2)) => {
-                assert!((r1 - r2).abs() < f64::EPSILON);
+            (ProcessedValue::Integer(i1), ProcessedValue::Integer(i2)) => {
+                assert_eq!(i1, i2);
             }
-            _ => panic!("Expected real values from both evaluations"),
+            _ => panic!("Expected integer values from both evaluations"),
         }
     }
 

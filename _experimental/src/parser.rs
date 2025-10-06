@@ -155,34 +155,21 @@ fn boolean(input: &str) -> IResult<&str, Value> {
     ))(input)
 }
 
-/// Parse numeric literals (integers and reals)
-/// **R7RS DEVIATION:** Only supports basic decimal integers and floats
-/// Missing: exact/inexact prefixes, different radixes, rational numbers, complex numbers
+/// Parse numeric literals (integers only)
+/// **R7RS RESTRICTED:** Only supports i64 integers for simplicity
+/// Missing: floats, exact/inexact prefixes, different radixes, rational numbers, complex numbers
 fn number(input: &str) -> IResult<&str, Value> {
     let (input, sign) = opt(one_of("+-"))(input)?;
-    let (input, number_str) = recognize(pair(
-        take_while1(|c: char| c.is_ascii_digit()),
-        opt(pair(char('.'), take_while1(|c: char| c.is_ascii_digit()))),
-    ))(input)?;
+    let (input, number_digits) = take_while1(|c: char| c.is_ascii_digit())(input)?;
 
-    let full_number = format!("{}{}", sign.unwrap_or('+'), number_str);
+    let full_number = format!("{}{}", sign.unwrap_or('+'), number_digits);
 
-    if number_str.contains('.') {
-        match full_number.parse::<f64>() {
-            Ok(n) => Ok((input, Value::Real(n))),
-            Err(_) => Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Float,
-            ))),
-        }
-    } else {
-        match full_number.parse::<i64>() {
-            Ok(n) => Ok((input, Value::Integer(n))),
-            Err(_) => Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Digit,
-            ))),
-        }
+    match full_number.parse::<i64>() {
+        Ok(n) => Ok((input, Value::Integer(n))),
+        Err(_) => Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Digit,
+        ))),
     }
 }
 
@@ -296,8 +283,8 @@ mod tests {
     fn test_parse_numbers() {
         assert_eq!(parse("42").unwrap(), Value::Integer(42));
         assert_eq!(parse("-17").unwrap(), Value::Integer(-17));
-        assert_eq!(parse("3.5").unwrap(), Value::Real(3.5));
-        assert_eq!(parse("-2.5").unwrap(), Value::Real(-2.5));
+        // **R7RS RESTRICTED:** Float parsing not supported, only i64 integers
+        // Real number parsing removed for simplicity
     }
 
     #[test]

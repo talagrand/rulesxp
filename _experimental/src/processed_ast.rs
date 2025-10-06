@@ -176,14 +176,7 @@ impl ProcessedAST {
             },
         );
 
-        builtins.insert(
-            div_sym,
-            ProcessedValue::ResolvedBuiltin {
-                name: div_sym,
-                arity: ProcessedArity::AtLeast(1),
-                func: builtin_functions::div_super,
-            },
-        );
+        // **R7RS RESTRICTED:** Division builtin removed for simplicity
 
         builtins.insert(
             lt_sym,
@@ -310,8 +303,7 @@ impl ProcessedAST {
         match value {
             ProcessedValue::Boolean(b) => format!("{}Boolean({})", prefix, b),
             ProcessedValue::Integer(n) => format!("{}Integer({})", prefix, n),
-            ProcessedValue::UInteger(n) => format!("{}UInteger({})", prefix, n),
-            ProcessedValue::Real(r) => format!("{}Real({})", prefix, r),
+            // **R7RS RESTRICTED:** Only i64 integers supported, no u64 or floats
             ProcessedValue::String(sym) => {
                 let s = self.interner.resolve(*sym).unwrap_or("<unresolved>");
                 format!("{}String(\"{}\")", prefix, s)
@@ -454,8 +446,7 @@ impl<'arena> ProcessedCompiler<'arena> {
             // Literals compile directly
             Value::Boolean(b) => Ok(ProcessedValue::Boolean(*b)),
             Value::Integer(n) => Ok(ProcessedValue::Integer(*n)),
-            Value::UInteger(n) => Ok(ProcessedValue::UInteger(*n)),
-            Value::Real(r) => Ok(ProcessedValue::Real(*r)),
+            // **R7RS RESTRICTED:** Only i64 integers supported, no u64 or floats
 
             // Strings get interned
             Value::String(s) => {

@@ -33,12 +33,10 @@ impl CPSTransformer {
     pub fn transform_with_continuation(&mut self, value: &Value, continuation: &Value) -> Value {
         match value {
             // Literals don't need computation - pass directly to continuation
-            Value::Integer(_)
-            | Value::UInteger(_)
-            | Value::Real(_)
-            | Value::Boolean(_)
-            | Value::String(_)
-            | Value::Symbol(_) => self.make_continuation_call(continuation, vec![value.clone()]),
+            // **R7RS RESTRICTED:** Only i64 integers supported, no u64 or floats
+            Value::Integer(_) | Value::Boolean(_) | Value::String(_) | Value::Symbol(_) => {
+                self.make_continuation_call(continuation, vec![value.clone()])
+            }
 
             // Lists are function applications or special forms
             Value::List(elements) if !elements.is_empty() => {

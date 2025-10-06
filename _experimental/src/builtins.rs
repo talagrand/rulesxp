@@ -55,14 +55,10 @@ pub fn create_builtins() -> std::collections::HashMap<String, crate::Value> {
                 let mut sum = 0i64;
                 for arg in args {
                     match arg {
-                        Value::Integer(n) => sum += n,
-                        Value::UInteger(n) => {
-                            if *n > i64::MAX as u64 {
-                                return Err("Integer overflow in addition".to_string());
-                            }
-                            sum += *n as i64;
+                        Value::Integer(n) => {
+                            sum = sum.checked_add(*n).ok_or("Integer overflow in addition")?;
                         }
-                        _ => return Err(format!("+ expects numbers, got {}", arg.type_name())),
+                        _ => return Err(format!("+ expects integers, got {}", arg.type_name())),
                     }
                 }
                 Ok(Value::Integer(sum))
@@ -79,38 +75,30 @@ pub fn create_builtins() -> std::collections::HashMap<String, crate::Value> {
                 if args.len() == 1 {
                     // Unary minus
                     match &args[0] {
-                        Value::Integer(n) => Ok(Value::Integer(-n)),
-                        Value::UInteger(n) => {
-                            if *n > i64::MAX as u64 {
-                                return Err("Integer overflow in negation".to_string());
-                            }
-                            Ok(Value::Integer(-(*n as i64)))
-                        }
-                        _ => Err(format!("- expects number, got {}", args[0].type_name())),
+                        Value::Integer(n) => Ok(Value::Integer(
+                            n.checked_neg().ok_or("Integer overflow in negation")?,
+                        )),
+                        _ => Err(format!("- expects integer, got {}", args[0].type_name())),
                     }
                 } else {
                     // Subtraction
                     let mut result = match &args[0] {
                         Value::Integer(n) => *n,
-                        Value::UInteger(n) => {
-                            if *n > i64::MAX as u64 {
-                                return Err("Integer overflow in subtraction".to_string());
-                            }
-                            *n as i64
+                        _ => {
+                            return Err(format!("- expects integers, got {}", args[0].type_name()))
                         }
-                        _ => return Err(format!("- expects numbers, got {}", args[0].type_name())),
                     };
 
                     for arg in &args[1..] {
                         match arg {
-                            Value::Integer(n) => result -= n,
-                            Value::UInteger(n) => {
-                                if *n > i64::MAX as u64 {
-                                    return Err("Integer overflow in subtraction".to_string());
-                                }
-                                result -= *n as i64;
+                            Value::Integer(n) => {
+                                result = result
+                                    .checked_sub(*n)
+                                    .ok_or("Integer overflow in subtraction")?;
                             }
-                            _ => return Err(format!("- expects numbers, got {}", arg.type_name())),
+                            _ => {
+                                return Err(format!("- expects integers, got {}", arg.type_name()))
+                            }
                         }
                     }
                     Ok(Value::Integer(result))
@@ -133,15 +121,7 @@ pub fn create_builtins() -> std::collections::HashMap<String, crate::Value> {
                                 .checked_mul(*n)
                                 .ok_or("Integer overflow in multiplication")?;
                         }
-                        Value::UInteger(n) => {
-                            if *n > i64::MAX as u64 {
-                                return Err("Integer overflow in multiplication".to_string());
-                            }
-                            product = product
-                                .checked_mul(*n as i64)
-                                .ok_or("Integer overflow in multiplication")?;
-                        }
-                        _ => return Err(format!("* expects numbers, got {}", arg.type_name())),
+                        _ => return Err(format!("* expects integers, got {}", arg.type_name())),
                     }
                 }
                 Ok(Value::Integer(product))
@@ -247,7 +227,8 @@ pub fn create_builtins() -> std::collections::HashMap<String, crate::Value> {
             name: "number?".to_string(),
             arity: Arity::Exact(1),
             func: |args| match &args[0] {
-                Value::Integer(_) | Value::UInteger(_) | Value::Real(_) => Ok(Value::Boolean(true)),
+                // **R7RS RESTRICTED:** Only i64 integers supported, no u64 or floats
+                Value::Integer(_) => Ok(Value::Boolean(true)),
                 _ => Ok(Value::Boolean(false)),
             },
         },
@@ -306,70 +287,7 @@ pub fn create_builtins() -> std::collections::HashMap<String, crate::Value> {
         },
     );
 
-    // Additional arithmetic operations needed for prelude
-    builtins.insert(
-        "modulo".to_string(),
-        Value::Builtin {
-            name: "modulo".to_string(),
-            arity: Arity::Exact(2),
-            func: |args| match (&args[0], &args[1]) {
-                (Value::Integer(a), Value::Integer(b)) => {
-                    if *b == 0 {
-                        return Err("Division by zero in modulo".to_string());
-                    }
-                    Ok(Value::Integer(a % b))
-                }
-                _ => Err("modulo expects integers".to_string()),
-            },
-        },
-    );
-
-    builtins.insert(
-        "/".to_string(),
-        Value::Builtin {
-            name: "/".to_string(),
-            arity: Arity::AtLeast(1),
-            func: |args| {
-                if args.is_empty() {
-                    return Err("/ requires at least one argument".to_string());
-                }
-
-                let first = match &args[0] {
-                    Value::Integer(n) => *n as f64,
-                    Value::Real(n) => *n,
-                    _ => return Err("/ expects numbers".to_string()),
-                };
-
-                if args.len() == 1 {
-                    // (/ x) = 1/x
-                    if first == 0.0 {
-                        return Err("Division by zero".to_string());
-                    }
-                    return Ok(Value::Real(1.0 / first));
-                }
-
-                let mut result = first;
-                for arg in &args[1..] {
-                    let val = match arg {
-                        Value::Integer(n) => *n as f64,
-                        Value::Real(n) => *n,
-                        _ => return Err("/ expects numbers".to_string()),
-                    };
-                    if val == 0.0 {
-                        return Err("Division by zero".to_string());
-                    }
-                    result /= val;
-                }
-
-                // Return integer if result is whole
-                if result.fract() == 0.0 && result.is_finite() {
-                    Ok(Value::Integer(result as i64))
-                } else {
-                    Ok(Value::Real(result))
-                }
-            },
-        },
-    );
+    // **R7RS RESTRICTED:** Division and modulo not supported for simplicity
 
     // Equality and comparison
     builtins.insert(
@@ -413,22 +331,7 @@ pub fn create_builtins() -> std::collections::HashMap<String, crate::Value> {
                                 return Ok(Value::Boolean(false));
                             }
                         }
-                        (Value::Real(a), Value::Real(b)) => {
-                            if a >= b {
-                                return Ok(Value::Boolean(false));
-                            }
-                        }
-                        (Value::Integer(a), Value::Real(b)) => {
-                            if (*a as f64) >= *b {
-                                return Ok(Value::Boolean(false));
-                            }
-                        }
-                        (Value::Real(a), Value::Integer(b)) => {
-                            if *a >= (*b as f64) {
-                                return Ok(Value::Boolean(false));
-                            }
-                        }
-                        _ => return Err("< expects numbers".to_string()),
+                        _ => return Err("< expects integers".to_string()),
                     }
                 }
                 Ok(Value::Boolean(true))
@@ -451,22 +354,7 @@ pub fn create_builtins() -> std::collections::HashMap<String, crate::Value> {
                                 return Ok(Value::Boolean(false));
                             }
                         }
-                        (Value::Real(a), Value::Real(b)) => {
-                            if a <= b {
-                                return Ok(Value::Boolean(false));
-                            }
-                        }
-                        (Value::Integer(a), Value::Real(b)) => {
-                            if (*a as f64) <= *b {
-                                return Ok(Value::Boolean(false));
-                            }
-                        }
-                        (Value::Real(a), Value::Integer(b)) => {
-                            if *a <= (*b as f64) {
-                                return Ok(Value::Boolean(false));
-                            }
-                        }
-                        _ => return Err("> expects numbers".to_string()),
+                        _ => return Err("> expects integers".to_string()),
                     }
                 }
                 Ok(Value::Boolean(true))
@@ -489,22 +377,7 @@ pub fn create_builtins() -> std::collections::HashMap<String, crate::Value> {
                                 return Ok(Value::Boolean(false));
                             }
                         }
-                        (Value::Real(a), Value::Real(b)) => {
-                            if a > b {
-                                return Ok(Value::Boolean(false));
-                            }
-                        }
-                        (Value::Integer(a), Value::Real(b)) => {
-                            if (*a as f64) > *b {
-                                return Ok(Value::Boolean(false));
-                            }
-                        }
-                        (Value::Real(a), Value::Integer(b)) => {
-                            if *a > (*b as f64) {
-                                return Ok(Value::Boolean(false));
-                            }
-                        }
-                        _ => return Err("<= expects numbers".to_string()),
+                        _ => return Err("<= expects integers".to_string()),
                     }
                 }
                 Ok(Value::Boolean(true))
@@ -527,22 +400,7 @@ pub fn create_builtins() -> std::collections::HashMap<String, crate::Value> {
                                 return Ok(Value::Boolean(false));
                             }
                         }
-                        (Value::Real(a), Value::Real(b)) => {
-                            if a < b {
-                                return Ok(Value::Boolean(false));
-                            }
-                        }
-                        (Value::Integer(a), Value::Real(b)) => {
-                            if (*a as f64) < *b {
-                                return Ok(Value::Boolean(false));
-                            }
-                        }
-                        (Value::Real(a), Value::Integer(b)) => {
-                            if *a < (*b as f64) {
-                                return Ok(Value::Boolean(false));
-                            }
-                        }
-                        _ => return Err(">= expects numbers".to_string()),
+                        _ => return Err(">= expects integers".to_string()),
                     }
                 }
                 Ok(Value::Boolean(true))

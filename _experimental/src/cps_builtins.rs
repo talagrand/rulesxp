@@ -22,22 +22,23 @@ pub fn identity_builtin(args: &[Value]) -> Result<Value, String> {
 // We'll implement specific CPS wrappers that work with the builtin system
 
 /// CPS-compatible addition - returns result directly
-/// The calling context handles continuation calls
+/// **R7RS RESTRICTED:** Only supports i64 integers for simplicity
 pub fn add_cps(args: &[Value]) -> Result<Value, String> {
     if args.is_empty() {
         return Err("add_cps expects at least 1 argument".to_string());
     }
 
-    // Simple addition logic - no continuation handling
     let mut sum = 0i64;
     for operand in args {
         match operand {
-            Value::Integer(n) => sum += n,
-            Value::UInteger(n) => sum += *n as i64,
-            Value::Real(n) => sum += *n as i64,
+            Value::Integer(n) => {
+                sum = sum
+                    .checked_add(*n)
+                    .ok_or_else(|| "Integer overflow in addition".to_string())?;
+            }
             _ => {
                 return Err(format!(
-                    "Cannot add non-numeric value: {}",
+                    "Cannot add non-integer value: {}",
                     operand.type_name()
                 ))
             }
@@ -48,6 +49,7 @@ pub fn add_cps(args: &[Value]) -> Result<Value, String> {
 }
 
 /// CPS-compatible multiplication - returns result directly
+/// **R7RS RESTRICTED:** Only supports i64 integers for simplicity
 pub fn mul_cps(args: &[Value]) -> Result<Value, String> {
     if args.is_empty() {
         return Err("mul_cps requires at least 1 argument".to_string());
@@ -56,11 +58,14 @@ pub fn mul_cps(args: &[Value]) -> Result<Value, String> {
     let mut product = 1i64;
     for operand in args {
         match operand {
-            Value::Integer(n) => product *= n,
-            Value::UInteger(n) => product *= *n as i64,
+            Value::Integer(n) => {
+                product = product
+                    .checked_mul(*n)
+                    .ok_or_else(|| "Integer overflow in multiplication".to_string())?;
+            }
             _ => {
                 return Err(format!(
-                    "Cannot multiply non-numeric value: {}",
+                    "Cannot multiply non-integer value: {}",
                     operand.type_name()
                 ))
             }
@@ -71,6 +76,7 @@ pub fn mul_cps(args: &[Value]) -> Result<Value, String> {
 }
 
 /// CPS-compatible subtraction - returns result directly
+/// **R7RS RESTRICTED:** Only supports i64 integers for simplicity
 pub fn sub_cps(args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
         return Err("sub_cps requires exactly 2 arguments (x y)".to_string());
@@ -80,27 +86,19 @@ pub fn sub_cps(args: &[Value]) -> Result<Value, String> {
     let y = &args[1];
 
     let result = match (x, y) {
-        (Value::Integer(x), Value::Integer(y)) => Value::Integer(x - y),
-        (Value::UInteger(x), Value::UInteger(y)) => {
-            if *x >= *y {
-                Value::UInteger(x - y)
-            } else {
-                Value::Integer(*x as i64 - *y as i64)
-            }
-        }
-        (Value::Integer(x), Value::UInteger(y)) => Value::Integer(x - *y as i64),
-        (Value::UInteger(x), Value::Integer(y)) => Value::Integer(*x as i64 - y),
-        (Value::Real(x), Value::Real(y)) => Value::Real(x - y),
+        (Value::Integer(x), Value::Integer(y)) => x
+            .checked_sub(*y)
+            .ok_or_else(|| "Integer overflow in subtraction".to_string())?,
         _ => {
             return Err(format!(
-                "Cannot subtract {} from {}",
+                "Cannot subtract {} from {}: only integers supported",
                 y.type_name(),
                 x.type_name()
             ))
         }
     };
 
-    Ok(result)
+    Ok(Value::Integer(result))
 }
 
 /// CPS-compatible equality comparison - returns result directly
@@ -126,13 +124,9 @@ pub fn lt_cps(args: &[Value]) -> Result<Value, String> {
 
     let result = match (x, y) {
         (Value::Integer(x), Value::Integer(y)) => Value::Boolean(x < y),
-        (Value::UInteger(x), Value::UInteger(y)) => Value::Boolean(x < y),
-        (Value::Integer(x), Value::UInteger(y)) => Value::Boolean(*x < *y as i64),
-        (Value::UInteger(x), Value::Integer(y)) => Value::Boolean((*x as i64) < *y),
-        (Value::Real(x), Value::Real(y)) => Value::Boolean(x < y),
         _ => {
             return Err(format!(
-                "Cannot compare {} with {}",
+                "Cannot compare {} with {}: only integers supported",
                 x.type_name(),
                 y.type_name()
             ))
@@ -142,84 +136,8 @@ pub fn lt_cps(args: &[Value]) -> Result<Value, String> {
     Ok(result)
 }
 
-/// CPS-compatible division - returns result directly
-pub fn div_cps(args: &[Value]) -> Result<Value, String> {
-    if args.len() != 2 {
-        return Err("div_cps requires exactly 2 arguments (x y)".to_string());
-    }
-
-    let x = &args[0];
-    let y = &args[1];
-
-    let result = match (x, y) {
-        (Value::Integer(x), Value::Integer(y)) => {
-            if *y == 0 {
-                return Err("Division by zero".to_string());
-            }
-            // Integer division in Scheme typically returns exact result
-            if x % y == 0 {
-                Value::Integer(x / y)
-            } else {
-                Value::Real(*x as f64 / *y as f64)
-            }
-        }
-        (Value::Real(x), Value::Real(y)) => {
-            if *y == 0.0 {
-                return Err("Division by zero".to_string());
-            }
-            Value::Real(x / y)
-        }
-        (Value::Integer(x), Value::Real(y)) => {
-            if *y == 0.0 {
-                return Err("Division by zero".to_string());
-            }
-            Value::Real(*x as f64 / y)
-        }
-        (Value::Real(x), Value::Integer(y)) => {
-            if *y == 0 {
-                return Err("Division by zero".to_string());
-            }
-            Value::Real(x / *y as f64)
-        }
-        _ => {
-            return Err(format!(
-                "Cannot divide {} by {}",
-                x.type_name(),
-                y.type_name()
-            ))
-        }
-    };
-
-    Ok(result)
-}
-
-/// CPS-compatible modulo - returns result directly
-pub fn mod_cps(args: &[Value]) -> Result<Value, String> {
-    if args.len() != 2 {
-        return Err("mod_cps requires exactly 2 arguments (x y)".to_string());
-    }
-
-    let x = &args[0];
-    let y = &args[1];
-
-    let result = match (x, y) {
-        (Value::Integer(x), Value::Integer(y)) => {
-            if *y == 0 {
-                return Err("Modulo by zero".to_string());
-            }
-            Value::Integer(x % y)
-        }
-        _ => {
-            return Err(format!(
-                "Modulo requires integers, got {} and {}",
-                x.type_name(),
-                y.type_name()
-            ))
-        }
-    };
-
-    Ok(result)
-}
+// **R7RS RESTRICTED:** Division and modulo operations removed for simplicity
+// Integer division behavior is surprising and error-prone
 
 /// CPS-compatible greater-than comparison - returns result directly
 pub fn gt_cps(args: &[Value]) -> Result<Value, String> {
@@ -232,13 +150,9 @@ pub fn gt_cps(args: &[Value]) -> Result<Value, String> {
 
     let result = match (x, y) {
         (Value::Integer(x), Value::Integer(y)) => Value::Boolean(x > y),
-        (Value::UInteger(x), Value::UInteger(y)) => Value::Boolean(x > y),
-        (Value::Integer(x), Value::UInteger(y)) => Value::Boolean(*x > *y as i64),
-        (Value::UInteger(x), Value::Integer(y)) => Value::Boolean((*x as i64) > *y),
-        (Value::Real(x), Value::Real(y)) => Value::Boolean(x > y),
         _ => {
             return Err(format!(
-                "Cannot compare {} with {}",
+                "Cannot compare {} with {}: only integers supported",
                 x.type_name(),
                 y.type_name()
             ))
@@ -259,13 +173,9 @@ pub fn le_cps(args: &[Value]) -> Result<Value, String> {
 
     let result = match (x, y) {
         (Value::Integer(x), Value::Integer(y)) => Value::Boolean(x <= y),
-        (Value::UInteger(x), Value::UInteger(y)) => Value::Boolean(x <= y),
-        (Value::Integer(x), Value::UInteger(y)) => Value::Boolean(*x <= *y as i64),
-        (Value::UInteger(x), Value::Integer(y)) => Value::Boolean((*x as i64) <= *y),
-        (Value::Real(x), Value::Real(y)) => Value::Boolean(x <= y),
         _ => {
             return Err(format!(
-                "Cannot compare {} with {}",
+                "Cannot compare {} with {}: only integers supported",
                 x.type_name(),
                 y.type_name()
             ))
@@ -286,13 +196,9 @@ pub fn ge_cps(args: &[Value]) -> Result<Value, String> {
 
     let result = match (x, y) {
         (Value::Integer(x), Value::Integer(y)) => Value::Boolean(x >= y),
-        (Value::UInteger(x), Value::UInteger(y)) => Value::Boolean(x >= y),
-        (Value::Integer(x), Value::UInteger(y)) => Value::Boolean(*x >= *y as i64),
-        (Value::UInteger(x), Value::Integer(y)) => Value::Boolean((*x as i64) >= *y),
-        (Value::Real(x), Value::Real(y)) => Value::Boolean(x >= y),
         _ => {
             return Err(format!(
-                "Cannot compare {} with {}",
+                "Cannot compare {} with {}: only integers supported",
                 x.type_name(),
                 y.type_name()
             ))
@@ -407,12 +313,10 @@ pub fn get_cps_builtins() -> Vec<(&'static str, CPSBuiltinFn)> {
     vec![
         // Identity continuation
         ("identity", identity_builtin),
-        // Arithmetic operations
+        // Arithmetic operations - **R7RS RESTRICTED:** Division and modulo removed
         ("+", add_cps),
         ("*", mul_cps),
         ("-", sub_cps),
-        ("/", div_cps),
-        ("mod", mod_cps),
         // Comparison operations
         ("=", eq_cps),
         ("<", lt_cps),
@@ -545,32 +449,7 @@ mod tests {
         assert_eq!(result, Value::Boolean(false));
     }
 
-    #[test]
-    fn test_div_cps() {
-        let identity = Value::Builtin {
-            name: "identity".to_string(),
-            arity: crate::value::Arity::Exact(1),
-            func: identity_builtin,
-        };
-
-        let result = div_cps(&[Value::Integer(12), Value::Integer(3), identity.clone()]).unwrap();
-        assert_eq!(result, Value::Integer(4));
-
-        let result = div_cps(&[Value::Integer(7), Value::Integer(2), identity]).unwrap();
-        assert_eq!(result, Value::Real(3.5));
-    }
-
-    #[test]
-    fn test_mod_cps() {
-        let identity = Value::Builtin {
-            name: "identity".to_string(),
-            arity: crate::value::Arity::Exact(1),
-            func: identity_builtin,
-        };
-
-        let result = mod_cps(&[Value::Integer(10), Value::Integer(3), identity]).unwrap();
-        assert_eq!(result, Value::Integer(1));
-    }
+    // **R7RS RESTRICTED:** Division and modulo tests removed
 
     #[test]
     fn test_gt_cps() {

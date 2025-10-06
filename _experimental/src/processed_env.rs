@@ -174,17 +174,17 @@ mod tests {
 
         // Define using StringSymbol
         let symbol = StringSymbol::try_from_usize(123).unwrap();
-        let value = ProcessedValue::Real(std::f64::consts::PI);
+        let value = ProcessedValue::Integer(42); // **R7RS RESTRICTED:** Only i64 integers supported
         env.define(symbol, value);
 
         // Look up using the same symbol
         let result = env.lookup(symbol);
         assert!(result.is_some());
 
-        if let Some(ProcessedValue::Real(r)) = result {
-            assert!((r - std::f64::consts::PI).abs() < f64::EPSILON);
+        if let Some(ProcessedValue::Integer(i)) = result {
+            assert_eq!(i, 42);
         } else {
-            panic!("Expected real value");
+            panic!("Expected integer value");
         }
     }
     #[test]

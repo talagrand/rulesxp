@@ -13,26 +13,21 @@ use std::rc::Rc;
 /// - Bytevectors: Not implemented yet
 /// - Ports: Not implemented yet
 /// - Records: Not implemented yet
-/// - Complex numbers and rationals: Only supports integers and reals
+/// - Complex numbers and rationals: Only supports integers
 ///
 /// **Partial Implementations:**
 /// - Numbers: Only supports i64/u64 integers and f64 floats, no arbitrary precision
 /// - Lists: No support for improper lists (dotted pairs) - only proper lists using Vec
 ///
-/// **R7RS DEVIATION:** Limited numeric tower - missing exact rationals, complex numbers, arbitrary precision
+/// **R7RS RESTRICTED:** Numeric tower simplified to i64 integers only for implementation simplicity
+/// Missing: u64, f64, exact rationals, complex numbers, arbitrary precision
 #[derive(Debug, Clone)]
 pub enum Value {
     /// Boolean values (#t and #f)
     Boolean(bool),
 
-    /// Signed exact integers
+    /// Signed exact integers (i64 only)
     Integer(i64),
-
-    /// Unsigned exact integers  
-    UInteger(u64),
-
-    /// Inexact real numbers (f64)
-    Real(f64),
 
     /// String literals
     String(String),
@@ -157,8 +152,6 @@ impl Value {
         match self {
             Value::Boolean(_) => "boolean",
             Value::Integer(_) => "integer",
-            Value::UInteger(_) => "unsigned-integer",
-            Value::Real(_) => "real",
             Value::String(_) => "string",
             Value::Symbol(_) => "symbol",
             Value::List(_) => "list",
@@ -174,8 +167,6 @@ impl PartialEq for Value {
         match (self, other) {
             (Value::Boolean(a), Value::Boolean(b)) => a == b,
             (Value::Integer(a), Value::Integer(b)) => a == b,
-            (Value::UInteger(a), Value::UInteger(b)) => a == b,
-            (Value::Real(a), Value::Real(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Symbol(a), Value::Symbol(b)) => a == b,
             (Value::List(a), Value::List(b)) => a == b,
@@ -192,8 +183,6 @@ impl fmt::Display for Value {
             Value::Boolean(true) => write!(f, "#t"),
             Value::Boolean(false) => write!(f, "#f"),
             Value::Integer(n) => write!(f, "{}", n),
-            Value::UInteger(n) => write!(f, "{}", n),
-            Value::Real(n) => write!(f, "{}", n),
             Value::String(s) => write!(f, "\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
             Value::Symbol(s) => write!(f, "{}", s),
             Value::List(elements) => {

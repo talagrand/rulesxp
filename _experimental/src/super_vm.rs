@@ -53,9 +53,189 @@
 use crate::processed_ast::{ProcessedAST, StringSymbol};
 use crate::processed_env::ProcessedEnvironment;
 use crate::super_builtins::ProcessedValue;
-use crate::vm::RuntimeError;
+use crate::vm::{RuntimeError, StackFrame};
 use std::rc::Rc;
 use string_interner::Symbol;
+
+/// **ENHANCED STACK TRACE CAPTURE:** Includes argument values from shared buffer
+fn capture_stack_trace<'ast>(
+    stack: &[SuperEvalFrame<'ast>],
+    shared_args_buffer: &[ProcessedValue<'ast>],
+) -> Vec<StackFrame> {
+    stack
+        .iter()
+        .enumerate()
+        .map(|(depth, frame)| {
+            let function_name = match frame {
+                SuperEvalFrame::Evaluate {
+                    expr,
+                    in_tail_position,
+                } => {
+                    // Enhanced expression analysis with context
+                    let tail_info = if *in_tail_position { " (tail)" } else { "" };
+                    match expr {
+                        ProcessedValue::List(list) if !list.is_empty() => match &list[0] {
+                            ProcessedValue::ResolvedBuiltin { name, .. } => {
+                                let args_preview = if list.len() > 1 {
+                                    format!(" with {} args", list.len() - 1)
+                                } else {
+                                    String::new()
+                                };
+                                Some(format!("builtin:{:?}{}{}", name, args_preview, tail_info))
+                            }
+                            ProcessedValue::Symbol(sym) => {
+                                let args_preview = if list.len() > 1 {
+                                    format!(" with {} args", list.len() - 1)
+                                } else {
+                                    String::new()
+                                };
+                                Some(format!(
+                                    "call:symbol_{}{}{}",
+                                    sym.to_usize(),
+                                    args_preview,
+                                    tail_info
+                                ))
+                            }
+                            ProcessedValue::Procedure { params, .. } => {
+                                let arity_info = format!(" (arity {})", params.len());
+                                let args_preview = if list.len() > 1 {
+                                    format!(" with {} args", list.len() - 1)
+                                } else {
+                                    String::new()
+                                };
+                                Some(format!("lambda{}{}{}", arity_info, args_preview, tail_info))
+                            }
+                            _ => Some(format!("expression{}", tail_info)),
+                        },
+                        ProcessedValue::Lambda { params, .. } => {
+                            Some(format!("lambda-def (arity {}){}", params.len(), tail_info))
+                        }
+                        ProcessedValue::If { .. } => Some(format!("if{}", tail_info)),
+                        ProcessedValue::Begin { expressions } => {
+                            Some(format!("begin ({} exprs){}", expressions.len(), tail_info))
+                        }
+                        ProcessedValue::Define { name, .. } => {
+                            Some(format!("define:symbol_{}{}", name.to_usize(), tail_info))
+                        }
+                        ProcessedValue::Integer(n) => Some(format!("literal:{}", n)),
+                        ProcessedValue::Boolean(b) => Some(format!("literal:{}", b)),
+                        ProcessedValue::Symbol(sym) => {
+                            Some(format!("var:symbol_{}", sym.to_usize()))
+                        }
+                        _ => Some(format!("expression{}", tail_info)),
+                    }
+                }
+                SuperEvalFrame::Apply {
+                    args_ref,
+                    eval_index,
+                    is_tail_position,
+                    ..
+                } => {
+                    let tail_info = if *is_tail_position { " (tail)" } else { "" };
+
+                    // Show evaluated arguments from shared buffer
+                    let mut arg_details = Vec::new();
+                    for i in (args_ref.start_index + 1)..(args_ref.start_index + eval_index) {
+                        if let Some(arg_val) = shared_args_buffer.get(i) {
+                            let arg_preview = match arg_val {
+                                ProcessedValue::Integer(n) => format!("{}", n),
+                                ProcessedValue::Boolean(b) => format!("{}", b),
+                                ProcessedValue::ResolvedBuiltin { name, .. } => {
+                                    format!("#{:?}", name)
+                                }
+                                ProcessedValue::Procedure { .. } => "λ".to_string(),
+                                ProcessedValue::Symbol(s) => format!("${}", s.to_usize()),
+                                _ => "?".to_string(),
+                            };
+                            arg_details.push(arg_preview);
+                        }
+                    }
+
+                    let progress = if arg_details.is_empty() {
+                        format!(
+                            " ({}/{} args evaluated)",
+                            eval_index.saturating_sub(1), // -1 because index 0 is the function
+                            args_ref.end_index - args_ref.start_index - 1
+                        )
+                    } else {
+                        format!(
+                            " ({}/{} args: [{}])",
+                            eval_index.saturating_sub(1),
+                            args_ref.end_index - args_ref.start_index - 1,
+                            arg_details.join(", ")
+                        )
+                    };
+
+                    Some(format!("apply{}{}", progress, tail_info))
+                }
+                SuperEvalFrame::IfContinue {
+                    in_tail_position, ..
+                } => {
+                    let tail_info = if *in_tail_position { " (tail)" } else { "" };
+                    Some(format!("if-continue{}", tail_info))
+                }
+                SuperEvalFrame::BeginContinue {
+                    expressions,
+                    current_index,
+                    in_tail_position,
+                } => {
+                    let tail_info = if *in_tail_position { " (tail)" } else { "" };
+                    let progress = format!(" ({}/{} exprs)", current_index, expressions.len());
+                    Some(format!("begin-continue{}{}", progress, tail_info))
+                }
+                SuperEvalFrame::DefineStore { name, .. } => {
+                    Some(format!("define-store:symbol_{}", name.to_usize()))
+                }
+                SuperEvalFrame::ProcedureCall { is_tail_call, .. } => {
+                    let tail_info = if *is_tail_call { " (tail)" } else { "" };
+                    Some(format!("procedure-call{}", tail_info))
+                }
+                SuperEvalFrame::RestoreEnv { .. } => Some("restore-env".to_string()),
+                SuperEvalFrame::LetrecContinue {
+                    bindings,
+                    current_index,
+                    in_tail_position,
+                    ..
+                } => {
+                    let tail_info = if *in_tail_position { " (tail)" } else { "" };
+                    let progress = format!(" ({}/{} bindings)", current_index, bindings.len());
+                    Some(format!("letrec-continue{}{}", progress, tail_info))
+                }
+            };
+
+            StackFrame {
+                function_name,
+                instruction_pointer: depth,
+                source_location: None, // Could be enhanced with actual source locations
+            }
+        })
+        .collect()
+}
+
+/// **ERROR AUGMENTATION:** Add stack trace to RuntimeError from SuperEvalFrame stack
+fn augment_error_with_stack_trace<'ast>(
+    mut error: RuntimeError,
+    stack: &[SuperEvalFrame<'ast>],
+    shared_args_buffer: &[ProcessedValue<'ast>],
+) -> RuntimeError {
+    if error.stack_trace.is_empty() {
+        error.stack_trace = capture_stack_trace(stack, shared_args_buffer);
+    }
+    error
+}
+
+/// **DIRECT ERROR CREATION:** Create RuntimeError with stack trace in one call
+fn create_runtime_error_with_stack_trace<'ast, S: Into<String>>(
+    message: S,
+    stack: &[SuperEvalFrame<'ast>],
+    shared_args_buffer: &[ProcessedValue<'ast>],
+) -> RuntimeError {
+    RuntimeError {
+        message: message.into(),
+        stack_trace: capture_stack_trace(stack, shared_args_buffer),
+        source_location: None,
+    }
+}
 
 /// Arguments for Apply frames using shared buffer indices
 /// **SHARED BUFFER OPTIMIZATION:** Instead of Box<Vec> allocation per function call,
@@ -644,10 +824,11 @@ impl SuperStackVM {
                             if let Some(value) = current_env.lookup(sym) {
                                 result = value.clone();
                             } else {
-                                return Err(RuntimeError::new(format!(
-                                    "Unbound variable: symbol_{}",
-                                    sym.to_usize()
-                                )));
+                                return Err(create_runtime_error_with_stack_trace(
+                                    format!("Unbound variable: symbol_{}", sym.to_usize()),
+                                    &stack,
+                                    &shared_args_buffer,
+                                ));
                             }
                         }
 
@@ -932,8 +1113,10 @@ impl SuperStackVM {
                     } else {
                         // **R7RS COMPLIANCE:** Check for illegal defines mixed with expressions
                         if matches!(expressions[current_index], ProcessedValue::Define { .. }) {
-                            return Err(RuntimeError::new(
-                                "Definitions must come before expressions in body".to_string(),
+                            return Err(create_runtime_error_with_stack_trace(
+                                "Definitions must come before expressions in body",
+                                &stack,
+                                &shared_args_buffer,
                             ));
                         }
 
@@ -980,8 +1163,10 @@ impl SuperStackVM {
                     if eval_index > 0 && eval_index <= args_len {
                         shared_args_buffer[result_index] = result.clone();
                     } else {
-                        return Err(RuntimeError::new(
-                            "Apply: Invalid eval_index state".to_string(),
+                        return Err(create_runtime_error_with_stack_trace(
+                            "Apply: Invalid eval_index state",
+                            &stack,
+                            &shared_args_buffer,
                         ));
                     }
 
@@ -1005,7 +1190,13 @@ impl SuperStackVM {
                                         result = builtin_result;
                                         // Environment unchanged for builtins
                                     }
-                                    Err(e) => return Err(e),
+                                    Err(e) => {
+                                        return Err(augment_error_with_stack_trace(
+                                            e,
+                                            &stack,
+                                            &shared_args_buffer,
+                                        ))
+                                    }
                                 }
 
                                 // **WATERMARK RESET:** Function complete - reset watermark to reclaim space
@@ -1019,19 +1210,27 @@ impl SuperStackVM {
                             } => {
                                 // Check argument count (exact match for non-variadic functions)
                                 if !*variadic && evaluated_args.len() != params.len() {
-                                    return Err(RuntimeError::new(format!(
-                                        "Arity mismatch: expected {} arguments, got {}",
-                                        params.len(),
-                                        evaluated_args.len()
-                                    )));
+                                    return Err(augment_error_with_stack_trace(
+                                        RuntimeError::new(format!(
+                                            "Arity mismatch: expected {} arguments, got {}",
+                                            params.len(),
+                                            evaluated_args.len()
+                                        )),
+                                        &stack,
+                                        &shared_args_buffer,
+                                    ));
                                 }
 
                                 if *variadic && evaluated_args.len() < params.len() - 1 {
-                                    return Err(RuntimeError::new(format!(
-                                        "Arity mismatch: expected at least {} arguments, got {}",
-                                        params.len() - 1,
-                                        evaluated_args.len()
-                                    )));
+                                    return Err(augment_error_with_stack_trace(
+                                        RuntimeError::new(format!(
+                                            "Arity mismatch: expected at least {} arguments, got {}",
+                                            params.len() - 1,
+                                            evaluated_args.len()
+                                        )),
+                                        &stack,
+                                        &shared_args_buffer,
+                                    ));
                                 }
 
                                 // Create new environment extending closure's captured environment
@@ -1054,8 +1253,12 @@ impl SuperStackVM {
 
                                 // **R7RS RESTRICTED:** Variadic parameters not yet supported - would need list construction
                                 if *variadic {
-                                    return Err(RuntimeError::new(
-                                        "Variadic functions not yet supported".to_string(),
+                                    return Err(augment_error_with_stack_trace(
+                                        RuntimeError::new(
+                                            "Variadic functions not yet supported".to_string(),
+                                        ),
+                                        &stack,
+                                        &shared_args_buffer,
                                     ));
                                 }
 
@@ -1072,8 +1275,10 @@ impl SuperStackVM {
                                 continue;
                             }
                             _ => {
-                                return Err(RuntimeError::new(
-                                    "Type error: not a procedure".to_string(),
+                                return Err(augment_error_with_stack_trace(
+                                    RuntimeError::new("Type error: not a procedure".to_string()),
+                                    &stack,
+                                    &shared_args_buffer,
                                 ))
                             }
                         }

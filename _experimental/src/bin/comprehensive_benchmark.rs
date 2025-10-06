@@ -20,9 +20,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Running {} iterations for all operations", ITERATIONS);
     println!();
 
-    // Load benchmark program
-    let code = std::fs::read_to_string("simple_benchmark.scm")?;
-    println!("Loaded benchmark: {} characters", code.len());
+    // Parse command line arguments
+    let args: Vec<String> = std::env::args().collect();
+    let script_path = if args.len() > 1 {
+        &args[1]
+    } else {
+        "simple_benchmark.scm" // Default fallback
+    };
+
+    // Load benchmark program with error handling
+    let code = match std::fs::read_to_string(script_path) {
+        Ok(content) => {
+            println!("Loaded benchmark script: {}", script_path);
+            content
+        }
+        Err(e) => {
+            println!("Warning: Could not load '{}': {}", script_path, e);
+            println!("Falling back to simple_benchmark.scm");
+            match std::fs::read_to_string("simple_benchmark.scm") {
+                Ok(content) => {
+                    println!("Successfully loaded fallback: simple_benchmark.scm");
+                    content
+                }
+                Err(fallback_err) => {
+                    eprintln!("Error: Could not load fallback script: {}", fallback_err);
+                    return Err(Box::new(fallback_err));
+                }
+            }
+        }
+    };
+
+    println!("Benchmark program: {} characters", code.len());
     println!("Program: {}", code.trim());
     println!();
 
@@ -111,208 +139,270 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== 1. DIRECT AST INTERPRETATION ===");
     let mut ast_times = Vec::new();
     let mut ast_result = Value::Integer(0);
+    let mut ast_success = false;
 
-    for i in 0..ITERATIONS {
-        let start = Instant::now();
-        let mut vm = VM::new_direct_interpreter(env.clone());
-        ast_result = vm.evaluate_ast(&combined_program)?;
-        let elapsed = start.elapsed();
-        ast_times.push(elapsed);
-        if i == 0 {
-            println!("First result: {:?}", ast_result);
+    match (|| -> Result<(), Box<dyn std::error::Error>> {
+        for i in 0..ITERATIONS {
+            let start = Instant::now();
+            let mut vm = VM::new_direct_interpreter(env.clone());
+            ast_result = vm.evaluate_ast(&combined_program)?;
+            let elapsed = start.elapsed();
+            ast_times.push(elapsed);
+            if i == 0 {
+                println!("First result: {:?}", ast_result);
+            }
+        }
+        Ok(())
+    })() {
+        Ok(()) => {
+            ast_success = true;
+            let ast_avg = ast_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
+            let ast_min = ast_times.iter().min().unwrap();
+            let ast_max = ast_times.iter().max().unwrap();
+            println!(
+                "Direct AST - Avg: {:?}, Min: {:?}, Max: {:?}",
+                ast_avg, ast_min, ast_max
+            );
+        }
+        Err(e) => {
+            println!("Direct AST evaluation failed: {}", e);
+            println!("Continuing with other interpreters...");
         }
     }
-
-    let ast_avg = ast_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
-    let ast_min = ast_times.iter().min().unwrap();
-    let ast_max = ast_times.iter().max().unwrap();
-    println!(
-        "Direct AST - Avg: {:?}, Min: {:?}, Max: {:?}",
-        ast_avg, ast_min, ast_max
-    );
     println!();
 
     // 2. Stack-based AST Interpretation Benchmark
     println!("=== 2. STACK-BASED AST INTERPRETATION ===");
     let mut stack_ast_times = Vec::new();
     let mut stack_ast_result = Value::Integer(0);
+    let mut stack_ast_success = false;
 
-    for i in 0..ITERATIONS {
-        let start = Instant::now();
-        let mut vm = VM::new_stack_ast_interpreter(env.clone());
-        stack_ast_result = vm.evaluate_ast_stack(&combined_program)?;
-        let elapsed = start.elapsed();
-        stack_ast_times.push(elapsed);
-        if i == 0 {
-            println!("First result: {:?}", stack_ast_result);
+    match (|| -> Result<(), Box<dyn std::error::Error>> {
+        for i in 0..ITERATIONS {
+            let start = Instant::now();
+            let mut vm = VM::new_stack_ast_interpreter(env.clone());
+            stack_ast_result = vm.evaluate_ast_stack(&combined_program)?;
+            let elapsed = start.elapsed();
+            stack_ast_times.push(elapsed);
+            if i == 0 {
+                println!("First result: {:?}", stack_ast_result);
+            }
+        }
+        Ok(())
+    })() {
+        Ok(()) => {
+            stack_ast_success = true;
+            let stack_ast_avg =
+                stack_ast_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
+            let stack_ast_min = stack_ast_times.iter().min().unwrap();
+            let stack_ast_max = stack_ast_times.iter().max().unwrap();
+            println!(
+                "Stack AST - Avg: {:?}, Min: {:?}, Max: {:?}",
+                stack_ast_avg, stack_ast_min, stack_ast_max
+            );
+        }
+        Err(e) => {
+            println!("Stack-based AST evaluation failed: {}", e);
+            println!("Continuing with other interpreters...");
         }
     }
-
-    let stack_ast_avg = stack_ast_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
-    let stack_ast_min = stack_ast_times.iter().min().unwrap();
-    let stack_ast_max = stack_ast_times.iter().max().unwrap();
-    println!(
-        "Stack AST - Avg: {:?}, Min: {:?}, Max: {:?}",
-        stack_ast_avg, stack_ast_min, stack_ast_max
-    );
     println!();
 
     // 3. Non-CPS Bytecode Benchmark
     println!("=== 3. NON-CPS BYTECODE EVALUATION ===");
-
-    // Compile multiple iterations to get average compilation time
     let mut compile_times = Vec::new();
-    let mut module = None;
-
-    for i in 0..ITERATIONS {
-        let compile_start = Instant::now();
-        let compiled = compiler::compile(&combined_program, code.clone(), env.clone())?;
-        let compile_time = compile_start.elapsed();
-        compile_times.push(compile_time);
-        if i == 0 {
-            module = Some(compiled); // Save first compilation result
-        }
-    }
-
-    let compile_avg = compile_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
-    let compile_min = compile_times.iter().min().unwrap();
-    let compile_max = compile_times.iter().max().unwrap();
-    println!(
-        "Bytecode compilation time - Avg: {:?}, Min: {:?}, Max: {:?}",
-        compile_avg, compile_min, compile_max
-    );
-
-    let module = module.unwrap();
     let mut bytecode_times = Vec::new();
     let mut bytecode_result = Value::Integer(0);
+    let mut bytecode_success = false;
 
-    for i in 0..ITERATIONS {
-        let start = Instant::now();
-        let mut vm = VM::new_with_env(env.clone(), false);
-        bytecode_result = vm.execute(&module)?;
-        let elapsed = start.elapsed();
-        bytecode_times.push(elapsed);
-        if i == 0 {
-            println!("First result: {:?}", bytecode_result);
+    match (|| -> Result<(), Box<dyn std::error::Error>> {
+        // Compile multiple iterations to get average compilation time
+        let mut module = None;
+
+        for i in 0..ITERATIONS {
+            let compile_start = Instant::now();
+            let compiled = compiler::compile(&combined_program, code.clone(), env.clone())?;
+            let compile_time = compile_start.elapsed();
+            compile_times.push(compile_time);
+            if i == 0 {
+                module = Some(compiled); // Save first compilation result
+            }
+        }
+
+        let compile_avg = compile_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
+        let compile_min = compile_times.iter().min().unwrap();
+        let compile_max = compile_times.iter().max().unwrap();
+        println!(
+            "Bytecode compilation time - Avg: {:?}, Min: {:?}, Max: {:?}",
+            compile_avg, compile_min, compile_max
+        );
+
+        let module = module.unwrap();
+
+        for i in 0..ITERATIONS {
+            let start = Instant::now();
+            let mut vm = VM::new_with_env(env.clone(), false);
+            bytecode_result = vm.execute(&module)?;
+            let elapsed = start.elapsed();
+            bytecode_times.push(elapsed);
+            if i == 0 {
+                println!("First result: {:?}", bytecode_result);
+            }
+        }
+
+        let bytecode_avg = bytecode_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
+        let bytecode_min = bytecode_times.iter().min().unwrap();
+        let bytecode_max = bytecode_times.iter().max().unwrap();
+        println!(
+            "Bytecode execution - Avg: {:?}, Min: {:?}, Max: {:?}",
+            bytecode_avg, bytecode_min, bytecode_max
+        );
+        println!(
+            "Total bytecode (compile + avg execute): {:?}",
+            compile_avg + bytecode_avg
+        );
+        Ok(())
+    })() {
+        Ok(()) => {
+            bytecode_success = true;
+        }
+        Err(e) => {
+            println!("Bytecode evaluation failed: {}", e);
+            println!("Continuing with other interpreters...");
         }
     }
-
-    let bytecode_avg = bytecode_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
-    let bytecode_min = bytecode_times.iter().min().unwrap();
-    let bytecode_max = bytecode_times.iter().max().unwrap();
-    println!(
-        "Bytecode execution - Avg: {:?}, Min: {:?}, Max: {:?}",
-        bytecode_avg, bytecode_min, bytecode_max
-    );
-    println!(
-        "Total bytecode (compile + avg execute): {:?}",
-        compile_avg + bytecode_avg
-    );
     println!();
 
     // 4. ProcessedAST Compilation + Direct Evaluation Benchmark
     println!("=== 4. PROCESSED AST DIRECT EVALUATION ===");
-
     let mut super_direct_compile_times = Vec::new();
     let mut super_direct_exec_times = Vec::new();
     let mut super_direct_result = ProcessedValue::Integer(0);
     let mut super_direct_final_vm = None;
+    let mut super_direct_success = false;
 
-    for i in 0..ITERATIONS {
-        // Time compilation separately
-        let compile_start = Instant::now();
-        let compiled_ast = ProcessedAST::compile(&combined_program)?;
-        let compile_time = compile_start.elapsed();
-        super_direct_compile_times.push(compile_time);
+    match (|| -> Result<(), Box<dyn std::error::Error>> {
+        for i in 0..ITERATIONS {
+            // Time compilation separately
+            let compile_start = Instant::now();
+            let compiled_ast = ProcessedAST::compile(&combined_program)?;
+            let compile_time = compile_start.elapsed();
+            super_direct_compile_times.push(compile_time);
 
-        // Time execution separately
-        let exec_start = Instant::now();
-        let mut vm = SuperDirectVM::new(compiled_ast);
-        let env = ProcessedEnvironment::new();
-        let result = vm.evaluate(Rc::new(env))?;
-        super_direct_result = result;
-        let exec_time = exec_start.elapsed();
-        super_direct_exec_times.push(exec_time);
+            // Time execution separately
+            let exec_start = Instant::now();
+            let mut vm = SuperDirectVM::new(compiled_ast);
+            let env = ProcessedEnvironment::new();
+            let result = vm.evaluate(Rc::new(env))?;
+            super_direct_result = result;
+            let exec_time = exec_start.elapsed();
+            super_direct_exec_times.push(exec_time);
 
-        if i == 0 {
-            println!("First result: {:?}", super_direct_result);
+            if i == 0 {
+                println!("First result: {:?}", super_direct_result);
+            }
+
+            // Keep final VM for stats
+            if i == ITERATIONS - 1 {
+                super_direct_final_vm = Some(vm);
+            }
         }
+        Ok(())
+    })() {
+        Ok(()) => {
+            super_direct_success = true;
+            let processed_compile_avg = super_direct_compile_times
+                .iter()
+                .sum::<std::time::Duration>()
+                / ITERATIONS as u32;
+            let processed_compile_min = super_direct_compile_times.iter().min().unwrap();
+            let processed_compile_max = super_direct_compile_times.iter().max().unwrap();
+            println!(
+                "ProcessedAST compilation time - Avg: {:?}, Min: {:?}, Max: {:?}",
+                processed_compile_avg, processed_compile_min, processed_compile_max
+            );
 
-        // Keep final VM for stats
-        if i == ITERATIONS - 1 {
-            super_direct_final_vm = Some(vm);
+            let super_direct_avg =
+                super_direct_exec_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
+            let super_direct_min = super_direct_exec_times.iter().min().unwrap();
+            let super_direct_max = super_direct_exec_times.iter().max().unwrap();
+            println!(
+                "ProcessedAST Direct execution (exec only) - Avg: {:?}, Min: {:?}, Max: {:?}",
+                super_direct_avg, super_direct_min, super_direct_max
+            );
+            println!(
+                "Total ProcessedAST Direct (compile + avg execute): {:?}",
+                processed_compile_avg + super_direct_avg
+            );
+        }
+        Err(e) => {
+            println!("ProcessedAST Direct evaluation failed: {}", e);
+            println!("Continuing with other interpreters...");
         }
     }
-
-    let processed_compile_avg = super_direct_compile_times
-        .iter()
-        .sum::<std::time::Duration>()
-        / ITERATIONS as u32;
-    let processed_compile_min = super_direct_compile_times.iter().min().unwrap();
-    let processed_compile_max = super_direct_compile_times.iter().max().unwrap();
-    println!(
-        "ProcessedAST compilation time - Avg: {:?}, Min: {:?}, Max: {:?}",
-        processed_compile_avg, processed_compile_min, processed_compile_max
-    );
-
-    let super_direct_avg =
-        super_direct_exec_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
-    let super_direct_min = super_direct_exec_times.iter().min().unwrap();
-    let super_direct_max = super_direct_exec_times.iter().max().unwrap();
-    println!(
-        "ProcessedAST Direct execution (exec only) - Avg: {:?}, Min: {:?}, Max: {:?}",
-        super_direct_avg, super_direct_min, super_direct_max
-    );
-    println!(
-        "Total ProcessedAST Direct (compile + avg execute): {:?}",
-        processed_compile_avg + super_direct_avg
-    );
     println!();
 
     // 5. ProcessedAST Compilation + Stack Evaluation Benchmark
     println!("=== 5. PROCESSED AST STACK EVALUATION ===");
-
     let mut super_stack_exec_times = Vec::new();
     let mut super_stack_result = ProcessedValue::Integer(0);
     let mut super_stack_final_vm = None;
+    let mut super_stack_success = false;
+    let mut processed_compile_avg = std::time::Duration::from_nanos(0);
 
-    for i in 0..ITERATIONS {
-        // Reuse compilation timing from Direct mode (same compilation process)
-        let compile_start = Instant::now();
-        let compiled_ast = ProcessedAST::compile(&combined_program)?;
-        let _compile_time = compile_start.elapsed(); // Not tracking separately for stack mode
+    match (|| -> Result<(), Box<dyn std::error::Error>> {
+        let mut stack_compile_times = Vec::new();
 
-        // Time execution separately
-        let exec_start = Instant::now();
-        let mut vm = SuperStackVM::new(compiled_ast);
-        let env = ProcessedEnvironment::new();
-        let result = vm.evaluate(Rc::new(env))?;
-        super_stack_result = result;
-        let exec_time = exec_start.elapsed();
-        super_stack_exec_times.push(exec_time);
+        for i in 0..ITERATIONS {
+            // Reuse compilation timing from Direct mode (same compilation process)
+            let compile_start = Instant::now();
+            let compiled_ast = ProcessedAST::compile(&combined_program)?;
+            let compile_time = compile_start.elapsed();
+            stack_compile_times.push(compile_time);
 
-        if i == 0 {
-            println!("First result: {:?}", super_stack_result);
+            // Time execution separately
+            let exec_start = Instant::now();
+            let mut vm = SuperStackVM::new(compiled_ast);
+            let env = ProcessedEnvironment::new();
+            let result = vm.evaluate(Rc::new(env))?;
+            super_stack_result = result;
+            let exec_time = exec_start.elapsed();
+            super_stack_exec_times.push(exec_time);
+
+            if i == 0 {
+                println!("First result: {:?}", super_stack_result);
+            }
+
+            // Keep final VM for stats
+            if i == ITERATIONS - 1 {
+                super_stack_final_vm = Some(vm);
+            }
         }
 
-        // Keep final VM for stats
-        if i == ITERATIONS - 1 {
-            super_stack_final_vm = Some(vm);
+        processed_compile_avg =
+            stack_compile_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
+        let super_stack_avg =
+            super_stack_exec_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
+        let super_stack_min = super_stack_exec_times.iter().min().unwrap();
+        let super_stack_max = super_stack_exec_times.iter().max().unwrap();
+        println!(
+            "ProcessedAST Stack execution (exec only) - Avg: {:?}, Min: {:?}, Max: {:?}",
+            super_stack_avg, super_stack_min, super_stack_max
+        );
+        println!(
+            "Total ProcessedAST Stack (compile + avg execute): {:?}",
+            processed_compile_avg + super_stack_avg
+        );
+        Ok(())
+    })() {
+        Ok(()) => {
+            super_stack_success = true;
+        }
+        Err(e) => {
+            println!("ProcessedAST Stack evaluation failed: {}", e);
+            println!("Continuing with other interpreters...");
         }
     }
-
-    let super_stack_avg =
-        super_stack_exec_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
-    let super_stack_min = super_stack_exec_times.iter().min().unwrap();
-    let super_stack_max = super_stack_exec_times.iter().max().unwrap();
-    println!(
-        "ProcessedAST Stack execution (exec only) - Avg: {:?}, Min: {:?}, Max: {:?}",
-        super_stack_avg, super_stack_min, super_stack_max
-    );
-    println!(
-        "Total ProcessedAST Stack (compile + avg execute): {:?}",
-        processed_compile_avg + super_stack_avg
-    );
 
     // Display execution statistics
     if let Some(vm) = super_direct_final_vm {
@@ -341,61 +431,163 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Results verification
     println!("=== RESULTS VERIFICATION ===");
-    println!("Direct AST result: {:?}", ast_result);
-    println!("Stack AST result: {:?}", stack_ast_result);
-    println!("Bytecode result: {:?}", bytecode_result);
-    println!("ProcessedAST Direct result: {:?}", super_direct_result);
-    println!("ProcessedAST Stack result: {:?}", super_stack_result);
+    if ast_success {
+        println!("Direct AST result: {:?}", ast_result);
+    } else {
+        println!("Direct AST result: FAILED");
+    }
+    if stack_ast_success {
+        println!("Stack AST result: {:?}", stack_ast_result);
+    } else {
+        println!("Stack AST result: FAILED");
+    }
+    if bytecode_success {
+        println!("Bytecode result: {:?}", bytecode_result);
+    } else {
+        println!("Bytecode result: FAILED");
+    }
+    if super_direct_success {
+        println!("ProcessedAST Direct result: {:?}", super_direct_result);
+    } else {
+        println!("ProcessedAST Direct result: FAILED");
+    }
+    if super_stack_success {
+        println!("ProcessedAST Stack result: {:?}", super_stack_result);
+    } else {
+        println!("ProcessedAST Stack result: FAILED");
+    }
     println!();
 
     // Performance summary
     println!("=== PERFORMANCE SUMMARY ===");
-    println!("1. Direct AST:           {:?} (baseline)", ast_avg);
-    println!(
-        "2. Stack AST:            {:?} ({:.2}x vs Direct AST)",
-        stack_ast_avg,
-        stack_ast_avg.as_nanos() as f64 / ast_avg.as_nanos() as f64
-    );
-    println!(
-        "3. Bytecode (exec only): {:?} ({:.2}x vs Direct AST)",
-        bytecode_avg,
-        bytecode_avg.as_nanos() as f64 / ast_avg.as_nanos() as f64
-    );
-    println!(
-        "4. Bytecode (total):     {:?} ({:.2}x vs Direct AST)",
-        compile_avg + bytecode_avg,
-        (compile_avg + bytecode_avg).as_nanos() as f64 / ast_avg.as_nanos() as f64
-    );
-    println!(
-        "5. SuperVM Direct (exec): {:?} ({:.2}x vs Direct AST)",
-        super_direct_avg,
-        super_direct_avg.as_nanos() as f64 / ast_avg.as_nanos() as f64
-    );
-    println!(
-        "6. SuperVM Direct (total): {:?} ({:.2}x vs Direct AST)",
-        processed_compile_avg + super_direct_avg,
-        (processed_compile_avg + super_direct_avg).as_nanos() as f64 / ast_avg.as_nanos() as f64
-    );
-    println!(
-        "7. SuperVM Stack (exec):  {:?} ({:.2}x vs Direct AST)",
-        super_stack_avg,
-        super_stack_avg.as_nanos() as f64 / ast_avg.as_nanos() as f64
-    );
-    println!(
-        "8. SuperVM Stack (total): {:?} ({:.2}x vs Direct AST)",
-        processed_compile_avg + super_stack_avg,
-        (processed_compile_avg + super_stack_avg).as_nanos() as f64 / ast_avg.as_nanos() as f64
-    );
+
+    // Find a baseline from successful interpreters
+    let baseline = if ast_success {
+        Some(ast_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32)
+    } else if stack_ast_success {
+        Some(stack_ast_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32)
+    } else if !bytecode_times.is_empty() {
+        Some(bytecode_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32)
+    } else {
+        None
+    };
+
+    if let Some(baseline_time) = baseline {
+        if ast_success {
+            let ast_avg = ast_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
+            println!("1. Direct AST:           {:?} (baseline)", ast_avg);
+        } else {
+            println!("1. Direct AST:           FAILED");
+        }
+
+        if stack_ast_success {
+            let stack_ast_avg =
+                stack_ast_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
+            println!(
+                "2. Stack AST:            {:?} ({:.2}x vs baseline)",
+                stack_ast_avg,
+                stack_ast_avg.as_nanos() as f64 / baseline_time.as_nanos() as f64
+            );
+        } else {
+            println!("2. Stack AST:            FAILED");
+        }
+
+        if bytecode_success && !bytecode_times.is_empty() {
+            let bytecode_avg =
+                bytecode_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
+            let compile_avg = compile_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
+            println!(
+                "3. Bytecode (exec only): {:?} ({:.2}x vs baseline)",
+                bytecode_avg,
+                bytecode_avg.as_nanos() as f64 / baseline_time.as_nanos() as f64
+            );
+            println!(
+                "4. Bytecode (total):     {:?} ({:.2}x vs baseline)",
+                compile_avg + bytecode_avg,
+                (compile_avg + bytecode_avg).as_nanos() as f64 / baseline_time.as_nanos() as f64
+            );
+        } else {
+            println!("3. Bytecode (exec only): FAILED");
+            println!("4. Bytecode (total):     FAILED");
+        }
+
+        if super_direct_success && !super_direct_exec_times.is_empty() {
+            let super_direct_avg =
+                super_direct_exec_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
+            let processed_compile_avg = super_direct_compile_times
+                .iter()
+                .sum::<std::time::Duration>()
+                / ITERATIONS as u32;
+            println!(
+                "5. SuperVM Direct (exec): {:?} ({:.2}x vs baseline)",
+                super_direct_avg,
+                super_direct_avg.as_nanos() as f64 / baseline_time.as_nanos() as f64
+            );
+            println!(
+                "6. SuperVM Direct (total): {:?} ({:.2}x vs baseline)",
+                processed_compile_avg + super_direct_avg,
+                (processed_compile_avg + super_direct_avg).as_nanos() as f64
+                    / baseline_time.as_nanos() as f64
+            );
+        } else {
+            println!("5. SuperVM Direct (exec): FAILED");
+            println!("6. SuperVM Direct (total): FAILED");
+        }
+
+        if super_stack_success && !super_stack_exec_times.is_empty() {
+            let super_stack_avg =
+                super_stack_exec_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
+            println!(
+                "7. SuperVM Stack (exec):  {:?} ({:.2}x vs baseline)",
+                super_stack_avg,
+                super_stack_avg.as_nanos() as f64 / baseline_time.as_nanos() as f64
+            );
+            println!(
+                "8. SuperVM Stack (total): {:?} ({:.2}x vs baseline)",
+                processed_compile_avg + super_stack_avg,
+                (processed_compile_avg + super_stack_avg).as_nanos() as f64
+                    / baseline_time.as_nanos() as f64
+            );
+        } else {
+            println!("7. SuperVM Stack (exec):  FAILED");
+            println!("8. SuperVM Stack (total): FAILED");
+        }
+    } else {
+        println!("All interpreters failed - no performance comparison available");
+    }
     println!();
 
     // Compilation time comparison
     println!("=== COMPILATION TIME COMPARISON ===");
-    println!("Bytecode compilation:    {:?}", compile_avg);
-    println!(
-        "ProcessedAST compilation: {:?} ({:.2}x vs Bytecode)",
-        processed_compile_avg,
-        processed_compile_avg.as_nanos() as f64 / compile_avg.as_nanos() as f64
-    );
+    if bytecode_success && !compile_times.is_empty() {
+        let compile_avg = compile_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
+        println!("Bytecode compilation:    {:?}", compile_avg);
+
+        if super_direct_success || super_stack_success {
+            let processed_compile_avg = if !super_direct_compile_times.is_empty() {
+                super_direct_compile_times
+                    .iter()
+                    .sum::<std::time::Duration>()
+                    / ITERATIONS as u32
+            } else {
+                processed_compile_avg
+            };
+            println!(
+                "ProcessedAST compilation: {:?} ({:.2}x vs Bytecode)",
+                processed_compile_avg,
+                processed_compile_avg.as_nanos() as f64 / compile_avg.as_nanos() as f64
+            );
+        } else {
+            println!("ProcessedAST compilation: FAILED");
+        }
+    } else {
+        println!("Bytecode compilation:    FAILED");
+        if super_direct_success || super_stack_success {
+            println!("ProcessedAST compilation: {:?}", processed_compile_avg);
+        } else {
+            println!("ProcessedAST compilation: FAILED");
+        }
+    }
 
     Ok(())
 }

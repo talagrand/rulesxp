@@ -158,6 +158,10 @@ pub struct MacroExpander {
     known_macro_symbols: std::collections::HashSet<String>,
     /// Track macro symbols emitted during current expansion for short-circuit optimization
     emitted_macro_symbols: std::collections::HashSet<String>,
+    /// **PERFORMANCE:** Dirty flag to avoid unnecessary AST comparisons
+    expansion_dirty: bool,
+    /// **PERFORMANCE:** String interner for repeated symbol names
+    symbol_cache: HashMap<String, String>,
 }
 
 impl MacroExpander {
@@ -167,6 +171,8 @@ impl MacroExpander {
             gensym_counter: 0,
             known_macro_symbols: HashSet::new(),
             emitted_macro_symbols: HashSet::new(),
+            expansion_dirty: false,
+            symbol_cache: HashMap::with_capacity(64), // Pre-allocate common symbol cache
         }
     }
 
@@ -177,17 +183,25 @@ impl MacroExpander {
 
     /// Expand an expression until it stabilizes (pre-expansion == post-expansion)
     fn expand_until_stable(&mut self, ast: &Value) -> Result<Value, MacroError> {
+        use std::borrow::Cow;
         const MAX_EXPANSIONS: usize = 100; // Safety limit for infinite expansion
-        let mut current = ast.clone();
+        let mut current = Cow::Borrowed(ast);
         let mut expansion_count = 0;
 
         loop {
-            // Clear emitted macro symbols for this expansion
+            // Clear emitted macro symbols and reset dirty flag for this expansion
             self.emitted_macro_symbols.clear();
+            self.expansion_dirty = false;
 
             let before_expansion = current.clone();
-            current = self.expand_once(&current)?;
+            let expanded = self.expand_once(&current)?;
 
+            // **PERFORMANCE:** Only clone if expansion actually changed something
+            if !self.expansion_dirty {
+                return Ok(current.into_owned());
+            }
+
+            current = Cow::Owned(expanded);
             expansion_count += 1;
             if expansion_count > MAX_EXPANSIONS {
                 return Err(MacroError(format!(
@@ -198,12 +212,12 @@ impl MacroExpander {
 
             // Short-circuit: if no macro symbols were emitted, we're definitely done
             if self.emitted_macro_symbols.is_empty() {
-                return Ok(current);
+                return Ok(current.into_owned());
             }
 
-            // Fall back to full AST comparison if macros were emitted
-            if current == before_expansion {
-                return Ok(current);
+            // **PERFORMANCE:** Only do expensive AST comparison if we still might need expansion
+            if *current == *before_expansion {
+                return Ok(current.into_owned());
             }
         }
     }
@@ -238,6 +252,7 @@ impl MacroExpander {
                     // Check if this is a macro invocation
                     if let Some(macro_def) = self.get_macro(name) {
                         // **R7RS HYGIENE:** Use hygienic macro expansion
+                        self.expansion_dirty = true; // Mark that we're doing expansion
                         return self.expand_macro_simple(&macro_def, &items[1..]);
                     }
                 }
@@ -300,7 +315,8 @@ impl MacroExpander {
                 let literals = self.parse_literals(&items[1])?;
 
                 // Parse rules
-                let mut rules = Vec::new();
+                let rule_count = items.len().saturating_sub(2);
+                let mut rules = Vec::with_capacity(rule_count); // **PERFORMANCE:** Pre-allocate
                 for rule_item in &items[2..] {
                     rules.push(self.parse_rule(rule_item, &literals)?);
                 }
@@ -325,7 +341,7 @@ impl MacroExpander {
     fn parse_literals(&self, literals: &Value) -> Result<Vec<String>, MacroError> {
         match literals {
             Value::List(items) => {
-                let mut result = Vec::new();
+                let mut result = Vec::with_capacity(items.len()); // **PERFORMANCE:** Pre-allocate
                 for item in items {
                     match item {
                         Value::Symbol(s) => result.push(s.clone()),
@@ -387,7 +403,7 @@ impl MacroExpander {
                     return Ok(MacroPattern::List(Vec::new()));
                 }
 
-                let mut patterns = Vec::new();
+                let mut patterns = Vec::with_capacity(items.len()); // **PERFORMANCE:** Pre-allocate
                 let mut i = 0;
                 while i < items.len() {
                     // Check for ellipsis patterns
@@ -453,7 +469,7 @@ impl MacroExpander {
         match template {
             Value::Symbol(s) => Ok(MacroTemplate::Variable(s.clone())),
             Value::List(items) => {
-                let mut templates = Vec::new();
+                let mut templates = Vec::with_capacity(items.len()); // **PERFORMANCE:** Pre-allocate
                 let mut i = 0;
                 while i < items.len() {
                     if i + 1 < items.len() {
@@ -517,7 +533,7 @@ impl MacroExpander {
         args: &[Value],
         literals: &[String],
     ) -> Result<PatternBindings, MacroError> {
-        let mut bindings = HashMap::new();
+        let mut bindings = HashMap::with_capacity(8); // **PERFORMANCE:** Pre-allocate common case
         self.match_pattern_recursive(pattern, args, literals, &mut bindings)?;
         Ok(bindings)
     }
@@ -537,11 +553,12 @@ impl MacroExpander {
             match &patterns[pattern_idx] {
                 MacroPattern::Ellipsis(sub_pattern) => {
                     // Handle ellipsis pattern - match zero or more
-                    let mut ellipsis_matches = Vec::new();
+                    let remaining_items = items.len() - item_idx;
+                    let mut ellipsis_matches = Vec::with_capacity(remaining_items); // **PERFORMANCE:** Pre-allocate
 
                     // Try to match as many items as possible with the sub-pattern
                     while item_idx < items.len() {
-                        let mut sub_bindings = HashMap::new();
+                        let mut sub_bindings = HashMap::with_capacity(4); // **PERFORMANCE:** Pre-allocate small binding map
 
                         match self.match_pattern_recursive(
                             sub_pattern,
@@ -669,12 +686,12 @@ impl MacroExpander {
             }
             MacroPattern::Ellipsis(sub_pattern) => {
                 // Match zero or more instances of the sub-pattern
-                let mut matched_values = Vec::new();
+                let mut matched_values = Vec::with_capacity(args.len()); // **PERFORMANCE:** Pre-allocate for common case
                 let mut i = 0;
 
                 while i < args.len() {
                     // Try to match the sub-pattern against remaining args
-                    let mut sub_bindings = HashMap::new();
+                    let mut sub_bindings = HashMap::with_capacity(2); // **PERFORMANCE:** Small allocation for simple patterns
 
                     match self.match_pattern_recursive(
                         sub_pattern,
@@ -768,7 +785,7 @@ impl MacroExpander {
                 Ok(value.clone())
             }
             MacroTemplate::List(sub_templates) => {
-                let mut result = Vec::new();
+                let mut result = Vec::with_capacity(sub_templates.len()); // **PERFORMANCE:** Pre-allocate based on template count
 
                 for sub_template in sub_templates {
                     match sub_template {
@@ -833,7 +850,7 @@ impl MacroExpander {
             }
             MacroTemplate::Ellipsis(sub_template) => {
                 // Expand the sub-template for each bound value
-                let mut expanded_values = Vec::new();
+                let mut expanded_values = Vec::with_capacity(8); // **PERFORMANCE:** Pre-allocate common ellipsis case
 
                 // Find variables in the sub-template that have multiple bindings
                 match sub_template.as_ref() {
@@ -906,6 +923,14 @@ impl MacroExpander {
     /// Get a macro definition from the local macro storage
     fn get_macro(&self, name: &str) -> Option<MacroDefinition> {
         self.macros.get(name).cloned()
+    }
+
+    /// **PERFORMANCE:** Intern commonly used symbol names to reduce allocations
+    fn intern_symbol(&mut self, name: &str) -> &str {
+        if !self.symbol_cache.contains_key(name) {
+            self.symbol_cache.insert(name.to_string(), name.to_string());
+        }
+        self.symbol_cache.get(name).unwrap()
     }
 
     /// **SIMPLIFIED:** Generate a fresh identifier when needed
@@ -996,8 +1021,9 @@ impl MacroExpander {
         macro_def: &MacroDefinition,
         args: &[Value],
     ) -> Result<Value, MacroError> {
-        // Reconstruct the full macro call for pattern matching
-        let mut full_call = vec![Value::Symbol(macro_def.name.clone())];
+        // **PERFORMANCE:** Reconstruct the full macro call with pre-allocated capacity
+        let mut full_call = Vec::with_capacity(1 + args.len());
+        full_call.push(Value::Symbol(macro_def.name.clone()));
         full_call.extend_from_slice(args);
 
         // Convert to a single List value for pattern matching

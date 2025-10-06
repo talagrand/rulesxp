@@ -37,15 +37,6 @@ impl<'ast> ProcessedEnvironment<'ast> {
         }
     }
 
-    /// Create a new environment with standard library prelude
-    pub fn with_prelude(
-        _arena: &'ast bumpalo::Bump,
-        _interner: &StringInterner<DefaultBackend>,
-    ) -> Self {
-        // For now, just create empty environment - builtins are resolved at compile time
-        Self::new()
-    }
-
     /// Define a variable using StringSymbol (mutates in place like old Environment)
     pub fn define(&self, symbol: StringSymbol, value: ProcessedValue<'ast>) {
         self.bindings.borrow_mut().insert(symbol, value);
@@ -70,11 +61,6 @@ impl<'ast> ProcessedEnvironment<'ast> {
     /// Check if this environment has any parent
     pub fn has_parent(&self) -> bool {
         self.parent.is_some()
-    }
-
-    /// Get the number of bindings in the current environment (not including parent)
-    pub fn local_len(&self) -> usize {
-        self.bindings.borrow().len()
     }
 }
 

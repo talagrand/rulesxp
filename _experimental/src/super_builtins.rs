@@ -82,6 +82,12 @@ pub enum ProcessedValue<'ast> {
         expressions: Cow<'ast, [ProcessedValue<'ast>]>,
     },
 
+    /// letrec binding construct with parallel binding for mutual recursion
+    Letrec {
+        bindings: Cow<'ast, [(StringSymbol, ProcessedValue<'ast>)]>,
+        body: &'ast ProcessedValue<'ast>,
+    },
+
     /// Unspecified value (returned by some procedures)
     Unspecified,
 }
@@ -122,6 +128,7 @@ impl<'ast> ProcessedValue<'ast> {
             ProcessedValue::Lambda { .. } => "lambda-expression",
             ProcessedValue::Quote { .. } => "quote-expression",
             ProcessedValue::Begin { .. } => "begin-expression",
+            ProcessedValue::Letrec { .. } => "letrec-expression",
             ProcessedValue::Unspecified => "unspecified",
         }
     }

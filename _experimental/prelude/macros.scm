@@ -70,18 +70,45 @@
 
 ;; ===== LOCAL BINDING FORMS =====
 ;; R7RS section 4.2.2 - derived expressions for local variable binding
+
+;; Basic let - transforms to lambda application
+;; R7RS: (let ((var val) ...) body ...)
 (define-syntax let
   (syntax-rules ()
     ((let ((var val) ...) body ...)
      ((lambda (var ...) body ...) val ...))))
 
-;; Named let
+;; let* - sequential binding, each binding sees previous ones
+;; R7RS: (let* ((var val) ...) body ...)
+;; Expands to nested let forms for sequential evaluation
 (define-syntax let*
   (syntax-rules ()
     ((let* () body ...)
      (begin body ...))
     ((let* ((var val) binding ...) body ...)
      (let ((var val)) (let* (binding ...) body ...)))))
+
+;; letrec - parallel binding for mutual recursion
+;; R7RS: (letrec ((var val) ...) body ...)
+;; This is a PRIMITIVE form handled by the VM, not a macro
+;; Included here for documentation - the VM directly evaluates letrec
+
+;; letrec* - sequential binding with forward reference support
+;; R7RS: (letrec* ((var val) ...) body ...)
+;; Unlike let*, later bindings can reference earlier ones (like letrec)
+;; but evaluation is left-to-right sequential (like let*)
+;;
+;; **IMPLEMENTATION NOTE:** This expands to nested letrec forms
+;; Each binding gets its own letrec scope so later inits can reference it
+(define-syntax letrec*
+  (syntax-rules ()
+    ((letrec* () body ...)
+     (begin body ...))
+    ((letrec* ((var val)) body ...)
+     (letrec ((var val)) body ...))
+    ((letrec* ((var1 val1) (var2 val2) binding ...) body ...)
+     (letrec ((var1 val1))
+       (letrec* ((var2 val2) binding ...) body ...)))))
 
 ;; ===== ITERATION FORMS =====
 ;; R7RS section 4.2.4 - derived expressions for iteration

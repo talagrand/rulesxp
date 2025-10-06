@@ -131,6 +131,14 @@ enum SuperEvalFrame<'ast> {
     },
     /// Restore environment after procedure call completes
     RestoreEnv { env: Rc<ProcessedEnvironment<'ast>> },
+    /// Continue with letrec evaluation - evaluating bindings sequentially  
+    LetrecContinue {
+        bindings: std::borrow::Cow<'ast, [(StringSymbol, ProcessedValue<'ast>)]>,
+        body: ProcessedValue<'ast>,
+        current_index: usize,
+        env: Rc<ProcessedEnvironment<'ast>>,
+        in_tail_position: bool,
+    },
 }
 
 /// SuperDirectVM - High-Performance Recursive ProcessedAST Evaluator
@@ -419,6 +427,45 @@ impl SuperDirectVM {
                     // Evaluate and return the last expression
                     self.evaluate_direct(&expressions[expressions.len() - 1], env)
                 }
+            }
+            ProcessedValue::Letrec { bindings, body } => {
+                // **R7RS LETREC SEMANTICS:** Parallel binding with mutual recursion support
+                // Create new environment for letrec scope
+                let letrec_env = ProcessedEnvironment::with_parent(Rc::clone(&env));
+                let letrec_env_rc = Rc::new(letrec_env);
+
+                // First pass: bind all variables to unspecified (to allow mutual references)
+                for (name, _) in bindings.iter() {
+                    letrec_env_rc.define(*name, ProcessedValue::Unspecified);
+                }
+
+                // Second pass: evaluate all init expressions in PARENT environment (not letrec env)
+                // This ensures true parallel binding - init expressions cannot depend on each other
+                for (name, init_expr) in bindings.iter() {
+                    let mut init_value = self.evaluate_direct(init_expr, Rc::clone(&env))?;
+
+                    // **MUTUAL RECURSION FIX:** If the init value is a procedure, update its environment
+                    // to the letrec environment so it can see other letrec bindings
+                    if let ProcessedValue::Procedure {
+                        params,
+                        body,
+                        variadic,
+                        ..
+                    } = &init_value
+                    {
+                        init_value = ProcessedValue::Procedure {
+                            params: params.clone(),
+                            body: *body,
+                            env: Rc::clone(&letrec_env_rc),
+                            variadic: *variadic,
+                        };
+                    }
+
+                    letrec_env_rc.redefine(*name, init_value);
+                }
+
+                // Evaluate body in the letrec environment
+                self.evaluate_direct(body, letrec_env_rc)
             }
             ProcessedValue::Unspecified => Ok(ProcessedValue::Unspecified),
         }
@@ -763,20 +810,85 @@ impl SuperStackVM {
                                 });
                                 continue;
                             } else {
-                                // Multiple expressions - last one gets tail position
-                                stack.push(SuperEvalFrame::BeginContinue {
-                                    expressions: expressions.clone(),
-                                    current_index: 1, // Start from index 1 after evaluating first
-                                    in_tail_position, // Pass tail position for final expression
-                                });
+                                // **R7RS INTERNAL DEFINITIONS:** Check if first expression is a define
+                                // If so, transform to letrec* semantics. Otherwise, delegate to BeginContinue.
+                                if let ProcessedValue::Define { name, value } = &expressions[0] {
+                                    // **LETREC TRANSFORMATION:** Transform first definition into single-binding letrec
+                                    // This achieves letrec* semantics by processing definitions one at a time
+                                    let binding = (*name, (*value).clone());
 
-                                // Evaluate the first expression (index 0) - not in tail position
-                                stack.push(SuperEvalFrame::Evaluate {
-                                    expr: expressions[0].clone(),
-                                    in_tail_position: false,
-                                });
-                                continue;
+                                    // Create new environment for this letrec binding
+                                    let letrec_env =
+                                        ProcessedEnvironment::with_parent(Rc::clone(&current_env));
+
+                                    // Bind variable to unspecified initially (standard letrec semantics)
+                                    letrec_env.define(*name, ProcessedValue::Unspecified);
+
+                                    // Create the body for this letrec - remaining expressions
+                                    let body_for_letrec = if expressions.len() == 1 {
+                                        ProcessedValue::Unspecified
+                                    } else if expressions.len() == 2 {
+                                        expressions[1].clone()
+                                    } else {
+                                        ProcessedValue::Begin {
+                                            expressions: std::borrow::Cow::Owned(
+                                                expressions[1..].to_vec(),
+                                            ),
+                                        }
+                                    };
+
+                                    // Set up letrec continuation to evaluate init and then body
+                                    stack.push(SuperEvalFrame::LetrecContinue {
+                                        bindings: std::borrow::Cow::Owned(vec![binding]),
+                                        body: body_for_letrec,
+                                        current_index: 1, // Will finish with body evaluation
+                                        env: Rc::new(letrec_env),
+                                        in_tail_position,
+                                    });
+
+                                    // Evaluate init expression first (in parent environment)
+                                    stack.push(SuperEvalFrame::Evaluate {
+                                        expr: (*value).clone(),
+                                        in_tail_position: false,
+                                    });
+                                    continue;
+                                } else {
+                                    // No internal definitions - delegate to BeginContinue
+                                    stack.push(SuperEvalFrame::BeginContinue {
+                                        expressions: expressions.clone(),
+                                        current_index: 1, // Start from index 1 after evaluating first
+                                        in_tail_position, // Pass tail position for final expression
+                                    });
+
+                                    // Evaluate the first expression (index 0) - not in tail position
+                                    stack.push(SuperEvalFrame::Evaluate {
+                                        expr: expressions[0].clone(),
+                                        in_tail_position: false,
+                                    });
+                                    continue;
+                                }
                             }
+                        }
+                        ProcessedValue::Letrec { bindings, body } => {
+                            // **R7RS LETREC SEMANTICS:** Parallel binding with mutual recursion support
+                            // Create new environment for letrec scope
+                            let new_env =
+                                ProcessedEnvironment::with_parent(Rc::clone(&current_env));
+
+                            // First pass: bind all variables to unspecified (to allow mutual references)
+                            for (name, _) in bindings.iter() {
+                                new_env.define(*name, ProcessedValue::Unspecified);
+                            }
+
+                            // Push evaluation continuation for letrec
+                            stack.push(SuperEvalFrame::LetrecContinue {
+                                bindings: bindings.clone(),
+                                body: body.clone(),
+                                current_index: 0,
+                                env: Rc::new(new_env),
+                                in_tail_position,
+                            });
+                            continue;
                         }
                     }
                 }
@@ -817,29 +929,38 @@ impl SuperStackVM {
                     // Continue evaluating remaining expressions in begin
                     if current_index >= expressions.len() {
                         // All expressions evaluated, result is already set
-                    } else if current_index == expressions.len() - 1 {
-                        // Last expression - evaluate in appropriate position
-                        let last_expr = expressions[current_index].clone();
-                        stack.push(SuperEvalFrame::Evaluate {
-                            expr: last_expr,
-                            in_tail_position, // Use the tail position flag from BeginContinue
-                        });
                     } else {
-                        // More expressions to evaluate after this one
-                        let current_expr = expressions[current_index].clone();
+                        // **R7RS COMPLIANCE:** Check for illegal defines mixed with expressions
+                        if matches!(expressions[current_index], ProcessedValue::Define { .. }) {
+                            return Err(RuntimeError::new(
+                                "Definitions must come before expressions in body".to_string(),
+                            ));
+                        }
 
-                        // Push another BeginContinue for the remaining expressions
-                        stack.push(SuperEvalFrame::BeginContinue {
-                            expressions,
-                            current_index: current_index + 1,
-                            in_tail_position, // Preserve tail position context
-                        });
+                        if current_index == expressions.len() - 1 {
+                            // Last expression - evaluate in appropriate position
+                            let last_expr = expressions[current_index].clone();
+                            stack.push(SuperEvalFrame::Evaluate {
+                                expr: last_expr,
+                                in_tail_position, // Use the tail position flag from BeginContinue
+                            });
+                        } else {
+                            // More expressions to evaluate after this one
+                            let current_expr = expressions[current_index].clone();
 
-                        // Evaluate the current expression
-                        stack.push(SuperEvalFrame::Evaluate {
-                            expr: current_expr,
-                            in_tail_position: false,
-                        });
+                            // Push another BeginContinue for the remaining expressions
+                            stack.push(SuperEvalFrame::BeginContinue {
+                                expressions,
+                                current_index: current_index + 1,
+                                in_tail_position, // Preserve tail position context
+                            });
+
+                            // Evaluate the current expression
+                            stack.push(SuperEvalFrame::Evaluate {
+                                expr: current_expr,
+                                in_tail_position: false,
+                            });
+                        }
                     }
                 }
                 SuperEvalFrame::Apply {
@@ -1029,6 +1150,69 @@ impl SuperStackVM {
                 SuperEvalFrame::RestoreEnv { env } => {
                     // Restore the previous environment after procedure call completes
                     current_env = env;
+                }
+                SuperEvalFrame::LetrecContinue {
+                    bindings,
+                    body,
+                    current_index,
+                    env,
+                    in_tail_position,
+                } => {
+                    // Continue letrec evaluation - update current binding with evaluated result
+                    if current_index > 0 {
+                        // We just evaluated an init expression, store its result
+                        let (name, _) = &bindings[current_index - 1];
+
+                        // **MUTUAL RECURSION FIX:** If the result is a procedure, update its environment
+                        // to the letrec environment so it can see other letrec bindings
+                        let fixed_result = match &result {
+                            ProcessedValue::Procedure {
+                                params,
+                                body,
+                                variadic,
+                                ..
+                            } => ProcessedValue::Procedure {
+                                params: params.clone(),
+                                body: *body,
+                                env: Rc::clone(&env),
+                                variadic: *variadic,
+                            },
+                            _ => result.clone(),
+                        };
+
+                        env.redefine(*name, fixed_result);
+                    }
+
+                    // Evaluate next binding if any remain
+                    if current_index < bindings.len() {
+                        let (_, init_expr) = &bindings[current_index];
+
+                        // Continue with next binding
+                        stack.push(SuperEvalFrame::LetrecContinue {
+                            bindings: bindings.clone(),
+                            body: body.clone(),
+                            current_index: current_index + 1,
+                            env: Rc::clone(&env),
+                            in_tail_position,
+                        });
+
+                        // Evaluate the init expression in the PARENT environment (not letrec env)
+                        // This ensures true parallel binding - init expressions cannot depend on each other
+                        // current_env stays as the original parent environment for init evaluation
+                        stack.push(SuperEvalFrame::Evaluate {
+                            expr: init_expr.clone(),
+                            in_tail_position: false,
+                        });
+                        continue;
+                    } else {
+                        // All bindings evaluated, now evaluate body in tail position
+                        current_env = env;
+                        stack.push(SuperEvalFrame::Evaluate {
+                            expr: body,
+                            in_tail_position,
+                        });
+                        continue;
+                    }
                 }
             }
         }

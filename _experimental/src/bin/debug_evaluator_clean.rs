@@ -13,7 +13,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
         eprintln!("Usage: {} <mode> <file.scm>", args[0]);
-        eprintln!("Modes: ast, stackast, noncps");
+        eprintln!("Modes: ast (legacy), stackast (legacy), noncps");
+        eprintln!("Note: ast/stackast modes don't support letrec - use ProcessedAST system for full R7RS support");
         std::process::exit(1);
     }
 
@@ -50,7 +51,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match mode.as_str() {
         "ast" => {
-            println!("=== DIRECT AST INTERPRETATION ===");
+            println!("=== DIRECT AST INTERPRETATION (LEGACY) ===");
+            println!("WARNING: This mode uses legacy VM and does not support letrec/letrec*");
+            println!("For full R7RS support including letrec, use ProcessedAST system instead.");
+            println!();
 
             // Expand macros for AST interpretation
             let mut macro_expander = MacroExpander::new(env.clone());
@@ -82,7 +86,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         "stackast" => {
-            println!("=== STACK-BASED AST INTERPRETATION ===");
+            println!("=== STACK-BASED AST INTERPRETATION (LEGACY) ===");
+            println!("WARNING: This mode uses legacy VM and does not support letrec/letrec*");
+            println!("For full R7RS support including letrec, use ProcessedAST system instead.");
+            println!();
 
             // Expand macros for AST interpretation
             let mut macro_expander = MacroExpander::new(env.clone());

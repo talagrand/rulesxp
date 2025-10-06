@@ -58,7 +58,7 @@ use crate::value::Value;
 use bumpalo::Bump;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use string_interner::{DefaultBackend, DefaultSymbol, StringInterner, Symbol};
+use string_interner::{DefaultBackend, DefaultSymbol, StringInterner};
 
 /// Type alias for string symbols
 pub type StringSymbol = DefaultSymbol;
@@ -424,6 +424,21 @@ impl ProcessedAST {
                 result.push_str(&format!("{}]", prefix));
                 result
             }
+            ProcessedValue::Letrec { bindings, body } => {
+                let mut result = format!("{}Letrec[\n", prefix);
+                result.push_str(&format!("{}  bindings:\n", prefix));
+                for (name, init) in bindings.iter() {
+                    let name_str = self.interner.resolve(*name).unwrap_or("<unresolved>");
+                    result.push_str(&format!("{}    {} =>\n", prefix, name_str));
+                    result.push_str(&self.dump_value(init, indent + 3));
+                    result.push('\n');
+                }
+                result.push_str(&format!("{}  body:\n", prefix));
+                result.push_str(&self.dump_value(body, indent + 2));
+                result.push('\n');
+                result.push_str(&format!("{}]", prefix));
+                result
+            }
             ProcessedValue::Unspecified => format!("{}Unspecified", prefix),
         }
     }
@@ -470,42 +485,38 @@ impl<'arena> ProcessedCompiler<'arena> {
                         "lambda" => self.compile_lambda(elements),
                         "quote" => self.compile_quote(elements),
                         "begin" => self.compile_begin(elements),
+                        "letrec" => self.compile_letrec(elements),
                         // **R7RS DEVIATION:** The following standard R7RS special forms are NOT implemented in ProcessedAST
                         // These forms are handled by the macro system instead (see prelude/macros.scm):
                         "and" | "or" | "when" | "unless" | "cond" | "case" | "let" | "let*" | "do" => {
-                            return Err(ProcessedCompileError::new(format!(
+                            Err(ProcessedCompileError::new(format!(
                                 "R7RS DEVIATION: {} is a derived expression handled by macro system, not ProcessedAST compiler. \
                                  Must be macro-expanded before ProcessedAST compilation.", first
                             )))
                         }
                         // **R7RS RESTRICTED:** The following forms are not supported at all:
-                        "letrec" => {
-                            return Err(ProcessedCompileError::new(
-                                "R7RS RESTRICTED: letrec requires mutual recursion support not implemented in ProcessedAST".to_string()
-                            ))
-                        }
                         "set!" => {
-                            return Err(ProcessedCompileError::new(
+                            Err(ProcessedCompileError::new(
                                 "R7RS RESTRICTED: Variable mutation (set!) not supported - all bindings are immutable".to_string()
                             ))
                         }
                         "call/cc" | "call-with-current-continuation" => {
-                            return Err(ProcessedCompileError::new(
+                            Err(ProcessedCompileError::new(
                                 "R7RS RESTRICTED: Continuations (call/cc) not implemented in ProcessedAST".to_string()
                             ))
                         }
                         "dynamic-wind" => {
-                            return Err(ProcessedCompileError::new(
+                            Err(ProcessedCompileError::new(
                                 "R7RS RESTRICTED: dynamic-wind not implemented in ProcessedAST".to_string()
                             ))
                         }
                         "let-syntax" | "letrec-syntax" => {
-                            return Err(ProcessedCompileError::new(
+                            Err(ProcessedCompileError::new(
                                 "R7RS RESTRICTED: Local macro definitions not supported in ProcessedAST".to_string()
                             ))
                         }
                         "define-syntax" => {
-                            return Err(ProcessedCompileError::new(
+                            Err(ProcessedCompileError::new(
                                 "R7RS DEVIATION: Macro definitions should be handled by macro system before ProcessedAST compilation".to_string()
                             ))
                         }
@@ -575,15 +586,20 @@ impl<'arena> ProcessedCompiler<'arena> {
         &mut self,
         elements: &[Value],
     ) -> Result<ProcessedValue<'arena>, ProcessedCompileError> {
-        if elements.len() != 3 {
+        if elements.len() < 3 {
             return Err(ProcessedCompileError::new(
-                "define requires exactly 2 arguments".to_string(),
+                "define requires at least 2 arguments".to_string(),
             ));
         }
 
         let (name, value_expr) = match &elements[1] {
             // Variable definition: (define var expr)
             Value::Symbol(s) => {
+                if elements.len() != 3 {
+                    return Err(ProcessedCompileError::new(
+                        "Variable define requires exactly 1 value expression".to_string(),
+                    ));
+                }
                 let name = self.interner.get_or_intern(s);
                 (name, &elements[2])
             }
@@ -596,12 +612,23 @@ impl<'arena> ProcessedCompiler<'arena> {
                         // Extract parameters: (func arg1 arg2 ...) -> (arg1 arg2 ...)
                         let params = func_def[1..].to_vec();
 
+                        // Handle multiple body expressions by wrapping in begin
+                        let body = if elements.len() == 3 {
+                            // Single body expression
+                            elements[2].clone()
+                        } else {
+                            // Multiple body expressions - wrap in begin
+                            let mut begin_elements = vec![Value::Symbol("begin".to_string())];
+                            begin_elements.extend(elements[2..].iter().cloned());
+                            Value::List(begin_elements)
+                        };
+
                         // Compile lambda directly without creating temporary Value
                         // This is equivalent to: (lambda (args...) body...)
                         let lambda_elements = vec![
                             Value::Symbol("lambda".to_string()),
                             Value::List(params),
-                            elements[2].clone(), // body
+                            body,
                         ];
 
                         let lambda_value = self.compile_lambda(&lambda_elements)?;
@@ -674,13 +701,13 @@ impl<'arena> ProcessedCompiler<'arena> {
                 begin_exprs.push(self.compile_value(expr)?);
             }
             // Move data into arena-allocated slice
-            let begin_slice = self.arena.alloc_slice_fill_iter(begin_exprs.into_iter());
+            let begin_slice = self.arena.alloc_slice_fill_iter(begin_exprs);
             self.arena.alloc(ProcessedValue::Begin {
                 expressions: Cow::Borrowed(begin_slice),
             })
         };
 
-        let params_slice = self.arena.alloc_slice_fill_iter(params.into_iter());
+        let params_slice = self.arena.alloc_slice_fill_iter(params);
 
         Ok(ProcessedValue::Lambda {
             params: Cow::Borrowed(params_slice),
@@ -718,9 +745,62 @@ impl<'arena> ProcessedCompiler<'arena> {
             expressions.push(self.compile_value(expr)?);
         }
 
-        let expr_slice = self.arena.alloc_slice_fill_iter(expressions.into_iter());
+        let expr_slice = self.arena.alloc_slice_fill_iter(expressions);
         Ok(ProcessedValue::Begin {
             expressions: Cow::Borrowed(expr_slice),
+        })
+    }
+
+    /// Compile letrec special form
+    fn compile_letrec(
+        &mut self,
+        elements: &[Value],
+    ) -> Result<ProcessedValue<'arena>, ProcessedCompileError> {
+        if elements.len() != 3 {
+            return Err(ProcessedCompileError::new(
+                "letrec requires exactly 2 arguments: bindings and body".to_string(),
+            ));
+        }
+
+        // Parse bindings list
+        let bindings_list = match &elements[1] {
+            Value::List(bindings) => bindings,
+            _ => {
+                return Err(ProcessedCompileError::new(
+                    "letrec bindings must be a list".to_string(),
+                ))
+            }
+        };
+
+        let mut compiled_bindings = Vec::new();
+        for binding in bindings_list {
+            match binding {
+                Value::List(binding_pair) if binding_pair.len() == 2 => {
+                    let name = match &binding_pair[0] {
+                        Value::Symbol(name) => self.interner.get_or_intern(name),
+                        _ => {
+                            return Err(ProcessedCompileError::new(
+                                "letrec binding variable must be a symbol".to_string(),
+                            ))
+                        }
+                    };
+                    let init = self.compile_value(&binding_pair[1])?;
+                    compiled_bindings.push((name, init));
+                }
+                _ => {
+                    return Err(ProcessedCompileError::new(
+                        "letrec binding must be a list of (variable init)".to_string(),
+                    ))
+                }
+            }
+        }
+
+        let bindings_slice = self.arena.alloc_slice_fill_iter(compiled_bindings);
+        let body = self.arena.alloc(self.compile_value(&elements[2])?);
+
+        Ok(ProcessedValue::Letrec {
+            bindings: Cow::Borrowed(bindings_slice),
+            body,
         })
     }
 

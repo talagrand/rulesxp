@@ -52,7 +52,7 @@ pub enum ProcessedValue<'ast> {
     Procedure {
         params: Cow<'ast, [StringSymbol]>,
         body: &'ast ProcessedValue<'ast>,
-        env: ProcessedEnvironmentRef<'ast>,
+        env: Rc<ProcessedEnvironment<'ast>>,
         variadic: bool,
     },
 
@@ -97,12 +97,7 @@ pub enum ProcessedArity {
     Range(usize, usize),
 }
 
-/// Environment reference for ProcessedValues
-/// This will be properly defined when we implement ProcessedEnvironment
-#[derive(Debug, Clone)]
-pub struct ProcessedEnvironmentRef<'ast> {
-    pub env: Rc<ProcessedEnvironment<'ast>>,
-}
+// ProcessedEnvironmentRef removed - using Rc<ProcessedEnvironment<'ast>> directly for consistency
 
 impl<'ast> ProcessedValue<'ast> {
     /// Check if value is truthy (everything except #f is truthy in Scheme)
@@ -226,7 +221,7 @@ pub mod builtin_functions {
     pub fn sub_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.is_empty() {
             return Err(RuntimeError::new(
-                "Arity error: - requires at least 1 argument".to_string(),
+                "Arity error: - requires at least 1 argument",
             ));
         }
 
@@ -364,7 +359,7 @@ pub mod builtin_functions {
     pub fn div_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.is_empty() {
             return Err(RuntimeError::new(
-                "Arity error: / requires at least 1 argument".to_string(),
+                "Arity error: / requires at least 1 argument",
             ));
         }
 
@@ -379,13 +374,13 @@ pub mod builtin_functions {
                 }
                 ProcessedValue::UInteger(n) => {
                     if *n == 0 {
-                        return Err(RuntimeError::new("Division by zero".to_string()));
+                        return Err(RuntimeError::new("Division by zero"));
                     }
                     Ok(ProcessedValue::Real(1.0 / (*n as f64)))
                 }
                 ProcessedValue::Real(n) => {
                     if *n == 0.0 {
-                        return Err(RuntimeError::new("Division by zero".to_string()));
+                        return Err(RuntimeError::new("Division by zero"));
                     }
                     Ok(ProcessedValue::Real(1.0 / n))
                 }

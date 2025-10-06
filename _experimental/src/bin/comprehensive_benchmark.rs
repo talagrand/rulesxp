@@ -228,8 +228,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let exec_start = Instant::now();
         let mut vm = SuperDirectVM::new(compiled_ast);
         let env = ProcessedEnvironment::new();
-        let result = vm.evaluate(env)?;
-        super_direct_result = result.0;
+        let result = vm.evaluate(Rc::new(env))?;
+        super_direct_result = result;
         let exec_time = exec_start.elapsed();
         super_direct_exec_times.push(exec_time);
 
@@ -279,8 +279,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let exec_start = Instant::now();
         let mut vm = SuperStackVM::new(compiled_ast);
         let env = ProcessedEnvironment::new();
-        let result = vm.evaluate(env)?;
-        super_stack_result = result.0;
+        let result = vm.evaluate(Rc::new(env))?;
+        super_stack_result = result;
         let exec_time = exec_start.elapsed();
         super_stack_exec_times.push(exec_time);
 

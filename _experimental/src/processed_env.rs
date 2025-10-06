@@ -7,6 +7,8 @@ use crate::super_builtins::ProcessedValue;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+
+#[cfg(test)]
 use string_interner::{DefaultBackend, StringInterner, Symbol};
 
 /// Environment that stores ProcessedValues with arena-tied lifetimes
@@ -42,6 +44,12 @@ impl<'ast> ProcessedEnvironment<'ast> {
         self.bindings.borrow_mut().insert(symbol, value);
     }
 
+    /// Redefine an existing variable (for recursive function definitions)
+    /// This is the same as define but semantically indicates mutation of existing binding
+    pub fn redefine(&self, symbol: StringSymbol, value: ProcessedValue<'ast>) {
+        self.bindings.borrow_mut().insert(symbol, value);
+    }
+
     /// Look up a variable by StringSymbol
     pub fn lookup(&self, symbol: StringSymbol) -> Option<ProcessedValue<'ast>> {
         if let Some(value) = self.bindings.borrow().get(&symbol) {
@@ -58,9 +66,50 @@ impl<'ast> ProcessedEnvironment<'ast> {
         self.bindings.borrow().len()
     }
 
-    /// Check if this environment has any parent
-    pub fn has_parent(&self) -> bool {
-        self.parent.is_some()
+    /// Create a snapshot of this environment for closure capture
+    ///
+    /// **R7RS COMPLIANCE:** Closures must capture environment at definition time,
+    /// not share mutable references that can be changed after closure creation.
+    /// This method creates a flattened copy of the entire environment chain to ensure
+    /// proper lexical scoping semantics.
+    ///
+    /// **PERFORMANCE OPTIMIZATION:** This method flattens the environment chain into
+    /// a single level, which provides several benefits:
+    /// - **Faster lookups**: O(1) instead of O(chain_depth)
+    /// - **Memory efficiency**: Eliminates shadowed variables that would never be accessed
+    /// - **Cache locality**: All bindings are in a single HashMap
+    ///
+    /// **FLATTENING SEMANTICS:** Variables closer to the root (more recent definitions)
+    /// shadow variables with the same name in parent environments, so we traverse
+    /// from leaf to root and only insert if the symbol hasn't been seen yet.
+    pub fn create_snapshot(&self) -> ProcessedEnvironment<'ast> {
+        // Create a new flat environment with no parent
+        let snapshot = ProcessedEnvironment::new();
+        let mut snapshot_bindings = snapshot.bindings.borrow_mut();
+
+        // **FLATTENING ALGORITHM:** Traverse environment chain from leaf to root,
+        // collecting all bindings but respecting shadowing (first occurrence wins)
+        let mut current_env = Some(self);
+
+        while let Some(env) = current_env {
+            let current_bindings = env.bindings.borrow();
+
+            // Insert bindings that haven't been shadowed by more recent definitions
+            for (symbol, value) in current_bindings.iter() {
+                // Only insert if we haven't seen this symbol yet (respects shadowing)
+                snapshot_bindings
+                    .entry(*symbol)
+                    .or_insert_with(|| value.clone());
+            }
+
+            // Move up the chain to parent environment
+            current_env = env.parent.as_ref().map(|p| p.as_ref());
+        }
+
+        drop(snapshot_bindings);
+
+        // Return flattened environment with no parent (all bindings are at this level)
+        snapshot
     }
 }
 
@@ -78,7 +127,6 @@ mod tests {
     fn test_environment_creation() {
         let env = ProcessedEnvironment::new();
         assert_eq!(env.binding_count(), 0);
-        assert!(!env.has_parent());
     }
 
     #[test]
@@ -118,9 +166,6 @@ mod tests {
 
         // Child should see parent variables
         assert!(child_env.lookup(parent_var).is_some());
-
-        // Verify child has parent
-        assert!(child_env.has_parent());
     }
 
     #[test]

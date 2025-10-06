@@ -51,9 +51,9 @@ enum EvalFrame {
 }
 
 impl RuntimeError {
-    pub fn new(message: String) -> Self {
+    pub fn new<S: Into<String>>(message: S) -> Self {
         RuntimeError {
-            message,
+            message: message.into(),
             stack_trace: Vec::new(),
             source_location: None,
         }

@@ -218,10 +218,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Evaluate with SuperDirectVM
             let mut vm = SuperDirectVM::new(processed_ast);
             let env = ProcessedEnvironment::new();
-            let result = vm.evaluate(env)?;
+            let result = vm.evaluate(Rc::new(env))?;
 
             println!("=== FINAL RESULT ===");
-            println!("ProcessedAST Direct: {:?}", result.0);
+            println!("ProcessedAST Direct: {:?}", result);
         }
 
         "superstackast" => {
@@ -274,11 +274,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Evaluate with SuperStackVM
             let mut vm = SuperStackVM::new(processed_ast);
-            let env = ProcessedEnvironment::new();
+            let env = Rc::new(ProcessedEnvironment::new());
             let result = vm.evaluate(env)?;
 
             println!("=== FINAL RESULT ===");
-            println!("ProcessedAST Stack: {:?}", result.0);
+            println!("ProcessedAST Result: {:?}", result);
         }
 
         "cps" => {

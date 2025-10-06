@@ -45,13 +45,13 @@
 //! ```rust
 //! let ast = ProcessedAST::compile(&value)?;
 //! let mut vm = SuperStackVM::new(ast);
-//! let env = ProcessedEnvironment::new();
+//! let env = Rc::new(ProcessedEnvironment::new());
 //! let result = vm.evaluate(env)?;
 //! ```
 
 use crate::processed_ast::{ProcessedAST, StringSymbol};
 use crate::processed_env::ProcessedEnvironment;
-use crate::super_builtins::{ProcessedEnvironmentRef, ProcessedValue};
+use crate::super_builtins::ProcessedValue;
 use crate::vm::RuntimeError;
 use std::rc::Rc;
 use string_interner::Symbol;
@@ -104,18 +104,20 @@ enum SuperEvalFrame<'ast> {
     Apply {
         args: ApplyArgsVec<'ast>, // Combined args: [func, evaluated..., unevaluated...]
         eval_index: usize, // Index of next argument to evaluate (separates evaluated from unevaluated)
-        original_env: ProcessedEnvironment<'ast>,
+        original_env: Rc<ProcessedEnvironment<'ast>>,
     },
     /// Store define result after value evaluation completes
     DefineStore {
         name: StringSymbol,
-        original_env: ProcessedEnvironment<'ast>,
+        original_env: Rc<ProcessedEnvironment<'ast>>,
     },
     /// Handle procedure call setup - binds parameters and prepares body evaluation
     ProcedureCall {
         body: ProcessedValue<'ast>,
-        call_env: ProcessedEnvironment<'ast>,
+        call_env: Rc<ProcessedEnvironment<'ast>>,
     },
+    /// Restore environment after procedure call completes
+    RestoreEnv { env: Rc<ProcessedEnvironment<'ast>> },
 }
 
 /// SuperDirectVM - High-Performance Recursive ProcessedAST Evaluator
@@ -207,11 +209,12 @@ impl SuperDirectVM {
     /// safety, use SuperStackVM instead.
     pub fn evaluate<'ast>(
         &mut self,
-        env: ProcessedEnvironment<'ast>,
-    ) -> Result<(ProcessedValue<'ast>, ProcessedEnvironment<'ast>), RuntimeError> {
+        env: Rc<ProcessedEnvironment<'ast>>,
+    ) -> Result<ProcessedValue<'ast>, RuntimeError> {
         // Store environment for define operations (transmute to 'static for storage)
-        let static_env: ProcessedEnvironment<'static> = unsafe { std::mem::transmute(env.clone()) };
-        self.current_env = Some(Rc::new(static_env));
+        let static_env: Rc<ProcessedEnvironment<'static>> =
+            unsafe { std::mem::transmute(Rc::clone(&env)) };
+        self.current_env = Some(static_env);
 
         // **UNSAFE:** Transmute 'static to 'ast - this is safe because the arena
         // in ProcessedAST lives for the entire SuperDirectVM lifetime which encompasses 'ast
@@ -230,28 +233,28 @@ impl SuperDirectVM {
     fn evaluate_direct<'ast>(
         &mut self,
         expr: &ProcessedValue<'ast>,
-        env: ProcessedEnvironment<'ast>,
-    ) -> Result<(ProcessedValue<'ast>, ProcessedEnvironment<'ast>), RuntimeError> {
+        env: Rc<ProcessedEnvironment<'ast>>,
+    ) -> Result<ProcessedValue<'ast>, RuntimeError> {
         self.stats.expressions_evaluated += 1;
 
         match expr {
             // Literals evaluate to themselves
-            ProcessedValue::Boolean(b) => Ok((ProcessedValue::Boolean(*b), env)),
-            ProcessedValue::Integer(i) => Ok((ProcessedValue::Integer(*i), env)),
-            ProcessedValue::UInteger(u) => Ok((ProcessedValue::UInteger(*u), env)),
-            ProcessedValue::Real(r) => Ok((ProcessedValue::Real(*r), env)),
-            ProcessedValue::OwnedString(s) => Ok((ProcessedValue::OwnedString(s.clone()), env)),
-            ProcessedValue::OwnedSymbol(s) => Ok((ProcessedValue::OwnedSymbol(s.clone()), env)),
+            ProcessedValue::Boolean(b) => Ok(ProcessedValue::Boolean(*b)),
+            ProcessedValue::Integer(i) => Ok(ProcessedValue::Integer(*i)),
+            ProcessedValue::UInteger(u) => Ok(ProcessedValue::UInteger(*u)),
+            ProcessedValue::Real(r) => Ok(ProcessedValue::Real(*r)),
+            ProcessedValue::OwnedString(s) => Ok(ProcessedValue::OwnedString(s.clone())),
+            ProcessedValue::OwnedSymbol(s) => Ok(ProcessedValue::OwnedSymbol(s.clone())),
 
             // Interned strings and symbols - return as-is (point to same arena data)
-            ProcessedValue::String(sym) => Ok((ProcessedValue::String(*sym), env)),
+            ProcessedValue::String(sym) => Ok(ProcessedValue::String(*sym)),
             ProcessedValue::Symbol(sym) => {
                 // Symbol lookup in environment
                 self.stats.environment_lookups += 1;
 
                 // Direct symbol lookup - no string conversion needed
                 if let Some(value) = env.lookup(*sym) {
-                    Ok((value.clone(), env))
+                    Ok(value.clone())
                 } else {
                     Err(RuntimeError::new(format!(
                         "Unbound variable: symbol_{}",
@@ -261,13 +264,13 @@ impl SuperDirectVM {
             }
 
             // Builtin functions evaluate to themselves
-            ProcessedValue::ResolvedBuiltin { .. } => Ok((expr.clone(), env)),
+            ProcessedValue::ResolvedBuiltin { .. } => Ok(expr.clone()),
 
             // **R7RS RESTRICTED:** Complex forms need implementation
             ProcessedValue::List(elements) => {
                 if elements.is_empty() {
                     // Empty list evaluates to itself
-                    Ok((ProcessedValue::List(elements.clone()), env))
+                    Ok(ProcessedValue::List(elements.clone()))
                 } else {
                     // Function application: (func arg1 arg2 ...)
                     self.stats.function_calls += 1;
@@ -275,23 +278,22 @@ impl SuperDirectVM {
                     let func = &elements[0];
                     let args = &elements[1..];
 
-                    // Evaluate function - this may extend environment but we use the result
-                    let (func_value, eval_env) = self.evaluate_direct(func, env)?;
+                    // Evaluate function - mutations happen to env directly via RefCell
+                    let func_value = self.evaluate_direct(func, Rc::clone(&env))?;
 
-                    // Arguments are evaluated in parallel conceptual model (each uses original env)
+                    // Arguments are evaluated using the same environment
                     // Use Vec and pass as slice to apply_function for zero-copy benefit
                     let mut arg_values: Vec<ProcessedValue<'ast>> = Vec::new();
                     for arg in args {
-                        // Use eval_env instead of original env to maintain consistency
-                        let (arg_value, _) = self.evaluate_direct(arg, eval_env.clone())?;
+                        let arg_value = self.evaluate_direct(arg, Rc::clone(&env))?;
                         arg_values.push(arg_value);
                     }
 
-                    // Apply function with the environment from function evaluation (slice-based)
-                    self.apply_function_direct(func_value, &arg_values, eval_env)
+                    // Apply function with the shared environment (slice-based)
+                    self.apply_function_direct(func_value, &arg_values, env)
                 }
             }
-            ProcessedValue::Procedure { .. } => Ok((expr.clone(), env)),
+            ProcessedValue::Procedure { .. } => Ok(expr.clone()),
             ProcessedValue::If {
                 test,
                 then_branch,
@@ -299,7 +301,7 @@ impl SuperDirectVM {
             } => {
                 // If form: evaluate test, then choose branch based on result
                 // **R7RS SEMANTICS:** Only #f is false, everything else is true
-                let (test_result, env1) = self.evaluate_direct(test, env)?;
+                let test_result = self.evaluate_direct(test, Rc::clone(&env))?;
 
                 let is_true = match test_result {
                     ProcessedValue::Boolean(false) => false,
@@ -307,67 +309,105 @@ impl SuperDirectVM {
                 };
 
                 if is_true {
-                    self.evaluate_direct(then_branch, env1)
+                    self.evaluate_direct(then_branch, env)
                 } else if let Some(else_expr) = else_branch {
-                    self.evaluate_direct(else_expr, env1)
+                    self.evaluate_direct(else_expr, env)
                 } else {
                     // No else branch provided, return unspecified
-                    Ok((ProcessedValue::Unspecified, env1))
+                    Ok(ProcessedValue::Unspecified)
                 }
             }
             ProcessedValue::Define { name, value } => {
-                // Define form: evaluate value then extend environment
-                let (eval_value, env1) = self.evaluate_direct(value, env)?;
+                // Define form: handle recursive function definitions specially
 
-                // Direct symbol-based environment storage - no string conversion needed
-                let new_env = self.extend_environment_symbol(env1, *name, eval_value);
+                // **R7RS RECURSIVE SEMANTICS:** For (define f (lambda ...)), we need to allow
+                // the function to see itself, which requires special handling
+                match value {
+                    ProcessedValue::Lambda {
+                        params,
+                        body,
+                        variadic,
+                    } => {
+                        // Special case: recursive function definition
+                        // Define placeholder first so the function can see itself during compilation
+                        env.define(*name, ProcessedValue::Unspecified);
+
+                        // Create the actual function first (without captured environment)
+                        let actual_function = ProcessedValue::Procedure {
+                            params: params.clone(),
+                            body,
+                            env: Rc::clone(&env), // Temporary - will be updated
+                            variadic: *variadic,
+                        };
+
+                        // Update the environment with the real function
+                        env.redefine(*name, actual_function);
+
+                        // Now create a snapshot that includes the real function and update the closure
+                        let captured_env = Rc::new(env.create_snapshot());
+                        let final_function = ProcessedValue::Procedure {
+                            params: params.clone(),
+                            body,
+                            env: captured_env,
+                            variadic: *variadic,
+                        };
+
+                        // Final update with proper captured environment
+                        env.redefine(*name, final_function);
+                    }
+                    _ => {
+                        // Regular define: evaluate value then define in environment
+                        let eval_value = self.evaluate_direct(value, Rc::clone(&env))?;
+                        env.define(*name, eval_value);
+                    }
+                }
 
                 // Define returns unspecified in R7RS
-                Ok((ProcessedValue::Unspecified, new_env))
+                Ok(ProcessedValue::Unspecified)
             }
             ProcessedValue::Lambda {
                 params,
                 body,
                 variadic,
             } => {
-                // Lambda form: create a closure capturing the current environment
+                // Lambda form: create a closure capturing a SNAPSHOT of the current environment
+                // **R7RS COMPLIANCE:** Closures must capture environment at definition time,
+                // not share mutable references that can be changed after closure creation
+                let captured_env = Rc::new(env.create_snapshot());
                 let closure = ProcessedValue::Procedure {
                     params: params.clone(),
                     body,
-                    env: ProcessedEnvironmentRef {
-                        env: Rc::new(env.clone()),
-                    },
+                    env: captured_env,
                     variadic: *variadic,
                 };
-                Ok((closure, env))
+                Ok(closure)
             }
             ProcessedValue::Quote { value } => {
                 // Quote form: return the quoted value without evaluation
-                Ok(((*value).clone(), env))
+                Ok((*value).clone())
             }
             ProcessedValue::Begin { expressions } => {
                 // Begin form: evaluate expressions sequentially, return last result
                 if expressions.is_empty() {
                     // Empty begin returns unspecified
-                    Ok((ProcessedValue::Unspecified, env))
+                    Ok(ProcessedValue::Unspecified)
                 } else if expressions.len() == 1 {
                     // Single expression - just evaluate it
                     self.evaluate_direct(&expressions[0], env)
                 } else {
                     // Multiple expressions - evaluate all but last for side effects
-                    let mut current_env = env;
+                    // Environment mutations happen in place via RefCell
 
                     // Evaluate all but the last expression (for side effects)
                     for expr in &expressions[..expressions.len() - 1] {
-                        let (_, new_env) = self.evaluate_direct(expr, current_env)?;
-                        current_env = new_env;
+                        self.evaluate_direct(expr, Rc::clone(&env))?;
                     }
 
                     // Evaluate and return the last expression
-                    self.evaluate_direct(&expressions[expressions.len() - 1], current_env)
+                    self.evaluate_direct(&expressions[expressions.len() - 1], env)
                 }
             }
-            ProcessedValue::Unspecified => Ok((ProcessedValue::Unspecified, env)),
+            ProcessedValue::Unspecified => Ok(ProcessedValue::Unspecified),
         }
     }
 
@@ -378,8 +418,8 @@ impl SuperDirectVM {
         &mut self,
         func: ProcessedValue<'ast>,
         args: &[ProcessedValue<'ast>],
-        env: ProcessedEnvironment<'ast>,
-    ) -> Result<(ProcessedValue<'ast>, ProcessedEnvironment<'ast>), RuntimeError> {
+        env: Rc<ProcessedEnvironment<'ast>>,
+    ) -> Result<ProcessedValue<'ast>, RuntimeError> {
         match func {
             ProcessedValue::ResolvedBuiltin {
                 name: _,
@@ -387,10 +427,8 @@ impl SuperDirectVM {
                 func,
             } => {
                 // Apply builtin function directly using the function pointer
-                match func(&args) {
-                    Ok(result) => Ok((result, env)),
-                    Err(e) => Err(e),
-                }
+                // Apply builtin function directly using the function pointer
+                func(&args)
             }
             ProcessedValue::Procedure {
                 params,
@@ -418,7 +456,8 @@ impl SuperDirectVM {
                 }
 
                 // Create new environment extending closure's captured environment
-                let call_env = ProcessedEnvironment::with_parent(closure_env.env.clone());
+                // **PERFORMANCE:** Use Rc::clone instead of expensive environment clone
+                let call_env = ProcessedEnvironment::with_parent(Rc::clone(&closure_env));
 
                 // Bind regular parameters to arguments
                 let regular_param_count = if variadic {
@@ -439,23 +478,10 @@ impl SuperDirectVM {
                 }
 
                 // **RECURSIVE CALL:** This is why SuperDirectVM can cause stack overflow!
-                self.evaluate_direct(body, call_env)
+                self.evaluate_direct(body, Rc::new(call_env))
             }
             _ => Err(RuntimeError::new("Type error: not a procedure".to_string())),
         }
-    }
-
-    /// Create a new environment extending the current one (used for define)
-    fn extend_environment_symbol<'ast>(
-        &mut self,
-        current_env: ProcessedEnvironment<'ast>,
-        symbol: StringSymbol,
-        value: ProcessedValue<'ast>,
-    ) -> ProcessedEnvironment<'ast> {
-        self.stats.environments_created += 1;
-        let new_env = ProcessedEnvironment::with_parent(Rc::new(current_env));
-        new_env.define(symbol, value);
-        new_env
     }
 }
 
@@ -491,11 +517,12 @@ impl SuperStackVM {
     /// make recursive function calls. All control flow must use frame pushing/popping.
     pub fn evaluate<'ast>(
         &mut self,
-        env: ProcessedEnvironment<'ast>,
-    ) -> Result<(ProcessedValue<'ast>, ProcessedEnvironment<'ast>), RuntimeError> {
+        env: Rc<ProcessedEnvironment<'ast>>,
+    ) -> Result<ProcessedValue<'ast>, RuntimeError> {
         // Store environment for define operations (transmute to 'static for storage)
-        let static_env: ProcessedEnvironment<'static> = unsafe { std::mem::transmute(env.clone()) };
-        self.current_env = Some(Rc::new(static_env));
+        let static_env: Rc<ProcessedEnvironment<'static>> =
+            unsafe { std::mem::transmute(Rc::clone(&env)) };
+        self.current_env = Some(static_env);
 
         // **UNSAFE:** Transmute 'static to 'ast - this is safe because the arena
         // in ProcessedAST lives for the entire SuperStackVM lifetime which encompasses 'ast
@@ -515,8 +542,8 @@ impl SuperStackVM {
     fn evaluate_stack<'ast>(
         &mut self,
         expr: &ProcessedValue<'ast>,
-        env: ProcessedEnvironment<'ast>,
-    ) -> Result<(ProcessedValue<'ast>, ProcessedEnvironment<'ast>), RuntimeError> {
+        env: Rc<ProcessedEnvironment<'ast>>,
+    ) -> Result<ProcessedValue<'ast>, RuntimeError> {
         // Pre-allocate stack with reasonable capacity for performance
         let mut stack: Vec<SuperEvalFrame<'ast>> = Vec::with_capacity(128);
 
@@ -561,7 +588,8 @@ impl SuperStackVM {
                                 // Set up argument evaluation using Apply for all function applications
                                 // **UNIFIED APPROACH:** Apply handles both no-argument and with-argument function calls
                                 // **OPTIMIZATION:** Create single vector with all elements, eval_index indicates progress
-                                let args: ApplyArgsVec<'ast> = Box::new(elements.iter().cloned().collect());
+                                let args: ApplyArgsVec<'ast> =
+                                    Box::new(elements.iter().cloned().collect());
                                 stack.push(SuperEvalFrame::Apply {
                                     args, // Contains [func_expr, arg1_expr, arg2_expr, ...] (or just [func_expr] for no args)
                                     eval_index: 1, // Start at 1 (func at index 0 will be evaluated first)
@@ -602,27 +630,71 @@ impl SuperStackVM {
                         }
 
                         ProcessedValue::Define { name, value } => {
-                            // Define form: evaluate value using stack then extend environment
-                            // Push a DefineStore frame to handle the result, then evaluate the value
-                            stack.push(SuperEvalFrame::DefineStore {
-                                name,
-                                original_env: current_env.clone(),
-                            });
-                            stack.push(SuperEvalFrame::Evaluate((*value).clone()));
-                            continue;
+                            // Define form: handle recursive function definitions specially
+
+                            // **R7RS RECURSIVE SEMANTICS:** For (define f (lambda ...)), we need to allow
+                            // the function to see itself, which requires special handling
+                            match value {
+                                ProcessedValue::Lambda {
+                                    params,
+                                    body,
+                                    variadic,
+                                } => {
+                                    // Special case: recursive function definition
+                                    // Define placeholder first so the function can see itself during compilation
+                                    current_env.define(name, ProcessedValue::Unspecified);
+
+                                    // Create the actual function first (without captured environment)
+                                    let actual_function = ProcessedValue::Procedure {
+                                        params: params.clone(),
+                                        body,
+                                        env: current_env.clone(), // Temporary - will be updated
+                                        variadic: *variadic,
+                                    };
+
+                                    // Update the environment with the real function
+                                    current_env.redefine(name, actual_function);
+
+                                    // Now create a snapshot that includes the real function and update the closure
+                                    let captured_env = Rc::new(current_env.create_snapshot());
+                                    let final_function = ProcessedValue::Procedure {
+                                        params: params.clone(),
+                                        body,
+                                        env: captured_env,
+                                        variadic: *variadic,
+                                    };
+
+                                    // Final update with proper captured environment
+                                    current_env.redefine(name, final_function);
+
+                                    // Define returns unspecified in R7RS
+                                    result = ProcessedValue::Unspecified;
+                                }
+                                _ => {
+                                    // Regular define: evaluate value using stack then extend environment
+                                    // Push a DefineStore frame to handle the result, then evaluate the value
+                                    stack.push(SuperEvalFrame::DefineStore {
+                                        name,
+                                        original_env: current_env.clone(),
+                                    });
+                                    stack.push(SuperEvalFrame::Evaluate((*value).clone()));
+                                    continue;
+                                }
+                            }
                         }
                         ProcessedValue::Lambda {
                             params,
                             body,
                             variadic,
                         } => {
-                            // Lambda form: create a closure capturing the current environment
+                            // Lambda form: create a closure capturing a SNAPSHOT of the current environment
+                            // **R7RS COMPLIANCE:** Closures must capture environment at definition time,
+                            // not share mutable references that can be changed after closure creation
+                            let captured_env = Rc::new(current_env.create_snapshot());
                             result = ProcessedValue::Procedure {
                                 params: params.clone(),
                                 body,
-                                env: ProcessedEnvironmentRef {
-                                    env: Rc::new(current_env.clone()),
-                                },
+                                env: captured_env,
                                 variadic,
                             };
                         }
@@ -761,8 +833,9 @@ impl SuperStackVM {
                                 }
 
                                 // Create new environment extending closure's captured environment
-                                let call_env =
-                                    ProcessedEnvironment::with_parent(closure_env.env.clone());
+                                let call_env = Rc::new(ProcessedEnvironment::with_parent(
+                                    Rc::clone(&closure_env),
+                                ));
 
                                 // Bind regular parameters to arguments
                                 let regular_param_count = if *variadic {
@@ -823,38 +896,32 @@ impl SuperStackVM {
                     let eval_value = result;
 
                     // Extend environment with the new binding
-                    current_env = self.extend_environment_symbol(original_env, name, eval_value);
+                    original_env.define(name, eval_value);
 
                     // Define returns unspecified in R7RS
                     result = ProcessedValue::Unspecified;
                 }
                 SuperEvalFrame::ProcedureCall { body, call_env } => {
                     // Procedure call: parameters are bound, now evaluate body
+                    // **ENVIRONMENT ISOLATION:** Store the previous environment and restore it later
+                    let prev_env = current_env.clone();
                     current_env = call_env;
+
+                    // Push a frame to restore the environment after procedure evaluation
+                    stack.push(SuperEvalFrame::RestoreEnv { env: prev_env });
 
                     // **STACK SAFETY:** Continue evaluation with frame push instead of recursion
                     stack.push(SuperEvalFrame::Evaluate(body));
                     continue;
                 }
+                SuperEvalFrame::RestoreEnv { env } => {
+                    // Restore the previous environment after procedure call completes
+                    current_env = env;
+                }
             }
         }
 
-        Ok((result, current_env))
-    }
-
-    /// Create a new environment extending the current one (used for define)
-    ///
-    /// **STACK SAFETY:** This helper method makes no recursive calls
-    fn extend_environment_symbol<'ast>(
-        &mut self,
-        current_env: ProcessedEnvironment<'ast>,
-        symbol: StringSymbol,
-        value: ProcessedValue<'ast>,
-    ) -> ProcessedEnvironment<'ast> {
-        self.stats.environments_created += 1;
-        let new_env = ProcessedEnvironment::with_parent(Rc::new(current_env));
-        new_env.define(symbol, value);
-        new_env
+        Ok(result)
     }
 }
 
@@ -881,12 +948,12 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
 
         let mut vm = SuperStackVM::new(ast);
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
 
         let result = vm.evaluate(env);
         assert!(result.is_ok());
 
-        let (result_value, _) = result.unwrap();
+        let result_value = result.unwrap();
         if let ProcessedValue::Integer(i) = result_value {
             assert_eq!(i, 42);
         } else {
@@ -909,14 +976,14 @@ mod tests {
         let mut vm1 = SuperStackVM::new(ast1);
         let mut vm2 = SuperStackVM::new(ast2);
 
-        let env1 = ProcessedEnvironment::new();
-        let env2 = ProcessedEnvironment::new();
+        let env1 = Rc::new(ProcessedEnvironment::new());
+        let env2 = Rc::new(ProcessedEnvironment::new());
 
         let result1 = vm1.evaluate(env1).expect("First evaluation failed");
         let result2 = vm2.evaluate(env2).expect("Second evaluation failed");
 
         // Results should be identical
-        match (&result1.0, &result2.0) {
+        match (&result1, &result2) {
             (ProcessedValue::Real(r1), ProcessedValue::Real(r2)) => {
                 assert!((r1 - r2).abs() < f64::EPSILON);
             }
@@ -935,10 +1002,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 3),
             other => panic!("Expected integer 3, got {:?}", other),
         }
@@ -955,10 +1022,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 7),
             other => panic!("Expected integer 7, got {:?}", other),
         }
@@ -975,10 +1042,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 20),
             other => panic!("Expected integer 20, got {:?}", other),
         }
@@ -995,10 +1062,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 10),
             other => panic!("Expected integer 10, got {:?}", other),
         }
@@ -1015,10 +1082,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 42),
             other => panic!("Expected integer 42, got {:?}", other),
         }
@@ -1035,10 +1102,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Symbol(_) => {} // Should be a symbol
             other => panic!("Expected symbol, got {:?}", other),
         }
@@ -1055,10 +1122,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::List(elements) => {
                 assert_eq!(elements.len(), 3);
                 // Should contain + symbol and two integers, not be evaluated to 3
@@ -1078,10 +1145,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 42),
             other => panic!("Expected integer 42, got {:?}", other),
         }
@@ -1098,10 +1165,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 99),
             other => panic!("Expected integer 99, got {:?}", other),
         }
@@ -1118,10 +1185,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Unspecified => {} // Should be unspecified
             other => panic!("Expected unspecified, got {:?}", other),
         }
@@ -1138,10 +1205,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 42),
             other => panic!("Expected integer 42, got {:?}", other),
         }
@@ -1161,14 +1228,14 @@ mod tests {
         let mut vm1 = SuperStackVM::new(ast1);
         let mut vm2 = SuperStackVM::new(ast2);
 
-        let env1 = ProcessedEnvironment::new();
-        let env2 = ProcessedEnvironment::new();
+        let env1 = Rc::new(ProcessedEnvironment::new());
+        let env2 = Rc::new(ProcessedEnvironment::new());
 
         let result1 = vm1.evaluate(env1).expect("First evaluation failed");
         let result2 = vm2.evaluate(env2).expect("Second evaluation failed");
 
         // Results should be identical
-        match (&result1.0, &result2.0) {
+        match (&result1, &result2) {
             (ProcessedValue::Integer(n1), ProcessedValue::Integer(n2)) => {
                 assert_eq!(n1, n2);
                 assert_eq!(*n1, 42);
@@ -1188,11 +1255,11 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
         // Define should return unspecified
-        match result.0 {
+        match result {
             ProcessedValue::Unspecified => {} // Expected
             other => panic!("Expected unspecified from define, got {:?}", other),
         }
@@ -1212,11 +1279,11 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
         // Define should return unspecified
-        match result.0 {
+        match result {
             ProcessedValue::Unspecified => {} // Expected
             other => panic!("Expected unspecified from define, got {:?}", other),
         }
@@ -1233,11 +1300,11 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
         // Lambda should create a procedure
-        match result.0 {
+        match result {
             ProcessedValue::Procedure {
                 params,
                 body: _,
@@ -1262,10 +1329,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 42),
             other => panic!("Expected integer 42, got {:?}", other),
         }
@@ -1282,10 +1349,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 7),
             other => panic!("Expected integer 7, got {:?}", other),
         }
@@ -1302,10 +1369,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Unspecified => {} // Expected
             other => panic!("Expected unspecified from empty begin, got {:?}", other),
         }
@@ -1322,10 +1389,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 42),
             other => panic!("Expected integer 42, got {:?}", other),
         }
@@ -1342,10 +1409,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 7),
             other => panic!("Expected integer 7, got {:?}", other),
         }
@@ -1362,10 +1429,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 15),
             other => panic!("Expected integer 15, got {:?}", other),
         }
@@ -1382,10 +1449,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 5),
             other => panic!("Expected integer 5, got {:?}", other),
         }
@@ -1411,10 +1478,10 @@ mod tests {
             let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
             let mut vm = SuperStackVM::new(ast);
 
-            let env = ProcessedEnvironment::new();
+            let env = Rc::new(ProcessedEnvironment::new());
             let result = vm.evaluate(env).expect("Evaluation failed");
 
-            match result.0 {
+            match result {
                 ProcessedValue::Boolean(b) => {
                     assert_eq!(b, expected, "Failed for input: {}", input)
                 }
@@ -1439,10 +1506,10 @@ mod tests {
             let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
             let mut vm = SuperStackVM::new(ast);
 
-            let env = ProcessedEnvironment::new();
+            let env = Rc::new(ProcessedEnvironment::new());
             let result = vm.evaluate(env).expect("Evaluation failed");
 
-            match result.0 {
+            match result {
                 ProcessedValue::Boolean(b) => {
                     assert_eq!(b, expected, "Failed for input: {}", input)
                 }
@@ -1461,10 +1528,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::List(elements) => {
                 assert_eq!(elements.len(), 3);
                 // Verify elements are integers 1, 2, 3
@@ -1489,10 +1556,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 10),
             other => panic!("Expected integer 10, got {:?}", other),
         }
@@ -1503,10 +1570,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::List(elements) => {
                 assert_eq!(elements.len(), 2);
                 match (&elements[0], &elements[1]) {
@@ -1531,10 +1598,10 @@ mod tests {
         let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
         let mut vm = SuperStackVM::new(ast);
 
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).expect("Evaluation failed");
 
-        match result.0 {
+        match result {
             ProcessedValue::List(elements) => {
                 assert_eq!(elements.len(), 3);
                 for (i, elem) in elements.iter().enumerate() {
@@ -1569,11 +1636,11 @@ mod tests {
         .unwrap();
 
         let mut vm = SuperStackVM::new(ast);
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).unwrap();
 
         // This should work if builtins can be returned as first-class values
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 3),
             other => panic!("Expected integer 3, got {:?}", other),
         }
@@ -1608,11 +1675,11 @@ mod tests {
         .unwrap();
 
         let mut vm = SuperStackVM::new(ast);
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).unwrap();
 
         // This should return 15 if builtins work as first-class values
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 15),
             other => panic!("Expected integer 15, got {:?}", other),
         }
@@ -1649,11 +1716,11 @@ mod tests {
         .unwrap();
 
         let mut vm = SuperStackVM::new(ast);
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).unwrap();
 
         // This should return 7 if builtins work as first-class values
-        match result.0 {
+        match result {
             ProcessedValue::Integer(n) => assert_eq!(n, 7),
             other => panic!("Expected integer 7, got {:?}", other),
         }
@@ -1693,11 +1760,11 @@ mod tests {
         .unwrap();
 
         let mut vm = SuperStackVM::new(ast);
-        let env = ProcessedEnvironment::new();
+        let env = Rc::new(ProcessedEnvironment::new());
         let result = vm.evaluate(env).unwrap();
 
         // This should return (10) - a list with doubled value
-        match result.0 {
+        match result {
             ProcessedValue::List(elements) => {
                 assert_eq!(elements.len(), 1);
                 match &elements[0] {

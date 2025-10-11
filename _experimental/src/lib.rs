@@ -54,15 +54,6 @@ pub mod test_runner;
 pub mod value;
 pub mod vm;
 
-#[cfg(test)]
-pub mod test_closure_fix;
-
-#[cfg(test)]
-pub mod test_environment_sharing;
-
-#[cfg(test)]
-pub mod test_recursive_functions;
-
 pub use compiler::{compile, CompileError};
 pub use macros::MacroExpander;
 pub use parser::{parse, ParseError};

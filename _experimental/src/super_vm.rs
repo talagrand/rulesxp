@@ -404,6 +404,30 @@ impl SuperDirectVM {
         self.stats = EvaluationStats::default();
     }
 
+    /// Get the current environment state after evaluation
+    /// Returns None if no evaluation has been performed yet
+    pub fn get_current_env<'ast>(&self) -> Option<Rc<ProcessedEnvironment<'ast>>> {
+        self.current_env.as_ref().map(|env| {
+            // **UNSAFE:** Transmute 'static back to 'ast - this is safe because
+            // the environment lifetime should match the evaluation context
+            let env_ast: Rc<ProcessedEnvironment<'ast>> =
+                unsafe { std::mem::transmute(Rc::clone(env)) };
+            env_ast
+        })
+    }
+
+    /// Get a specific expression from the compiled AST by index
+    /// Used for TestEnvironment functionality to evaluate individual expressions
+    pub fn get_expression(&self, index: usize) -> Option<&ProcessedValue<'static>> {
+        self.ast.root().get(index)
+    }
+
+    /// Resolve a string symbol to its string value
+    /// Used for TestEnvironment functionality to compare string values
+    pub fn resolve_symbol(&self, symbol: StringSymbol) -> Option<&str> {
+        self.ast.resolve_symbol(symbol)
+    }
+
     /// Evaluate the root expression using direct recursive evaluation
     ///
     /// **STACK SAFETY WARNING:** This method uses recursive function calls and can
@@ -418,11 +442,37 @@ impl SuperDirectVM {
             unsafe { std::mem::transmute(Rc::clone(&env)) };
         self.current_env = Some(static_env);
 
-        // **UNSAFE:** Transmute 'static to 'ast - this is safe because the arena
-        // in ProcessedAST lives for the entire SuperDirectVM lifetime which encompasses 'ast
-        let root_expr: ProcessedValue<'ast> = unsafe { std::mem::transmute(self.ast.root.clone()) };
+        // Evaluate all expressions in the root vector, returning the last result
+        let mut last_result = ProcessedValue::Boolean(true); // Default result if empty
 
-        self.evaluate_direct(&root_expr, env)
+        // Clone the expressions to avoid borrowing issues
+        let expressions: Vec<ProcessedValue<'static>> = self.ast.root.clone();
+
+        for root_expr in expressions {
+            // **UNSAFE:** Transmute 'static to 'ast - this is safe because the arena
+            // in ProcessedAST lives for the entire SuperDirectVM lifetime which encompasses 'ast
+            let expr: ProcessedValue<'ast> = unsafe { std::mem::transmute(root_expr) };
+            last_result = self.evaluate_direct(&expr, Rc::clone(&env))?;
+        }
+
+        Ok(last_result)
+    }
+
+    /// Evaluate a single ProcessedValue directly
+    ///
+    /// **WARNING: Can cause stack overflow!**
+    /// This method evaluates a single ProcessedValue expression using direct recursion.
+    pub fn evaluate_single<'ast>(
+        &mut self,
+        expr: &ProcessedValue<'ast>,
+        env: Rc<ProcessedEnvironment<'ast>>,
+    ) -> Result<ProcessedValue<'ast>, RuntimeError> {
+        // Store environment for define operations (transmute to 'static for storage)
+        let static_env: Rc<ProcessedEnvironment<'static>> =
+            unsafe { std::mem::transmute(Rc::clone(&env)) };
+        self.current_env = Some(static_env);
+
+        self.evaluate_direct(expr, env)
     }
 
     /// Direct recursive evaluation - **WARNING: Can cause stack overflow!**
@@ -755,6 +805,30 @@ impl SuperStackVM {
         self.stats.max_stack_depth
     }
 
+    /// Get the current environment state after evaluation
+    /// Returns None if no evaluation has been performed yet
+    pub fn get_current_env<'ast>(&self) -> Option<Rc<ProcessedEnvironment<'ast>>> {
+        self.current_env.as_ref().map(|env| {
+            // **UNSAFE:** Transmute 'static back to 'ast - this is safe because
+            // the environment lifetime should match the evaluation context
+            let env_ast: Rc<ProcessedEnvironment<'ast>> =
+                unsafe { std::mem::transmute(Rc::clone(env)) };
+            env_ast
+        })
+    }
+
+    /// Get a specific expression from the compiled AST by index
+    /// Used for TestEnvironment functionality to evaluate individual expressions
+    pub fn get_expression(&self, index: usize) -> Option<&ProcessedValue<'static>> {
+        self.ast.root().get(index)
+    }
+
+    /// Resolve a string symbol to its string value
+    /// Used for TestEnvironment functionality to compare string values
+    pub fn resolve_symbol(&self, symbol: StringSymbol) -> Option<&str> {
+        self.ast.resolve_symbol(symbol)
+    }
+
     /// Evaluate the root expression using stack-based evaluation
     ///
     /// **GUARANTEED STACK SAFETY:** This method uses an explicit frame stack and
@@ -771,11 +845,37 @@ impl SuperStackVM {
             unsafe { std::mem::transmute(Rc::clone(&env)) };
         self.current_env = Some(static_env);
 
-        // **UNSAFE:** Transmute 'static to 'ast - this is safe because the arena
-        // in ProcessedAST lives for the entire SuperStackVM lifetime which encompasses 'ast
-        let root_expr: ProcessedValue<'ast> = unsafe { std::mem::transmute(self.ast.root.clone()) };
+        // Evaluate all expressions in the root vector, returning the last result
+        let mut last_result = ProcessedValue::Boolean(true); // Default result if empty
 
-        self.evaluate_stack(&root_expr, env)
+        // Clone the expressions to avoid borrowing issues
+        let expressions: Vec<ProcessedValue<'static>> = self.ast.root.clone();
+
+        for root_expr in expressions {
+            // **UNSAFE:** Transmute 'static to 'ast - this is safe because the arena
+            // in ProcessedAST lives for the entire SuperStackVM lifetime which encompasses 'ast
+            let expr: ProcessedValue<'ast> = unsafe { std::mem::transmute(root_expr) };
+            last_result = self.evaluate_stack(&expr, Rc::clone(&env))?;
+        }
+
+        Ok(last_result)
+    }
+
+    /// Evaluate a single ProcessedValue using stack-based evaluation
+    ///
+    /// **GUARANTEED STACK SAFETY:** This method uses an explicit frame stack and
+    /// cannot cause Rust stack overflow regardless of expression nesting depth.
+    pub fn evaluate_single<'ast>(
+        &mut self,
+        expr: &ProcessedValue<'ast>,
+        env: Rc<ProcessedEnvironment<'ast>>,
+    ) -> Result<ProcessedValue<'ast>, RuntimeError> {
+        // Store environment for define operations (transmute to 'static for storage)
+        let static_env: Rc<ProcessedEnvironment<'static>> =
+            unsafe { std::mem::transmute(Rc::clone(&env)) };
+        self.current_env = Some(static_env);
+
+        self.evaluate_stack(expr, env)
     }
 
     /// Stack-safe evaluation using explicit frame stack

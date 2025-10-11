@@ -47,10 +47,19 @@
 //!
 //! ## Usage
 //!
+//! ## Single Expression Usage
 //! ```rust
 //! let ast = ProcessedAST::compile(&value)?;
-//! let mut vm = SuperVM::new(ast, EvaluationMode::Direct);
+//! let mut vm = SuperStackVM::new(ast);
 //! let result = vm.evaluate(env)?;
+//! ```
+//!
+//! ## Multiple Expression Usage
+//! ```rust
+//! let values = vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)];
+//! let ast = ProcessedAST::compile_multiple(&values)?;
+//! let mut vm = SuperStackVM::new(ast);
+//! let result = vm.evaluate(env)?;  // Returns result of last expression (3)
 //! ```
 
 use crate::super_builtins::{builtin_functions, ProcessedArity, ProcessedValue};
@@ -70,9 +79,9 @@ pub struct ProcessedAST {
     pub interner: StringInterner<DefaultBackend>,
     /// Bump arena for all allocations
     pub arena: Bump,
-    /// Root expression of the AST
+    /// Root expressions of the AST (multiple expressions can be compiled together)
     /// **UNSAFE:** Lifetime transmuted to 'static - arena must outlive all references
-    pub root: ProcessedValue<'static>,
+    pub root: Vec<ProcessedValue<'static>>,
 }
 
 /// Compilation error for ProcessedAST creation
@@ -118,17 +127,55 @@ struct ProcessedCompiler<'arena> {
 impl ProcessedAST {
     /// Create a new ProcessedAST from a Value expression
     pub fn compile(value: &Value) -> Result<Self, ProcessedCompileError> {
+        Self::compile_multiple(&[value.clone()])
+    }
+
+    /// Create a new ProcessedAST from multiple Value expressions
+    pub fn compile_multiple(values: &[Value]) -> Result<Self, ProcessedCompileError> {
         let mut interner = StringInterner::new();
         let arena = Bump::new();
 
-        // Create builtin function mappings
+        // Create builtin function mappings directly (avoiding borrowing issues)
         let mut builtins = HashMap::new();
+        Self::populate_builtins(&mut builtins, &mut interner);
 
+        let mut compiler = ProcessedCompiler {
+            interner: &mut interner,
+            arena: &arena,
+            builtins,
+        };
+
+        // Compile all values into the root vector
+        let mut compiled_roots = Vec::new();
+        for value in values {
+            let compiled = compiler.compile_value(value)?;
+            // Due to lifetime constraints, we need to use unsafe here
+            // This is safe because the arena owns all the data and the ProcessedAST
+            // owns the arena, so the lifetimes are actually correct
+            let compiled_static = unsafe {
+                std::mem::transmute::<ProcessedValue<'_>, ProcessedValue<'static>>(compiled)
+            };
+            compiled_roots.push(compiled_static);
+        }
+
+        Ok(ProcessedAST {
+            interner,
+            arena,
+            root: compiled_roots,
+        })
+    }
+
+    /// Populate the builtin function mappings for the compiler
+    /// This is shared between compile and compile_multiple
+    fn populate_builtins(
+        builtins: &mut HashMap<StringSymbol, ProcessedValue<'_>>,
+        interner: &mut StringInterner<DefaultBackend>,
+    ) {
         // Add arithmetic builtins
         let add_sym = interner.get_or_intern("+");
         let sub_sym = interner.get_or_intern("-");
         let mul_sym = interner.get_or_intern("*");
-        let div_sym = interner.get_or_intern("/");
+        let _div_sym = interner.get_or_intern("/");
         let eq_sym = interner.get_or_intern("=");
         let lt_sym = interner.get_or_intern("<");
         let gt_sym = interner.get_or_intern(">");
@@ -268,32 +315,10 @@ impl ProcessedAST {
                 func: builtin_functions::null_super,
             },
         );
-
-        // Create compiler context
-        let mut compiler = ProcessedCompiler {
-            interner: &mut interner,
-            arena: &arena,
-            builtins,
-        };
-
-        // Compile the root expression
-        let root = compiler.compile_value(value)?;
-
-        // Due to lifetime constraints, we need to use unsafe here
-        // This is safe because the arena owns all the data and the ProcessedAST
-        // owns the arena, so the lifetimes are actually correct
-        let root_static =
-            unsafe { std::mem::transmute::<ProcessedValue<'_>, ProcessedValue<'static>>(root) };
-
-        Ok(ProcessedAST {
-            interner,
-            arena,
-            root: root_static,
-        })
     }
 
-    /// Get the root expression with proper lifetime
-    pub fn root(&self) -> &ProcessedValue<'static> {
+    /// Get the root expressions with proper lifetime
+    pub fn root(&self) -> &Vec<ProcessedValue<'static>> {
         &self.root
     }
 
@@ -304,7 +329,18 @@ impl ProcessedAST {
 
     /// Debug dump the ProcessedAST tree structure
     pub fn debug_dump(&self) -> String {
-        self.dump_value(&self.root, 0)
+        if self.root.is_empty() {
+            return "Empty AST".to_string();
+        }
+
+        let mut result = String::new();
+        for (i, expr) in self.root.iter().enumerate() {
+            if i > 0 {
+                result.push_str("\n---\n");
+            }
+            result.push_str(&self.dump_value(expr, 0));
+        }
+        result
     }
 
     /// Recursively dump a ProcessedValue with indentation
@@ -830,13 +866,13 @@ mod tests {
     #[test]
     fn test_compile_literals() {
         let ast = ProcessedAST::compile(&Value::Integer(42)).unwrap();
-        match ast.root() {
+        match &ast.root()[0] {
             ProcessedValue::Integer(42) => (),
             _ => panic!("Expected integer 42"),
         }
 
         let ast = ProcessedAST::compile(&Value::Boolean(true)).unwrap();
-        match ast.root() {
+        match &ast.root()[0] {
             ProcessedValue::Boolean(true) => (),
             _ => panic!("Expected boolean true"),
         }
@@ -845,7 +881,7 @@ mod tests {
     #[test]
     fn test_compile_string_interning() {
         let ast = ProcessedAST::compile(&Value::String("hello".to_string())).unwrap();
-        match ast.root() {
+        match &ast.root()[0] {
             ProcessedValue::String(sym) => {
                 assert_eq!(ast.resolve_symbol(*sym), Some("hello"));
             }
@@ -856,7 +892,7 @@ mod tests {
     #[test]
     fn test_compile_builtin_resolution() {
         let ast = ProcessedAST::compile(&Value::Symbol("+".to_string())).unwrap();
-        match ast.root() {
+        match &ast.root()[0] {
             ProcessedValue::ResolvedBuiltin { name, .. } => {
                 assert_eq!(ast.resolve_symbol(*name), Some("+"));
             }
@@ -874,7 +910,7 @@ mod tests {
         ]);
 
         let ast = ProcessedAST::compile(&if_expr).unwrap();
-        match ast.root() {
+        match &ast.root()[0] {
             ProcessedValue::If {
                 test,
                 then_branch,
@@ -907,7 +943,7 @@ mod tests {
         let ast = ProcessedAST::compile(&lambda_expr).unwrap();
         println!("Lambda AST dump:\n{}", ast.debug_dump());
 
-        match ast.root() {
+        match &ast.root()[0] {
             ProcessedValue::Lambda {
                 params,
                 body,
@@ -956,7 +992,7 @@ mod tests {
         let ast = ProcessedAST::compile(&invoke_expr).unwrap();
         println!("Lambda invocation AST dump:\n{}", ast.debug_dump());
 
-        match ast.root() {
+        match &ast.root()[0] {
             ProcessedValue::List(items) => {
                 assert_eq!(items.len(), 2);
 
@@ -995,5 +1031,69 @@ mod tests {
             }
             _ => panic!("Expected List for lambda invocation, got: {:?}", ast.root()),
         }
+    }
+
+    #[test]
+    fn test_compile_multiple_expressions() {
+        // Test compiling multiple expressions
+        let values = vec![
+            Value::Integer(42),
+            Value::Boolean(true),
+            Value::Symbol("+".to_string()),
+            Value::List(vec![
+                Value::Symbol("+".to_string()),
+                Value::Integer(1),
+                Value::Integer(2),
+            ]),
+        ];
+
+        let ast = ProcessedAST::compile_multiple(&values).unwrap();
+
+        // Should have 4 expressions in the root
+        assert_eq!(ast.root().len(), 4);
+
+        // First should be integer 42
+        match &ast.root()[0] {
+            ProcessedValue::Integer(42) => (),
+            _ => panic!("Expected first expression to be integer 42"),
+        }
+
+        // Second should be boolean true
+        match &ast.root()[1] {
+            ProcessedValue::Boolean(true) => (),
+            _ => panic!("Expected second expression to be boolean true"),
+        }
+
+        // Third should be resolved builtin +
+        match &ast.root()[2] {
+            ProcessedValue::ResolvedBuiltin { name, .. } => {
+                assert_eq!(ast.resolve_symbol(*name), Some("+"));
+            }
+            _ => panic!("Expected third expression to be resolved builtin +"),
+        }
+
+        // Fourth should be a list (+ 1 2)
+        match &ast.root()[3] {
+            ProcessedValue::List(items) => {
+                assert_eq!(items.len(), 3);
+                assert!(matches!(items[0], ProcessedValue::ResolvedBuiltin { .. }));
+                assert!(matches!(items[1], ProcessedValue::Integer(1)));
+                assert!(matches!(items[2], ProcessedValue::Integer(2)));
+            }
+            _ => panic!("Expected fourth expression to be a list"),
+        }
+    }
+
+    #[test]
+    fn test_compile_multiple_empty() {
+        // Test compiling empty array
+        let values: Vec<Value> = vec![];
+        let ast = ProcessedAST::compile_multiple(&values).unwrap();
+
+        // Should have 0 expressions in the root
+        assert_eq!(ast.root().len(), 0);
+
+        // Debug dump should show empty AST
+        assert_eq!(ast.debug_dump(), "Empty AST");
     }
 }

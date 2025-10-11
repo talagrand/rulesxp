@@ -192,22 +192,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             println!();
 
-            // Combine all expressions into a begin block for ProcessedAST compilation
-            let combined_program = if expanded_exprs.len() == 1 {
-                expanded_exprs.into_iter().next().unwrap()
-            } else {
-                let mut begin_list = vec![Value::Symbol("begin".to_string())];
-                begin_list.extend(expanded_exprs);
-                Value::List(begin_list)
-            };
-
-            println!("=== COMBINED PROGRAM ===");
-            println!("Program: {:?}", combined_program);
-            println!();
-
-            // Compile to ProcessedAST
+            // Compile to ProcessedAST using compile_multiple (no begin wrapper)
             println!("=== PROCESSED AST COMPILATION ===");
-            let processed_ast = ProcessedAST::compile(&combined_program)?;
+            let processed_ast = ProcessedAST::compile_multiple(&expanded_exprs)?;
             println!("ProcessedAST compiled successfully");
             println!();
 
@@ -249,22 +236,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             println!();
 
-            // Combine all expressions into a begin block for ProcessedAST compilation
-            let combined_program = if expanded_exprs.len() == 1 {
-                expanded_exprs.into_iter().next().unwrap()
-            } else {
-                let mut begin_list = vec![Value::Symbol("begin".to_string())];
-                begin_list.extend(expanded_exprs);
-                Value::List(begin_list)
-            };
-
-            println!("=== COMBINED PROGRAM ===");
-            println!("Program: {:?}", combined_program);
-            println!();
-
-            // Compile to ProcessedAST
+            // Compile to ProcessedAST using compile_multiple (no begin wrapper)
             println!("=== PROCESSED AST COMPILATION ===");
-            let processed_ast = ProcessedAST::compile(&combined_program)?;
+            let processed_ast = ProcessedAST::compile_multiple(&expanded_exprs)?;
             println!("ProcessedAST compiled successfully");
             println!();
 

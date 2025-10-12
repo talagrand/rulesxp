@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod comprehensive_evaluator_tests {
+
     use samplescheme::macros::MacroExpander;
     use samplescheme::parser;
     use samplescheme::processed_ast::ProcessedAST;
@@ -1072,17 +1073,15 @@ mod comprehensive_evaluator_tests {
                 ), // 100 + 47 = 147
             ]),
             // === MUTUAL RECURSION TESTS ===
-            // **R7RS RESTRICTED:** Forward references not supported - mutual recursion requires
-            // both functions to be visible when the first is defined.
             // From debug_mutual_recursion.scm - mutual recursion between is-even and is-odd
-            // TestEnvironment(vec![
-            //     test_setup!("(define is-even (lambda (n) (if (= n 0) #t (is-odd (- n 1)))))"),
-            //     test_setup!("(define is-odd (lambda (n) (if (= n 0) #f (is-even (- n 1)))))"),
-            //     ("(is-even 4)", success(true)),
-            //     ("(is-even 5)", success(false)),
-            //     ("(is-odd 4)", success(false)),
-            //     ("(is-odd 5)", success(true)),
-            // ]),
+            TestEnvironment(vec![
+                test_setup!("(define is-even (lambda (n) (if (= n 0) #t (is-odd (- n 1)))))"),
+                test_setup!("(define is-odd (lambda (n) (if (= n 0) #f (is-even (- n 1)))))"),
+                ("(is-even 4)", success(true)),
+                ("(is-even 5)", success(false)),
+                ("(is-odd 4)", success(false)),
+                ("(is-odd 5)", success(true)),
+            ]),
 
             // === COMPLEX INNER DEFINE TESTS ===
             // From inner_define_results_test.scm - multiple inner defines with list result
@@ -1106,18 +1105,51 @@ mod comprehensive_evaluator_tests {
                 ),
                 ("(list (test1) (test2))", success(list_i64(vec![15, 3]))),
             ]),
-            // **R7RS RESTRICTED:** Inner mutual recursion also requires forward references
             // From inner_mutual_both_results.scm - inner mutual recursion with list result
-            // TestEnvironment(vec![
-            //     test_setup!("(define (mutual-test n) (define (is-even x) (if (= x 0) #t (is-odd (- x 1)))) (define (is-odd x) (if (= x 0) #f (is-even (- x 1)))) (is-even n))"),
-            //     ("(list (mutual-test 4) (mutual-test 5))", success(list_i64(vec![1, 0]))), // true=1, false=0 in list context
-            // ]),
+            TestEnvironment(vec![
+                test_setup!("(define (mutual-test n) (define (is-even x) (if (= x 0) #t (is-odd (- x 1)))) (define (is-odd x) (if (= x 0) #f (is-even (- x 1)))) (is-even n))"),
+                ("(list (mutual-test 4) (mutual-test 5))", success(list_i64(vec![1, 0]))), // true=1, false=0 in list context
+            ]),
             // From inner_mutual_recursion_test.scm - individual inner mutual recursion tests
-            // TestEnvironment(vec![
-            //     test_setup!("(define (mutual-test n) (define (is-even x) (if (= x 0) #t (is-odd (- x 1)))) (define (is-odd x) (if (= x 0) #f (is-even (- x 1)))) (is-even n))"),
-            //     ("(mutual-test 4)", success(true)),
-            //     ("(mutual-test 5)", success(false)),
-            // ]),
+            TestEnvironment(vec![
+                test_setup!("(define (mutual-test n) (define (is-even x) (if (= x 0) #t (is-odd (- x 1)))) (define (is-odd x) (if (= x 0) #f (is-even (- x 1)))) (is-even n))"),
+                ("(mutual-test 4)", success(true)),
+                ("(mutual-test 5)", success(false)),
+            ]),
+            // === ENVIRONMENT SHARING AND SHADOWING IN LETREC ===
+            // Test letrec with shadowed variable
+            TestEnvironment(vec![
+                test_setup!("(define x 99)"),
+                ("(letrec ((x 42)) x)", success(42)), // inner letrec shadows outer
+                ("x", success(99)), // outer x unchanged
+            ]),
+            // Test letrec closure capturing letrec-bound variable
+            TestEnvironment(vec![
+                ("(letrec ((x 123) (f (lambda () x))) (f))", success(123)),
+            ]),
+            // Test letrec closure capturing shadowed variable
+            TestEnvironment(vec![
+                test_setup!("(define x 77)"),
+                ("(letrec ((x 88) (f (lambda () x))) (f))", success(88)),
+                ("x", success(77)),
+            ]),
+            // Test nested letrec with environment isolation
+            TestEnvironment(vec![
+                ("(letrec ((x 1)) (letrec ((x 2)) x))", success(2)),
+                ("(letrec ((x 1)) (letrec ((y 2)) (+ x y)))", success(3)),
+            ]),
+            // Test letrec closure capturing mutually recursive functions
+            TestEnvironment(vec![
+                ("(letrec ((even? (lambda (n) (if (= n 0) #t (odd? (- n 1))))) (odd? (lambda (n) (if (= n 0) #f (even? (- n 1)))))) (letrec ((f (lambda () (even? 10)))) (f)))", success(true)),
+            ]),
+            // Test letrec with multiple body expressions and environment sharing
+            TestEnvironment(vec![
+                ("(letrec ((x 5)) (+ x 1) (+ x 2) (* x 3))", success(15)), // last expr returned
+            ]),
+            // Test letrec closure capturing variable from outer letrec
+            TestEnvironment(vec![
+                ("(letrec ((x 7)) (letrec ((f (lambda () x))) (f)))", success(7)),
+            ]),
 
             // === NEW INTERNAL DEFINES TESTS (Demonstrating SuperDirectVM Parity) ===
             // Test sequential internal defines where later functions call earlier functions (letrec* semantics)
@@ -1418,6 +1450,186 @@ mod comprehensive_evaluator_tests {
     }
 
     #[test]
+    fn test_letrec_comprehensive() {
+        let test_cases = vec![
+            // ...existing test environments...
+            // === R7RS 5.2.2: letrec with zero bindings (should error) ===
+            TestEnvironment(vec![(
+                "(letrec () 42)",
+                SpecificError("letrec requires at least one binding"),
+            )]),
+            // === R7RS 5.2.2: letrec with duplicate variable names (should error) ===
+            TestEnvironment(vec![(
+                "(letrec ((x 1) (x 2)) x)",
+                SpecificError("Duplicate variable in letrec"),
+            )]),
+            // === R7RS 5.2.2: letrec with non-procedure initial values (should work) ===
+            TestEnvironment(vec![("(letrec ((x 123) (y 456)) (+ x y))", success(579))]),
+            // === R7RS 5.2.2: letrec with variable referenced before initialization (should error) ===
+            TestEnvironment(vec![(
+                "(letrec ((x y) (y 42)) x)",
+                SpecificError("Unbound variable"),
+            )]),
+            // === R7RS 5.2.2: letrec closure captures initial value, not mutation after definition ===
+            TestEnvironment(vec![
+                (
+                    "(letrec ((x 10) (f (lambda () x))) (set! x 99) (f))",
+                    success(10),
+                ), // R7RS RESTRICTED: set! not supported, but if added, closure should see initial value
+            ]),
+            // ...existing test environments...
+        ];
+
+        run_tests_in_environment(test_cases);
+        // Comprehensive letrec tests migrated from test_letrec_*.scm files
+        // Tests R7RS letrec semantics including mutual recursion support
+        // **R7RS COMPLIANCE:** letrec must support parallel binding where all names
+        // are visible during all init expression evaluations, enabling mutual recursion
+
+        let test_cases = vec![
+            // === BASIC LETREC TESTS ===
+            // From test_letrec_test1.scm - Simple value binding
+            TestEnvironment(vec![("(letrec ((x 42)) x)", success(42))]),
+            // From test_letrec_test2.scm - Lambda binding with call
+            TestEnvironment(vec![("(letrec ((f (lambda () 99))) (f))", success(99))]),
+            // Simple lambda with parameters
+            TestEnvironment(vec![(
+                "(letrec ((f (lambda (x) (+ x 1)))) (f 41))",
+                success(42),
+            )]),
+            // Multiple bindings (non-recursive)
+            TestEnvironment(vec![("(letrec ((x 10) (y 20)) (+ x y))", success(30))]),
+            // === SELF-RECURSION TESTS ===
+            // From test_letrec_test3.scm - Factorial (self-recursion)
+            // **R7RS LETREC SEMANTICS:** Lambda must capture live environment reference
+            // so that it can see its own binding after letrec completes initialization
+            TestEnvironment(vec![(
+                r#"(letrec ((fact (lambda (n)
+                         (if (= n 0)
+                             1
+                             (* n (fact (- n 1)))))))
+                         (fact 5))"#,
+                success(120),
+            )]),
+            // Self-recursive countdown
+            TestEnvironment(vec![(
+                r#"(letrec ((countdown (lambda (n)
+                         (if (<= n 0)
+                             0
+                             (countdown (- n 1))))))
+                         (countdown 10))"#,
+                success(0),
+            )]),
+            // Self-recursive sum with accumulator
+            TestEnvironment(vec![(
+                r#"(letrec ((sum (lambda (n acc)
+                         (if (= n 0)
+                             acc
+                             (sum (- n 1) (+ acc n))))))
+                         (sum 10 0))"#,
+                success(55),
+            )]),
+            // === MUTUAL RECURSION TESTS ===
+            // From test_letrec_test4.scm - is-even?/is-odd? (mutual recursion)
+            // **R7RS CRITICAL:** This is the hallmark test for proper letrec semantics
+            // Both functions must see each other's bindings during initialization
+            TestEnvironment(vec![(
+                r#"(letrec ((is-even? (lambda (n)
+                                 (if (= n 0)
+                                     #t
+                                     (is-odd? (- n 1)))))
+                             (is-odd? (lambda (n)
+                                (if (= n 0)
+                                    #f
+                                    (is-even? (- n 1))))))
+                         (is-even? 10))"#,
+                success(true),
+            )]),
+            // Mutual recursion - is-odd? result
+            TestEnvironment(vec![(
+                r#"(letrec ((is-even? (lambda (n)
+                                 (if (= n 0)
+                                     #t
+                                     (is-odd? (- n 1)))))
+                             (is-odd? (lambda (n)
+                                (if (= n 0)
+                                    #f
+                                    (is-even? (- n 1))))))
+                         (is-odd? 7))"#,
+                success(true),
+            )]),
+            // Mutual recursion with multiple functions calling each other
+            TestEnvironment(vec![(
+                r#"(letrec ((f (lambda (n)
+                                     (if (= n 0)
+                                         1
+                                         (+ n (g (- n 1))))))
+                             (g (lambda (n)
+                                    (if (= n 0)
+                                        0
+                                        (* n (f (- n 1)))))))
+                         (f 5))"#,
+                success(25), // f(5) = 5 + g(4), g(4) = 4*f(3), f(3) = 3+g(2), g(2) = 2*f(1), f(1) = 1+g(0), g(0) = 0 => 25
+            )]),
+            // === NESTED LETREC TESTS ===
+            // Nested letrec forms (inner shadows outer)
+            TestEnvironment(vec![(
+                r#"(letrec ((x 10))
+                         (letrec ((x 20))
+                           x))"#,
+                success(20),
+            )]),
+            // Nested letrec with different variables
+            TestEnvironment(vec![(
+                r#"(letrec ((x 10))
+                         (letrec ((y 20))
+                           (+ x y)))"#,
+                success(30),
+            )]),
+            // Nested letrec with recursion at each level
+            TestEnvironment(vec![(
+                r#"(letrec ((outer (lambda (n)
+                                        (letrec ((inner (lambda (m)
+                                                          (if (= m 0)
+                                                              n
+                                                              (inner (- m 1))))))
+                                          (inner 3)))))
+                         (outer 42))"#,
+                success(42),
+            )]),
+            // === LETREC WITH MULTIPLE BODY EXPRESSIONS ===
+            // **R7RS COMPLIANCE:** letrec supports multiple body expressions (implicit begin)
+            TestEnvironment(vec![(
+                r#"(letrec ((x 10))
+                         (+ x 5)
+                         (+ x 10)
+                         (* x 2))"#,
+                success(20), // Last expression is returned
+            )]),
+            // === LETREC WITH CLOSURES ===
+            // Letrec binding returns a closure that references letrec-bound variable
+            TestEnvironment(vec![(
+                r#"(letrec ((x 42)
+                             (get-x (lambda () x)))
+                         (get-x))"#,
+                success(42),
+            )]),
+            // Letrec with closure that references mutually recursive functions
+            TestEnvironment(vec![(
+                r#"(letrec ((is-even? (lambda (n)
+                                           (if (= n 0) #t (is-odd? (- n 1)))))
+                             (is-odd? (lambda (n)
+                                        (if (= n 0) #f (is-even? (- n 1)))))
+                             (check-even (lambda (n) (is-even? n))))
+                         (check-even 8))"#,
+                success(true),
+            )]),
+        ];
+
+        run_tests_in_environment(test_cases);
+    }
+
+    #[test]
     fn test_migrated_tail_call_optimization() {
         // Migrated from src/bin/simple_tail_test.rs and src/bin/tail_call_test.rs
         // These tests specifically verify tail call optimization functionality
@@ -1460,6 +1672,97 @@ mod comprehensive_evaluator_tests {
             ]),
         ];
 
+        run_tests_in_environment(test_cases);
+    }
+
+    #[test]
+    fn test_demo_internal_defines_examples() {
+        // Migrated from demo_internal_defines.scm
+        let test_cases = vec![
+            // EXAMPLE 1: Sequential Function Dependencies
+            TestEnvironment(vec![
+                test_setup!(
+                    r#"
+                                        (define (example1 n)
+                                            (define (add10 x) (+ x 10))
+                                            (define (add20 x) (add10 (+ x 10)))
+                                            (add20 n))
+                                "#
+                ),
+                ("(example1 5)", success(25)),
+            ]),
+            // EXAMPLE 2: Inner Function with Closure Capture
+            TestEnvironment(vec![
+                test_setup!(
+                    r#"
+                                        (define (make-adder n)
+                                            (define (adder x) (+ x n))
+                                            adder)
+                                "#
+                ),
+                ("((make-adder 10) 5)", success(15)),
+            ]),
+            // EXAMPLE 3: Complex Nested Scopes
+            TestEnvironment(vec![
+                test_setup!(
+                    r#"
+                                        (define (complex-nesting x)
+                                            (define a (* x 2))
+                                            (define (inner-func)
+                                                (define b (+ a 5))
+                                                (define (even-more-inner)
+                                                    (+ b 10))
+                                                (even-more-inner))
+                                            (inner-func))
+                                "#
+                ),
+                ("(complex-nesting 3)", success(21)),
+            ]),
+            // EXAMPLE 4: Self-Recursive Inner Function
+            TestEnvironment(vec![
+                test_setup!(
+                    r#"
+                                        (define (factorial-inner n)
+                                            (define (fact x acc)
+                                                (if (<= x 1)
+                                                        acc
+                                                        (fact (- x 1) (* acc x))))
+                                            (fact n 1))
+                                "#
+                ),
+                ("(factorial-inner 5)", success(120)),
+            ]),
+            // EXAMPLE 5: Multiple Helper Functions
+            TestEnvironment(vec![
+                test_setup!(
+                    r#"
+                                        (define (process-data n)
+                                            (define (validate x) (if (< x 0) 0 x))
+                                            (define (double x) (* x 2))
+                                            (define (add-ten x) (+ x 10))
+                                            (define (transform x)
+                                                (add-ten (double (validate x))))
+                                            (transform n))
+                                "#
+                ),
+                ("(process-data 7)", success(24)),
+                ("(process-data -3)", success(10)),
+            ]),
+            // EXAMPLE 6: Mutual Recursion (forward references, should eventually work)
+            TestEnvironment(vec![
+                test_setup!(
+                    r#"
+                                        (define (mutual-example n)
+                                            (define (is-even x)
+                                                (if (= x 0) #t (is-odd (- x 1))))
+                                            (define (is-odd x)
+                                                (if (= x 0) #f (is-even (- x 1))))
+                                            (is-even n))
+                                "#
+                ),
+                ("(mutual-example 4)", success(true)),
+            ]),
+        ];
         run_tests_in_environment(test_cases);
     }
 }

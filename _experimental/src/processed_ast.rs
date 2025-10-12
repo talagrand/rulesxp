@@ -794,9 +794,9 @@ impl<'arena> ProcessedCompiler<'arena> {
         &mut self,
         elements: &[Value],
     ) -> Result<ProcessedValue<'arena>, ProcessedCompileError> {
-        if elements.len() != 3 {
+        if elements.len() < 3 {
             return Err(ProcessedCompileError::new(
-                "letrec requires exactly 2 arguments: bindings and body".to_string(),
+                "letrec requires at least 2 arguments: bindings and body".to_string(),
             ));
         }
 
@@ -810,7 +810,15 @@ impl<'arena> ProcessedCompiler<'arena> {
             }
         };
 
+        // Zero bindings is an error (R7RS)
+        if bindings_list.is_empty() {
+            return Err(ProcessedCompileError::new(
+                "letrec requires at least one binding".to_string(),
+            ));
+        }
+
         let mut compiled_bindings = Vec::new();
+        let mut seen_names = std::collections::HashSet::new();
         for binding in bindings_list {
             match binding {
                 Value::List(binding_pair) if binding_pair.len() == 2 => {
@@ -822,6 +830,11 @@ impl<'arena> ProcessedCompiler<'arena> {
                             ))
                         }
                     };
+                    if !seen_names.insert(name) {
+                        return Err(ProcessedCompileError::new(
+                            "Duplicate variable in letrec".to_string(),
+                        ));
+                    }
                     let init = self.compile_value(&binding_pair[1])?;
                     compiled_bindings.push((name, init));
                 }
@@ -834,7 +847,22 @@ impl<'arena> ProcessedCompiler<'arena> {
         }
 
         let bindings_slice = self.arena.alloc_slice_fill_iter(compiled_bindings);
-        let body = self.arena.alloc(self.compile_value(&elements[2])?);
+
+        // **R7RS COMPLIANCE:** Support multiple body expressions by wrapping in implicit begin
+        let body = if elements.len() == 3 {
+            // Single body expression - use directly
+            self.arena.alloc(self.compile_value(&elements[2])?)
+        } else {
+            // Multiple body expressions - wrap in begin
+            let mut body_exprs = Vec::new();
+            for expr in &elements[2..] {
+                body_exprs.push(self.compile_value(expr)?);
+            }
+            let body_slice = self.arena.alloc_slice_fill_iter(body_exprs);
+            self.arena.alloc(ProcessedValue::Begin {
+                expressions: Cow::Borrowed(body_slice),
+            })
+        };
 
         Ok(ProcessedValue::Letrec {
             bindings: Cow::Borrowed(bindings_slice),
@@ -852,9 +880,7 @@ impl<'arena> ProcessedCompiler<'arena> {
             compiled_elements.push(self.compile_value(element)?);
         }
 
-        let element_slice = self
-            .arena
-            .alloc_slice_fill_iter(compiled_elements.into_iter());
+        let element_slice = self.arena.alloc_slice_fill_iter(compiled_elements);
         Ok(ProcessedValue::List(Cow::Borrowed(element_slice)))
     }
 }

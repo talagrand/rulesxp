@@ -51,10 +51,12 @@
 //! ```
 
 use crate::processed_ast::{ProcessedAST, StringSymbol};
-use crate::processed_env::ProcessedEnvironment;
+use crate::processed_env::{BindingValue, ProcessedEnvironment};
 use crate::super_builtins::ProcessedValue;
 use crate::vm::{RuntimeError, StackFrame};
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use string_interner::Symbol;
 
@@ -126,6 +128,12 @@ fn capture_stack_trace<'ast>(
                         _ => Some(format!("expression{}", tail_info)),
                     }
                 }
+                SuperEvalFrame::FreezeAndEvaluate {
+                    in_tail_position, ..
+                } => {
+                    let tail_info = if *in_tail_position { " (tail)" } else { "" };
+                    Some(format!("freeze-and-evaluate{}", tail_info))
+                }
                 SuperEvalFrame::Apply {
                     args_ref,
                     eval_index,
@@ -186,6 +194,9 @@ fn capture_stack_trace<'ast>(
                 }
                 SuperEvalFrame::DefineStore { name, .. } => {
                     Some(format!("define-store:symbol_{}", name.to_usize()))
+                }
+                SuperEvalFrame::LetrecDefineStore { name, .. } => {
+                    Some(format!("letrec-define-store:symbol_{}", name.to_usize()))
                 }
                 SuperEvalFrame::ProcedureCall { is_tail_call, .. } => {
                     let tail_info = if *is_tail_call { " (tail)" } else { "" };
@@ -263,6 +274,11 @@ enum SuperEvalFrame<'ast> {
         expr: ProcessedValue<'ast>,
         in_tail_position: bool, // True if this evaluation is in tail position
     },
+    /// Freeze Mutable bindings then evaluate an expression (used after internal defines/letrec complete)
+    FreezeAndEvaluate {
+        expr: ProcessedValue<'ast>,
+        in_tail_position: bool,
+    },
     /// Continue with if evaluation (then_expr, else_expr) - test result is in evaluation result
     IfContinue {
         then_expr: ProcessedValue<'ast>,
@@ -303,6 +319,11 @@ enum SuperEvalFrame<'ast> {
     DefineStore {
         name: StringSymbol,
         original_env: Rc<ProcessedEnvironment<'ast>>,
+    },
+    /// Store letrec define result by updating cell after value evaluation completes
+    LetrecDefineStore {
+        name: StringSymbol,
+        letrec_env: Rc<ProcessedEnvironment<'ast>>,
     },
     /// Handle procedure call setup - binds parameters and prepares body evaluation
     ProcedureCall {
@@ -503,12 +524,14 @@ impl SuperDirectVM {
                 // Symbol lookup in environment
                 self.stats.environment_lookups += 1;
 
+                let sym_name = self.ast.resolve_symbol(*sym).unwrap_or("<unknown>");
                 // Direct symbol lookup - no string conversion needed
                 if let Some(value) = env.lookup(*sym) {
                     Ok(value.clone())
                 } else {
                     Err(RuntimeError::new(format!(
-                        "Unbound variable: symbol_{}",
+                        "Unbound variable: {} (symbol_{})",
+                        sym_name,
                         sym.to_usize()
                     )))
                 }
@@ -569,47 +592,56 @@ impl SuperDirectVM {
                 }
             }
             ProcessedValue::Define { name, value } => {
-                // Define form: handle recursive function definitions specially
+                // Define form: creates new environment extending current one
+                //
+                // **NEW IMMUTABLE ARCHITECTURE:** Defines create new child environments
+                // rather than mutating the current environment. This fixes closure capture
+                // bugs where closures would see redefined values.
+                //
+                // **TOP-LEVEL MUTUAL RECURSION:** For lambda definitions at top-level,
+                // we use Mutable cells so that later definitions can be accessed by
+                // earlier ones (e.g., is-even calling is-odd defined later).
+                // This is a practical extension beyond strict R7RS REPL semantics.
 
-                // **R7RS RECURSIVE SEMANTICS:** For (define f (lambda ...)), we need to allow
-                // the function to see itself, which requires special handling
                 match value {
                     ProcessedValue::Lambda {
                         params,
                         body,
                         variadic,
                     } => {
-                        // Special case: recursive function definition
-                        // Define placeholder first so the function can see itself during compilation
-                        env.define(*name, ProcessedValue::Unspecified);
+                        // Lambda definition: use Mutable cell for potential mutual recursion
+                        // The cell allows this function to be called by later-defined functions
+                        use std::cell::RefCell;
 
-                        // Create the actual function first (without captured environment)
+                        let cell = Rc::new(RefCell::new(ProcessedValue::Unspecified));
+                        let new_env_rc = env.extend(*name, BindingValue::Mutable(Rc::clone(&cell)));
+
+                        // Create the actual function capturing the NEW environment (with cell)
+                        // This allows the function to see itself AND later definitions
                         let actual_function = ProcessedValue::Procedure {
                             params: params.clone(),
                             body,
-                            env: Rc::clone(&env), // Temporary - will be updated
+                            env: Rc::clone(&new_env_rc),
                             variadic: *variadic,
                         };
 
-                        // Update the environment with the real function
-                        env.redefine(*name, actual_function);
+                        // Back-patch the cell so the function can see itself
+                        new_env_rc.update_cell(*name, actual_function);
 
-                        // Now create a snapshot that includes the real function and update the closure
-                        let captured_env = Rc::new(env.create_snapshot());
-                        let final_function = ProcessedValue::Procedure {
-                            params: params.clone(),
-                            body,
-                            env: captured_env,
-                            variadic: *variadic,
-                        };
-
-                        // Final update with proper captured environment
-                        env.redefine(*name, final_function);
+                        // Update the VM's current_env for REPL access
+                        let static_env: Rc<ProcessedEnvironment<'static>> =
+                            unsafe { std::mem::transmute(new_env_rc) };
+                        self.current_env = Some(static_env);
                     }
                     _ => {
-                        // Regular define: evaluate value then define in environment
+                        // Regular define: evaluate value then create new environment
                         let eval_value = self.evaluate_direct(value, Rc::clone(&env))?;
-                        env.define(*name, eval_value);
+                        let new_env = env.extend(*name, BindingValue::Immutable(eval_value));
+
+                        // Update the VM's current_env for REPL access
+                        let static_env: Rc<ProcessedEnvironment<'static>> =
+                            unsafe { std::mem::transmute(new_env) };
+                        self.current_env = Some(static_env);
                     }
                 }
 
@@ -621,14 +653,12 @@ impl SuperDirectVM {
                 body,
                 variadic,
             } => {
-                // Lambda form: create a closure capturing a SNAPSHOT of the current environment
-                // **R7RS COMPLIANCE:** Closures must capture environment at definition time,
-                // not share mutable references that can be changed after closure creation
-                let captured_env = Rc::new(env.create_snapshot());
+                // Lambda form: create a closure capturing the current environment
+                // **NEW IMMUTABLE ARCHITECTURE:** Just clone the Rc, no snapshot/freeze needed
                 let closure = ProcessedValue::Procedure {
                     params: params.clone(),
                     body,
-                    env: captured_env,
+                    env: Rc::clone(&env),
                     variadic: *variadic,
                 };
                 Ok(closure)
@@ -640,121 +670,98 @@ impl SuperDirectVM {
             ProcessedValue::Begin { expressions } => {
                 // Begin form: evaluate expressions sequentially, return last result
                 if expressions.is_empty() {
-                    // Empty begin returns unspecified
                     Ok(ProcessedValue::Unspecified)
                 } else if expressions.len() == 1 {
-                    // Single expression - just evaluate it
                     self.evaluate_direct(&expressions[0], env)
                 } else {
-                    // **R7RS INTERNAL DEFINITIONS:** Check if first expression is a define
-                    // If so, transform to letrec* semantics to support mutual recursion
-                    if let ProcessedValue::Define { name, value } = &expressions[0] {
-                        // **LETREC* TRANSFORMATION:** Transform all leading defines into letrec* semantics
-                        // This achieves letrec* semantics by processing definitions one at a time
+                    // Collect all leading defines
+                    let mut define_tuples = Vec::new();
+                    let mut first_non_define = None;
+                    for (i, expr) in expressions.iter().enumerate() {
+                        if let ProcessedValue::Define { name, value } = expr {
+                            define_tuples.push((*name, value));
+                        } else {
+                            first_non_define = Some(i);
+                            break;
+                        }
+                    }
 
-                        // Create new environment for this letrec binding
-                        let letrec_env = ProcessedEnvironment::with_parent(Rc::clone(&env));
-                        let letrec_env_rc = Rc::new(letrec_env);
+                    if !define_tuples.is_empty() {
+                        // Use letrec (parallel) semantics for internal defines
+                        // **NEW IMMUTABLE ARCHITECTURE:** Use Mutable cells, no freeze/snapshot
+                        use std::cell::RefCell;
 
-                        // Bind variable to unspecified initially (standard letrec semantics)
-                        letrec_env_rc.define(*name, ProcessedValue::Unspecified);
-
-                        // Evaluate init expression in parent environment
-                        let mut init_value = self.evaluate_direct(value, Rc::clone(&env))?;
-
-                        // **MUTUAL RECURSION FIX:** If the init value is a procedure, update its environment
-                        // to the letrec environment so it can see other letrec bindings
-                        if let ProcessedValue::Procedure {
-                            params,
-                            body,
-                            variadic,
-                            ..
-                        } = &init_value
-                        {
-                            init_value = ProcessedValue::Procedure {
-                                params: params.clone(),
-                                body: *body,
-                                env: Rc::clone(&letrec_env_rc),
-                                variadic: *variadic,
-                            };
+                        // Create HashMap of Mutable cells for all definitions
+                        let mut letrec_bindings = HashMap::new();
+                        for (name, _) in &define_tuples {
+                            let cell = Rc::new(RefCell::new(ProcessedValue::Unspecified));
+                            letrec_bindings.insert(*name, BindingValue::Mutable(cell));
                         }
 
-                        letrec_env_rc.redefine(*name, init_value);
+                        // Create letrec environment with all cells - returns Rc<ProcessedEnvironment>
+                        let letrec_env_rc = ProcessedEnvironment::with_bindings(
+                            Some(Rc::clone(&env)),
+                            letrec_bindings,
+                        );
 
-                        // Create the body for this letrec - remaining expressions
-                        if expressions.len() == 2 {
-                            // Only one remaining expression - evaluate it directly
-                            self.evaluate_direct(&expressions[1], letrec_env_rc)
+                        // Evaluate all init expressions and back-patch the cells
+                        for (name, value_expr) in define_tuples.iter() {
+                            let init_value =
+                                self.evaluate_direct(value_expr, Rc::clone(&letrec_env_rc))?;
+                            letrec_env_rc.update_cell(*name, init_value);
+                        }
+
+                        // Evaluate body expressions in letrec environment
+                        let body_start = first_non_define.unwrap_or(expressions.len());
+                        if body_start == expressions.len() {
+                            Ok(ProcessedValue::Unspecified)
+                        } else if body_start == expressions.len() - 1 {
+                            self.evaluate_direct(&expressions[body_start], letrec_env_rc)
                         } else {
-                            // Multiple remaining expressions - evaluate as Begin
-                            // Recursively process remaining expressions (which may have more defines)
-                            // Need to clone the expressions to owned Cow to satisfy lifetime requirements
                             let remaining_expressions = ProcessedValue::Begin {
-                                expressions: std::borrow::Cow::Owned(expressions[1..].to_vec()),
+                                expressions: std::borrow::Cow::Owned(
+                                    expressions[body_start..].to_vec(),
+                                ),
                             };
                             self.evaluate_direct(&remaining_expressions, letrec_env_rc)
                         }
                     } else {
                         // No internal definitions - normal begin evaluation
-                        // **R7RS COMPLIANCE:** Check that no defines appear after non-define expressions
                         for (i, expr) in expressions.iter().enumerate() {
                             if matches!(expr, ProcessedValue::Define { .. }) {
-                                return Err(RuntimeError::new(
-                                    format!(
-                                        "Definitions must come before expressions in body (define at position {} after non-define expression)",
-                                        i
-                                    )
-                                ));
+                                return Err(RuntimeError::new(format!(
+                                    "Definitions must come before expressions in body (define at position {} after non-define expression)", i
+                                )));
                             }
                         }
-
-                        // Multiple expressions - evaluate all but last for side effects
-                        // Environment mutations happen in place via RefCell
-
-                        // Evaluate all but the last expression (for side effects)
                         for expr in &expressions[..expressions.len() - 1] {
                             self.evaluate_direct(expr, Rc::clone(&env))?;
                         }
-
-                        // Evaluate and return the last expression
                         self.evaluate_direct(&expressions[expressions.len() - 1], env)
                     }
                 }
             }
             ProcessedValue::Letrec { bindings, body } => {
-                // **R7RS LETREC SEMANTICS:** Parallel binding with mutual recursion support
-                // Create new environment for letrec scope
-                let letrec_env = ProcessedEnvironment::with_parent(Rc::clone(&env));
-                let letrec_env_rc = Rc::new(letrec_env);
+                // **NEW IMMUTABLE ARCHITECTURE:** Letrec uses Mutable cells for mutual recursion
+                // No freezing or snapshot needed - cells provide the indirection
+                use std::cell::RefCell;
 
-                // First pass: bind all variables to unspecified (to allow mutual references)
+                // Create HashMap of Mutable cells for all bindings
+                let mut letrec_bindings = HashMap::new();
+
                 for (name, _) in bindings.iter() {
-                    letrec_env_rc.define(*name, ProcessedValue::Unspecified);
+                    let cell = Rc::new(RefCell::new(ProcessedValue::Unspecified));
+                    letrec_bindings.insert(*name, BindingValue::Mutable(cell));
                 }
 
-                // Second pass: evaluate all init expressions in PARENT environment (not letrec env)
-                // This ensures true parallel binding - init expressions cannot depend on each other
+                // Create letrec environment with all cells - returns Rc<ProcessedEnvironment>
+                let letrec_env_rc =
+                    ProcessedEnvironment::with_bindings(Some(Rc::clone(&env)), letrec_bindings);
+
+                // Evaluate all init expressions and back-patch the cells
                 for (name, init_expr) in bindings.iter() {
-                    let mut init_value = self.evaluate_direct(init_expr, Rc::clone(&env))?;
-
-                    // **MUTUAL RECURSION FIX:** If the init value is a procedure, update its environment
-                    // to the letrec environment so it can see other letrec bindings
-                    if let ProcessedValue::Procedure {
-                        params,
-                        body,
-                        variadic,
-                        ..
-                    } = &init_value
-                    {
-                        init_value = ProcessedValue::Procedure {
-                            params: params.clone(),
-                            body: *body,
-                            env: Rc::clone(&letrec_env_rc),
-                            variadic: *variadic,
-                        };
-                    }
-
-                    letrec_env_rc.redefine(*name, init_value);
+                    let init_value = self.evaluate_direct(init_expr, Rc::clone(&letrec_env_rc))?;
+                    letrec_env_rc.update_cell(*name, init_value);
                 }
 
                 // Evaluate body in the letrec environment
@@ -771,7 +778,7 @@ impl SuperDirectVM {
         &mut self,
         func: ProcessedValue<'ast>,
         args: &[ProcessedValue<'ast>],
-        env: Rc<ProcessedEnvironment<'ast>>,
+        _env: Rc<ProcessedEnvironment<'ast>>,
     ) -> Result<ProcessedValue<'ast>, RuntimeError> {
         match func {
             ProcessedValue::ResolvedBuiltin {
@@ -781,7 +788,7 @@ impl SuperDirectVM {
             } => {
                 // Apply builtin function directly using the function pointer
                 // Apply builtin function directly using the function pointer
-                func(&args)
+                func(args)
             }
             ProcessedValue::Procedure {
                 params,
@@ -810,9 +817,9 @@ impl SuperDirectVM {
 
                 // Create new environment extending closure's captured environment
                 // **PERFORMANCE:** Use Rc::clone instead of expensive environment clone
-                let call_env = ProcessedEnvironment::with_parent(Rc::clone(&closure_env));
+                let mut call_env_rc = Rc::clone(&closure_env);
 
-                // Bind parameters to arguments
+                // Bind parameters to arguments using extend()
                 if variadic {
                     // **R7RS RESTRICTED:** Only fully variadic functions supported (lambda args body)
                     // **R7RS RESTRICTED:** Dot notation (lambda (a b . rest) body) not supported
@@ -824,16 +831,17 @@ impl SuperDirectVM {
                     }
                     // Fully variadic: (lambda args body) - all args go into a list
                     let args_list = ProcessedValue::List(Cow::Owned(args.to_vec()));
-                    call_env.define(params[0], args_list);
+                    call_env_rc = call_env_rc.extend(params[0], BindingValue::Immutable(args_list));
                 } else {
-                    // Fixed parameter count
+                    // Fixed parameter count - extend environment for each parameter
                     for (i, param) in params.iter().enumerate() {
-                        call_env.define(*param, args[i].clone());
+                        call_env_rc =
+                            call_env_rc.extend(*param, BindingValue::Immutable(args[i].clone()));
                     }
                 }
 
                 // **RECURSIVE CALL:** This is why SuperDirectVM can cause stack overflow!
-                self.evaluate_direct(body, Rc::new(call_env))
+                self.evaluate_direct(body, call_env_rc)
             }
             _ => Err(RuntimeError::new("Type error: not a procedure".to_string())),
         }
@@ -1068,40 +1076,36 @@ impl SuperStackVM {
                         ProcessedValue::Define { name, value } => {
                             // Define form: handle recursive function definitions specially
 
-                            // **R7RS RECURSIVE SEMANTICS:** For (define f (lambda ...)), we need to allow
-                            // the function to see itself, which requires special handling
+                            // **NEW IMMUTABLE ARCHITECTURE:** For recursive defines, use Mutable cell
                             match value {
                                 ProcessedValue::Lambda {
                                     params,
                                     body,
                                     variadic,
                                 } => {
-                                    // Special case: recursive function definition
-                                    // Define placeholder first so the function can see itself during compilation
-                                    current_env.define(name, ProcessedValue::Unspecified);
+                                    // Recursive function definition: use Mutable cell
+                                    use maplit::hashmap;
+                                    use std::cell::RefCell;
 
-                                    // Create the actual function first (without captured environment)
+                                    let cell = Rc::new(RefCell::new(ProcessedValue::Unspecified));
+                                    let new_env = ProcessedEnvironment::with_bindings(
+                                        Some(current_env.clone()),
+                                        hashmap! { name => BindingValue::Mutable(Rc::clone(&cell)) },
+                                    );
+
+                                    // Create the function capturing the new environment
                                     let actual_function = ProcessedValue::Procedure {
                                         params: params.clone(),
                                         body,
-                                        env: current_env.clone(), // Temporary - will be updated
+                                        env: new_env.clone(),
                                         variadic: *variadic,
                                     };
 
-                                    // Update the environment with the real function
-                                    current_env.redefine(name, actual_function);
+                                    // Back-patch the cell
+                                    new_env.update_cell(name, actual_function);
 
-                                    // Now create a snapshot that includes the real function and update the closure
-                                    let captured_env = Rc::new(current_env.create_snapshot());
-                                    let final_function = ProcessedValue::Procedure {
-                                        params: params.clone(),
-                                        body,
-                                        env: captured_env,
-                                        variadic: *variadic,
-                                    };
-
-                                    // Final update with proper captured environment
-                                    current_env.redefine(name, final_function);
+                                    // Update current_env
+                                    current_env = new_env;
 
                                     // Define returns unspecified in R7RS
                                     result = ProcessedValue::Unspecified;
@@ -1126,15 +1130,13 @@ impl SuperStackVM {
                             body,
                             variadic,
                         } => {
-                            // Lambda form: create a closure capturing a SNAPSHOT of the current environment
-                            // **R7RS COMPLIANCE:** Closures must capture environment at definition time,
-                            // not share mutable references that can be changed after closure creation
-                            let captured_env = Rc::new(current_env.create_snapshot());
+                            // Lambda form: create a closure capturing the current environment
+                            // **NEW IMMUTABLE ARCHITECTURE:** Just clone the Rc, no freeze needed
                             result = ProcessedValue::Procedure {
                                 params: params.clone(),
                                 body,
-                                env: captured_env,
-                                variadic,
+                                env: current_env.clone(),
+                                variadic: variadic.clone(),
                             };
                         }
                         ProcessedValue::Quote { value } => {
@@ -1145,67 +1147,86 @@ impl SuperStackVM {
                             // Begin form: evaluate expressions sequentially, return last result
                             // **TAIL POSITION LOGIC:** Last expression inherits tail position
                             if expressions.is_empty() {
-                                // Empty begin returns unspecified
                                 result = ProcessedValue::Unspecified;
                             } else if expressions.len() == 1 {
-                                // Single expression - pass through tail position
                                 stack.push(SuperEvalFrame::Evaluate {
                                     expr: expressions[0].clone(),
-                                    in_tail_position, // Pass through tail position
+                                    in_tail_position,
                                 });
                                 continue;
                             } else {
-                                // **R7RS INTERNAL DEFINITIONS:** Check if first expression is a define
-                                // If so, transform to letrec* semantics. Otherwise, delegate to BeginContinue.
-                                if let ProcessedValue::Define { name, value } = &expressions[0] {
-                                    // **LETREC TRANSFORMATION:** Transform first definition into single-binding letrec
-                                    // This achieves letrec* semantics by processing definitions one at a time
-                                    let binding = (*name, (*value).clone());
-
-                                    // Create new environment for this letrec binding
-                                    let letrec_env =
-                                        ProcessedEnvironment::with_parent(Rc::clone(&current_env));
-
-                                    // Bind variable to unspecified initially (standard letrec semantics)
-                                    letrec_env.define(*name, ProcessedValue::Unspecified);
-
-                                    // Create the body for this letrec - remaining expressions
-                                    let body_for_letrec = if expressions.len() == 1 {
-                                        ProcessedValue::Unspecified
-                                    } else if expressions.len() == 2 {
-                                        expressions[1].clone()
+                                // Collect all leading defines
+                                let mut define_tuples = Vec::new();
+                                let mut first_non_define = None;
+                                for (i, expr) in expressions.iter().enumerate() {
+                                    if let ProcessedValue::Define { name, value } = expr {
+                                        define_tuples.push((*name, value.clone()));
                                     } else {
-                                        ProcessedValue::Begin {
+                                        first_non_define = Some(i);
+                                        break;
+                                    }
+                                }
+
+                                if !define_tuples.is_empty() {
+                                    // **NEW IMMUTABLE ARCHITECTURE:** Use letrec semantics with Mutable cells
+                                    // Create HashMap of Mutable cells for all definitions
+                                    let mut letrec_bindings = HashMap::new();
+                                    for (name, _) in &define_tuples {
+                                        let cell =
+                                            Rc::new(RefCell::new(ProcessedValue::Unspecified));
+                                        letrec_bindings.insert(*name, BindingValue::Mutable(cell));
+                                    }
+
+                                    // Create letrec environment - returns Rc<ProcessedEnvironment>
+                                    let letrec_env_rc = ProcessedEnvironment::with_bindings(
+                                        Some(Rc::clone(&current_env)),
+                                        letrec_bindings,
+                                    );
+
+                                    // Push body evaluation first (bottom of stack, evaluated last)
+                                    let body_start = first_non_define.unwrap_or(expressions.len());
+                                    if body_start == expressions.len() {
+                                        // Only defines, no body - result will be Unspecified from last LetrecDefineStore
+                                    } else if body_start == expressions.len() - 1 {
+                                        stack.push(SuperEvalFrame::Evaluate {
+                                            expr: expressions[body_start].clone(),
+                                            in_tail_position,
+                                        });
+                                    } else {
+                                        let remaining_expressions = ProcessedValue::Begin {
                                             expressions: std::borrow::Cow::Owned(
-                                                expressions[1..].to_vec(),
+                                                expressions[body_start..].to_vec(),
                                             ),
-                                        }
-                                    };
+                                        };
+                                        stack.push(SuperEvalFrame::Evaluate {
+                                            expr: remaining_expressions,
+                                            in_tail_position,
+                                        });
+                                    }
 
-                                    // Set up letrec continuation to evaluate init and then body
-                                    stack.push(SuperEvalFrame::LetrecContinue {
-                                        bindings: std::borrow::Cow::Owned(vec![binding]),
-                                        body: body_for_letrec,
-                                        current_index: 1, // Will finish with body evaluation
-                                        env: Rc::new(letrec_env),
-                                        in_tail_position,
-                                    });
+                                    // Push LetrecDefineStore frames in REVERSE order (so they execute first-to-last)
+                                    for (_i, (name, value_expr)) in
+                                        define_tuples.iter().rev().enumerate()
+                                    {
+                                        stack.push(SuperEvalFrame::LetrecDefineStore {
+                                            name: *name,
+                                            letrec_env: Rc::clone(&letrec_env_rc),
+                                        });
+                                        stack.push(SuperEvalFrame::Evaluate {
+                                            expr: (*value_expr).clone(),
+                                            in_tail_position: false,
+                                        });
+                                    }
 
-                                    // Evaluate init expression first (in parent environment)
-                                    stack.push(SuperEvalFrame::Evaluate {
-                                        expr: (*value).clone(),
-                                        in_tail_position: false,
-                                    });
+                                    current_env = letrec_env_rc;
                                     continue;
                                 } else {
                                     // No internal definitions - delegate to BeginContinue
                                     stack.push(SuperEvalFrame::BeginContinue {
                                         expressions: expressions.clone(),
-                                        current_index: 1, // Start from index 1 after evaluating first
-                                        in_tail_position, // Pass tail position for final expression
+                                        current_index: 1,
+                                        in_tail_position,
                                     });
-
-                                    // Evaluate the first expression (index 0) - not in tail position
                                     stack.push(SuperEvalFrame::Evaluate {
                                         expr: expressions[0].clone(),
                                         in_tail_position: false,
@@ -1215,22 +1236,24 @@ impl SuperStackVM {
                             }
                         }
                         ProcessedValue::Letrec { bindings, body } => {
-                            // **R7RS LETREC SEMANTICS:** Parallel binding with mutual recursion support
-                            // Create new environment for letrec scope
-                            let new_env =
-                                ProcessedEnvironment::with_parent(Rc::clone(&current_env));
-
-                            // First pass: bind all variables to unspecified (to allow mutual references)
+                            // **NEW IMMUTABLE ARCHITECTURE:** Letrec with Mutable cells
+                            let mut letrec_bindings = HashMap::new();
                             for (name, _) in bindings.iter() {
-                                new_env.define(*name, ProcessedValue::Unspecified);
+                                let cell = Rc::new(RefCell::new(ProcessedValue::Unspecified));
+                                letrec_bindings.insert(*name, BindingValue::Mutable(cell));
                             }
+
+                            let letrec_env_rc = ProcessedEnvironment::with_bindings(
+                                Some(Rc::clone(&current_env)),
+                                letrec_bindings,
+                            );
 
                             // Push evaluation continuation for letrec
                             stack.push(SuperEvalFrame::LetrecContinue {
                                 bindings: bindings.clone(),
                                 body: body.clone(),
                                 current_index: 0,
-                                env: Rc::new(new_env),
+                                env: letrec_env_rc,
                                 in_tail_position,
                             });
                             continue;
@@ -1264,6 +1287,17 @@ impl SuperStackVM {
                     stack.push(SuperEvalFrame::Evaluate {
                         expr: chosen_expr,
                         in_tail_position, // Pass through tail position
+                    });
+                }
+                SuperEvalFrame::FreezeAndEvaluate {
+                    expr,
+                    in_tail_position,
+                } => {
+                    // **NEW IMMUTABLE ARCHITECTURE:** No freezing needed, cells stay as cells
+                    // Just evaluate the expression normally
+                    stack.push(SuperEvalFrame::Evaluate {
+                        expr,
+                        in_tail_position,
                     });
                 }
                 SuperEvalFrame::BeginContinue {
@@ -1397,13 +1431,11 @@ impl SuperStackVM {
                                     ));
                                 }
 
-                                // Create new environment extending closure's captured environment
-                                let call_env = Rc::new(ProcessedEnvironment::with_parent(
-                                    Rc::clone(&closure_env),
-                                ));
+                                // Create environment extending closure's captured environment
+                                // **NEW IMMUTABLE ARCHITECTURE:** Use extend() for each parameter
+                                let mut call_env_rc = Rc::clone(closure_env);
 
-                                // Bind regular parameters to arguments
-                                // Bind parameters to arguments
+                                // Bind parameters to arguments using extend()
                                 if *variadic {
                                     // **R7RS RESTRICTED:** Only fully variadic functions supported (lambda args body)
                                     // **R7RS RESTRICTED:** Dot notation (lambda (a b . rest) body) not supported
@@ -1419,11 +1451,15 @@ impl SuperStackVM {
                                     // Fully variadic: (lambda args body) - all args go into a list
                                     let args_list =
                                         ProcessedValue::List(Cow::Owned(evaluated_args.to_vec()));
-                                    call_env.define(params[0], args_list);
+                                    call_env_rc = call_env_rc
+                                        .extend(params[0], BindingValue::Immutable(args_list));
                                 } else {
-                                    // Fixed parameter count
+                                    // Fixed parameter count - extend environment for each parameter
                                     for (i, param) in params.iter().enumerate() {
-                                        call_env.define(*param, evaluated_args[i].clone());
+                                        call_env_rc = call_env_rc.extend(
+                                            *param,
+                                            BindingValue::Immutable(evaluated_args[i].clone()),
+                                        );
                                     }
                                 }
 
@@ -1432,7 +1468,7 @@ impl SuperStackVM {
 
                                 stack.push(SuperEvalFrame::ProcedureCall {
                                     body: (*body).clone(),
-                                    call_env,
+                                    call_env: call_env_rc,
                                     is_tail_call,
                                 });
                                 // **WATERMARK RESET:** Procedure call complete - reset watermark to reclaim space
@@ -1479,40 +1515,36 @@ impl SuperStackVM {
                     is_tail_call,
                 } => {
                     // Procedure call: parameters are bound, now evaluate body
-                    if is_tail_call {
-                        // **TAIL CALL OPTIMIZATION:** Reuse current stack frame
-                        // No need to restore environment - we're not returning to caller
-                        current_env = call_env.clone();
+                    // **ENVIRONMENT HANDLING:** Set current_env to call_env for body evaluation.
+                    // No need for RestoreEnv - the Apply frame that called this procedure
+                    // already has its own environment saved and will use it when evaluating
+                    // subsequent expressions or arguments.
+                    current_env = call_env.clone();
 
-                        // **TAIL CALL:** Procedure body is in tail position
-                        stack.push(SuperEvalFrame::Evaluate {
-                            expr: body,
-                            in_tail_position: true,
-                        });
-                        continue;
-                    } else {
-                        // **REGULAR CALL:** Store previous environment and restore it later
-                        let prev_env = current_env.clone();
-                        current_env = call_env.clone();
-
-                        // Push a frame to restore the environment after procedure evaluation
-                        stack.push(SuperEvalFrame::RestoreEnv { env: prev_env });
-
-                        // **PROCEDURE BODY IN TAIL POSITION:** All procedure bodies are evaluated in tail position
-                        // This enables tail call optimization within procedure bodies
-                        stack.push(SuperEvalFrame::Evaluate {
-                            expr: body,
-                            in_tail_position: true,
-                        });
-                        continue;
-                    }
+                    // **PROCEDURE BODY IN TAIL POSITION:** All procedure bodies are evaluated in tail position
+                    // This enables tail call optimization within procedure bodies
+                    stack.push(SuperEvalFrame::Evaluate {
+                        expr: body,
+                        in_tail_position: true,
+                    });
+                    continue;
                 }
                 SuperEvalFrame::DefineStore { name, original_env } => {
-                    // Define form: value has been evaluated, now store it
+                    // Define form: value has been evaluated, now extend environment
                     let eval_value = result;
 
-                    // Extend environment with the new binding
-                    original_env.define(name, eval_value);
+                    // **NEW IMMUTABLE ARCHITECTURE:** Create new environment extending original
+                    current_env = original_env.extend(name, BindingValue::Immutable(eval_value));
+
+                    // Define returns unspecified in R7RS
+                    result = ProcessedValue::Unspecified;
+                }
+                SuperEvalFrame::LetrecDefineStore { name, letrec_env } => {
+                    // Internal define/letrec: value has been evaluated, now back-patch cell
+                    let eval_value = result;
+
+                    // **NEW IMMUTABLE ARCHITECTURE:** Update Mutable cell
+                    letrec_env.update_cell(name, eval_value);
 
                     // Define returns unspecified in R7RS
                     result = ProcessedValue::Unspecified;
@@ -1530,27 +1562,11 @@ impl SuperStackVM {
                 } => {
                     // Continue letrec evaluation - update current binding with evaluated result
                     if current_index > 0 {
-                        // We just evaluated an init expression, store its result
+                        // We just evaluated an init expression, store its result by updating cell
                         let (name, _) = &bindings[current_index - 1];
 
-                        // **MUTUAL RECURSION FIX:** If the result is a procedure, update its environment
-                        // to the letrec environment so it can see other letrec bindings
-                        let fixed_result = match &result {
-                            ProcessedValue::Procedure {
-                                params,
-                                body,
-                                variadic,
-                                ..
-                            } => ProcessedValue::Procedure {
-                                params: params.clone(),
-                                body: *body,
-                                env: Rc::clone(&env),
-                                variadic: *variadic,
-                            },
-                            _ => result.clone(),
-                        };
-
-                        env.redefine(*name, fixed_result);
+                        // **NEW IMMUTABLE ARCHITECTURE:** Just update the cell with the result
+                        env.update_cell(*name, result.clone());
                     }
 
                     // Evaluate next binding if any remain
@@ -1566,16 +1582,17 @@ impl SuperStackVM {
                             in_tail_position,
                         });
 
-                        // Evaluate the init expression in the PARENT environment (not letrec env)
-                        // This ensures true parallel binding - init expressions cannot depend on each other
-                        // current_env stays as the original parent environment for init evaluation
+                        // Evaluate the init expression in the LETREC environment (not parent)
+                        // This enables true parallel binding and mutual recursion
                         stack.push(SuperEvalFrame::Evaluate {
                             expr: init_expr.clone(),
                             in_tail_position: false,
                         });
+                        current_env = Rc::clone(&env);
                         continue;
                     } else {
-                        // All bindings evaluated, now evaluate body in tail position
+                        // All bindings evaluated - cells have been updated, ready to evaluate body
+                        // **NEW IMMUTABLE ARCHITECTURE:** No freezing or fixup needed
                         current_env = env;
                         stack.push(SuperEvalFrame::Evaluate {
                             expr: body,

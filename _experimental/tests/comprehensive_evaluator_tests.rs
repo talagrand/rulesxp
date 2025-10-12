@@ -1119,6 +1119,98 @@ mod comprehensive_evaluator_tests {
             //     ("(mutual-test 5)", success(false)),
             // ]),
 
+            // === NEW INTERNAL DEFINES TESTS (Demonstrating SuperDirectVM Parity) ===
+            // Test sequential internal defines where later functions call earlier functions (letrec* semantics)
+            TestEnvironment(vec![
+                test_setup!(
+                    r#"
+                    (define (test-sequential n)
+                      (define (first-helper x) (+ x 10))
+                      (define (second-helper x) (first-helper (+ x 20)))
+                      (second-helper n))
+                "#
+                ),
+                ("(test-sequential 5)", success(35)), // 5 + 20 = 25, then 25 + 10 = 35
+            ]),
+            // Test inner define with closure capture
+            TestEnvironment(vec![
+                test_setup!(
+                    r#"
+                    (define (test-closure n)
+                      (define (helper x) (+ x n))
+                      (helper 100))
+                "#
+                ),
+                ("(test-closure 23)", success(123)), // 100 + 23 = 123
+            ]),
+            // Test multiple levels of internal defines (nested scopes)
+            TestEnvironment(vec![
+                test_setup!(
+                    r#"
+                    (define (test-nested n)
+                      (define outer-val (* n 2))
+                      (define (inner-func)
+                        (define inner-val (+ outer-val 10))
+                        inner-val)
+                      (inner-func))
+                "#
+                ),
+                ("(test-nested 5)", success(20)), // 5 * 2 = 10, then 10 + 10 = 20
+            ]),
+            // Test inner self-recursion
+            TestEnvironment(vec![
+                test_setup!(
+                    r#"
+                    (define (test-inner-recursion n)
+                      (define (countdown x)
+                        (if (<= x 0) 0 (countdown (- x 1))))
+                      (countdown n))
+                "#
+                ),
+                ("(test-inner-recursion 5)", success(0)), // Counts down from 5 to 0
+            ]),
+            // Test chained function definitions with dependencies
+            TestEnvironment(vec![
+                test_setup!(
+                    r#"
+                    (define (test-chained n)
+                      (define (step1 x) (+ x 5))
+                      (define (step2 x) (step1 (+ x 10)))
+                      (define (step3 x) (step2 (* x 2)))
+                      (step3 n))
+                "#
+                ),
+                ("(test-chained 3)", success(21)), // 3*2=6, 6+10=16, 16+5=21
+            ]),
+
+            // === R7RS COMPLIANCE: MIXED DEFINES ERROR DETECTION ===
+            // Test that defines mixed with expressions are properly rejected
+            TestEnvironment(vec![
+                test_setup!(
+                    r#"
+                    (define (bad-mixed n)
+                      (define x 10)
+                      (+ x 5)
+                      (define y 20)
+                      (+ x y))
+                "#
+                ),
+                // This should fail - define appears after non-define expression
+                ("(bad-mixed 5)", SpecificError("Definitions must come before expressions")),
+            ]),
+            // Test error when first expression is not a define
+            TestEnvironment(vec![
+                test_setup!(
+                    r#"
+                    (define (bad-no-leading n)
+                      (+ n 5)
+                      (define x 10)
+                      (+ x n))
+                "#
+                ),
+                ("(bad-no-leading 5)", SpecificError("Definitions must come before expressions")),
+            ]),
+
             // === SIMPLE BENCHMARK EXTRACTS ===
             // From simple_benchmark.scm - basic arithmetic functions
             TestEnvironment(vec![
@@ -1339,28 +1431,28 @@ mod comprehensive_evaluator_tests {
                 test_setup!("(define countdown (lambda (n) (if (<= n 0) n (countdown (- n 1)))))"),
                 ("(countdown 100)", VeryDeep(ProcessedValue::Integer(0))), // TCO required for deep recursion
             ]),
-            
+
             // From tail_call_test.rs - More comprehensive tail call tests
             // Test 1: Deep tail recursive countdown (tests TCO effectiveness)
             TestEnvironment(vec![
                 test_setup!("(define countdown-deep (lambda (n) (if (<= n 0) 0 (countdown-deep (- n 1)))))"),
                 ("(countdown-deep 1000)", VeryDeep(ProcessedValue::Integer(0))), // Very deep recursion requires TCO
             ]),
-            
+
             // Test 2: Mutual recursion (even/odd) - currently blocked by forward reference restriction
             // **R7RS RESTRICTED:** Forward references not supported - this would work with TCO if forward references were implemented
             // TestEnvironment(vec![
-            //     test_setup!("(define is-even (lambda (n) (if (= n 0) #t (is-odd (- n 1)))))"),  
+            //     test_setup!("(define is-even (lambda (n) (if (= n 0) #t (is-odd (- n 1)))))"),
             //     test_setup!("(define is-odd (lambda (n) (if (= n 0) #f (is-even (- n 1)))))"),
             //     ("(is-even 100)", VeryDeep(ProcessedValue::Boolean(true))), // Would require TCO for deep mutual recursion
             // ]),
-            
+
             // Test 3: Non-tail recursive factorial for comparison (should work with smaller numbers)
             TestEnvironment(vec![
                 test_setup!("(define factorial-small (lambda (n) (if (<= n 1) 1 (* n (factorial-small (- n 1))))))"),
                 ("(factorial-small 10)", success(3628800)), // Non-tail recursion, small depth, should work on both VMs
             ]),
-            
+
             // Additional tail call patterns
             TestEnvironment(vec![
                 test_setup!("(define tail-sum (lambda (n acc) (if (= n 0) acc (tail-sum (- n 1) (+ acc n)))))"),

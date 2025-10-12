@@ -646,16 +646,79 @@ impl SuperDirectVM {
                     // Single expression - just evaluate it
                     self.evaluate_direct(&expressions[0], env)
                 } else {
-                    // Multiple expressions - evaluate all but last for side effects
-                    // Environment mutations happen in place via RefCell
+                    // **R7RS INTERNAL DEFINITIONS:** Check if first expression is a define
+                    // If so, transform to letrec* semantics to support mutual recursion
+                    if let ProcessedValue::Define { name, value } = &expressions[0] {
+                        // **LETREC* TRANSFORMATION:** Transform all leading defines into letrec* semantics
+                        // This achieves letrec* semantics by processing definitions one at a time
 
-                    // Evaluate all but the last expression (for side effects)
-                    for expr in &expressions[..expressions.len() - 1] {
-                        self.evaluate_direct(expr, Rc::clone(&env))?;
+                        // Create new environment for this letrec binding
+                        let letrec_env = ProcessedEnvironment::with_parent(Rc::clone(&env));
+                        let letrec_env_rc = Rc::new(letrec_env);
+
+                        // Bind variable to unspecified initially (standard letrec semantics)
+                        letrec_env_rc.define(*name, ProcessedValue::Unspecified);
+
+                        // Evaluate init expression in parent environment
+                        let mut init_value = self.evaluate_direct(value, Rc::clone(&env))?;
+
+                        // **MUTUAL RECURSION FIX:** If the init value is a procedure, update its environment
+                        // to the letrec environment so it can see other letrec bindings
+                        if let ProcessedValue::Procedure {
+                            params,
+                            body,
+                            variadic,
+                            ..
+                        } = &init_value
+                        {
+                            init_value = ProcessedValue::Procedure {
+                                params: params.clone(),
+                                body: *body,
+                                env: Rc::clone(&letrec_env_rc),
+                                variadic: *variadic,
+                            };
+                        }
+
+                        letrec_env_rc.redefine(*name, init_value);
+
+                        // Create the body for this letrec - remaining expressions
+                        if expressions.len() == 2 {
+                            // Only one remaining expression - evaluate it directly
+                            self.evaluate_direct(&expressions[1], letrec_env_rc)
+                        } else {
+                            // Multiple remaining expressions - evaluate as Begin
+                            // Recursively process remaining expressions (which may have more defines)
+                            // Need to clone the expressions to owned Cow to satisfy lifetime requirements
+                            let remaining_expressions = ProcessedValue::Begin {
+                                expressions: std::borrow::Cow::Owned(expressions[1..].to_vec()),
+                            };
+                            self.evaluate_direct(&remaining_expressions, letrec_env_rc)
+                        }
+                    } else {
+                        // No internal definitions - normal begin evaluation
+                        // **R7RS COMPLIANCE:** Check that no defines appear after non-define expressions
+                        for (i, expr) in expressions.iter().enumerate() {
+                            if matches!(expr, ProcessedValue::Define { .. }) {
+                                return Err(RuntimeError::new(
+                                    format!(
+                                        "Definitions must come before expressions in body (define at position {} after non-define expression)",
+                                        i
+                                    )
+                                ));
+                            }
+                        }
+
+                        // Multiple expressions - evaluate all but last for side effects
+                        // Environment mutations happen in place via RefCell
+
+                        // Evaluate all but the last expression (for side effects)
+                        for expr in &expressions[..expressions.len() - 1] {
+                            self.evaluate_direct(expr, Rc::clone(&env))?;
+                        }
+
+                        // Evaluate and return the last expression
+                        self.evaluate_direct(&expressions[expressions.len() - 1], env)
                     }
-
-                    // Evaluate and return the last expression
-                    self.evaluate_direct(&expressions[expressions.len() - 1], env)
                 }
             }
             ProcessedValue::Letrec { bindings, body } => {

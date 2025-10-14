@@ -62,7 +62,6 @@ impl std::error::Error for CompileError {}
 /// ## R7RS Deviations and Limitations:
 ///
 /// **Missing Features (require compiler changes):**
-/// - `set!` - all bindings are immutable after creation
 /// - `letrec` - mutual recursion requires special compiler support
 /// - `call/cc` and continuations - not implemented
 /// - `dynamic-wind` - not implemented
@@ -607,15 +606,11 @@ impl Compiler {
                             // **R7RS DEVIATION:** Block truly unsupported R7RS special forms
                             // Forms in macros::STANDARD_DERIVED_EXPRESSIONS are handled by macro system
                             "letrec"
-                            | "set!"
                             | "call/cc"
                             | "call-with-current-continuation"
                             | "dynamic-wind" => {
                                 let reason = match operator.as_str() {
                                     "letrec" => "requires compiler support for mutual recursion",
-                                    "set!" => {
-                                        "variable mutation not supported - all bindings immutable"
-                                    }
                                     _ => "continuation support not implemented",
                                 };
                                 return Err(CompileError::new(format!(

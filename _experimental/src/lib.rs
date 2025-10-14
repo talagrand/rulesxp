@@ -1,43 +1,39 @@
-//! # R7RS Scheme Bytecode Interpreter
+//! # R7RS Scheme Interpreter
 //!
-//! A small bytecode-based Scheme interpreter targeting a subset of R7RS Scheme.
+//! A Scheme interpreter implementing a subset of R7RS Scheme with multiple evaluation engines.
 //! Uses rustyline for REPL functionality and nom for parsing.
 //!
-//! ## R7RS Limitations and Design Decisions
+//! ## SuperVM Evaluation Engine
 //!
-//! This implementation makes several simplifications compared to full R7RS Scheme:
+//! The primary evaluation engine is **SuperVM** (see `super_vm.rs`), which provides:
+//! - **Two evaluation modes**: SuperDirectVM (recursive) and SuperStackVM (iterative with TCO)
+//! - **Arena-allocated AST**: ProcessedValue with string interning for efficiency
+//! - **Proper tail call optimization**: Stack-safe execution in SuperStackVM
+//! - **Immutable environment chains**: Fast environment extension via Rc cloning
 //!
-//! ### Environment and Lexical Scoping
-//! - **No `set!` support**: All variable bindings are immutable after creation
-//! - **Simplified lexical scoping**: Uses runtime environment capture instead of
-//!   compile-time free variable analysis (less efficient but simpler)
-//! - **No `let`, `let*`, `letrec`**: Only `define` and `lambda` for bindings
-//! - **Environment chaining**: Proper lexical scoping through environment chain walking
-//! - **TODO: Inner defines don't work correctly**: Scoping issue with compilation vs runtime environments.
-//!   Will be addressed when moving to CPS (Continuation Passing Style) transformation.
+//! ### SuperVM Special Forms (Fully Implemented)
+//! - `if` - Conditional expressions with R7RS truthiness (#f is false, all else true)
+//! - `define` - Variable and function definitions (all bindings mutable via Rc<RefCell<>>)
+//! - `set!` - Variable mutation (works on define'd vars and lambda parameters)
+//! - `lambda` - Lexical closures with environment capture
+//! - `quote` - Literal data without evaluation
+//! - `begin` - Sequential expression evaluation
+//! - `letrec` - Mutual recursion via mutable cell back-patching
+//! - Function application - Both builtin and user-defined procedures
 //!
-//! ### Data Types
-//! - **Limited numeric tower**: Only i64/u64 integers and f64 floats, no arbitrary precision
-//! - **No improper lists**: Only proper lists using Vec, no dotted pairs
-//! - **No characters**: Character literals not implemented
-//! - **No vectors**: Vector literals not implemented  
-//! - **No complex numbers**: Complex number support not implemented
+//! ### SuperVM Limitations (R7RS RESTRICTED)
+//! - **Numeric tower**: Only i64 integers (no floats, rationals, or arbitrary precision)
+//! - **Variadic functions**: Only fully variadic `(lambda args body)` form supported
+//!   - Dot notation `(lambda (a b . rest) body)` not implemented
+//! - **Continuations**: No `call/cc` or `dynamic-wind` support
+//! - **Data types**: No vectors, bytevectors, characters, or improper lists
+//! - **Modules**: Single global namespace, no R7RS library system
 //!
-//! ### Control Flow
-//! - **Basic tail call optimization**: Implemented but not comprehensive
-//! - **No continuations**: `call/cc` and continuations not supported
-//! - **No `dynamic-wind`**: Dynamic extent management not implemented
-//!
-//! ### Macros
-//! - **Basic macro system**: Planned but not yet implemented
-//! - **No syntax-rules**: Advanced macro facilities not supported
-//!
-//! ### I/O and Libraries
-//! - **No module system**: Single global namespace
-//! - **Limited I/O**: Basic REPL only, no file I/O
-//! - **No standard library**: Only core procedures implemented
-//!
-//! These limitations are documented in tests and code comments where relevant.
+//! ### SuperVM Derived Forms (Handled by Macro System)
+//! These must be macro-expanded before ProcessedAST compilation:
+//! - `and`, `or`, `when`, `unless`, `cond`, `case`
+//! - `let`, `let*`, `do`
+//! - See `prelude/macros.scm` for macro definitions
 
 pub mod builtins;
 pub mod compiler;

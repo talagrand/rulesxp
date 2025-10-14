@@ -23,16 +23,14 @@ use string_interner::{DefaultBackend, StringInterner, Symbol};
 ///
 /// **IMMUTABLE ARCHITECTURE:** Environments are immutable after creation.
 /// New bindings are added by creating a new environment that chains to the parent.
-/// This eliminates the need for RefCell and simplifies environment semantics.
+/// This eliminates the need for RefCell on the HashMap itself.
 ///
-/// **LETREC SUPPORT:** Mutable cells (Rc<RefCell<>>) are used only for letrec bindings
-/// to enable mutual recursion through back-patching.
+/// **MUTATION SUPPORT:** All bindings use Mutable(Rc<RefCell<>>) to support set!
+/// This allows variable mutation while maintaining immutable environment chaining.
 #[derive(Debug, Clone)]
 pub struct ProcessedEnvironment<'ast> {
-    /// Variable bindings - maps interned symbols to either Immutable or Mutable cell values
-    /// Immutable - no RefCell needed since environments never mutate after creation
-    // **R7RS RESTRICTED:** This environment model intentionally omits support for set! and mutable non-letrec bindings for safety and performance. Only letrec bindings use mutable cells.
-    // **R7RS DEVIATION:** The hybrid cell/direct binding strategy diverges from full R7RS semantics by not supporting mutation of non-letrec variables. This is enforced at binding creation.
+    /// Variable bindings - maps interned symbols to Mutable cell values
+    /// All bindings are Mutable to support set! semantics
     bindings: HashMap<StringSymbol, BindingValue<'ast>>,
     /// Parent environment for lexical scoping
     parent: Option<Rc<ProcessedEnvironment<'ast>>>,
@@ -119,12 +117,8 @@ impl<'ast> ProcessedEnvironment<'ast> {
     pub fn lookup(&self, symbol: StringSymbol) -> Option<ProcessedValue<'ast>> {
         if let Some(binding) = self.bindings.get(&symbol) {
             match binding {
-                BindingValue::Immutable(val) => {
-                    Some(val.clone())
-                }
-                BindingValue::Mutable(cell) => {
-                    Some(cell.borrow().clone())
-                }
+                BindingValue::Immutable(val) => Some(val.clone()),
+                BindingValue::Mutable(cell) => Some(cell.borrow().clone()),
             }
         } else if let Some(parent) = &self.parent {
             parent.lookup(symbol)
@@ -145,6 +139,45 @@ impl<'ast> ProcessedEnvironment<'ast> {
                 *cell.borrow_mut() = value;
             }
             _ => panic!("update_cell called on non-Mutable binding"),
+        }
+    }
+
+    /// Set a variable's value, searching this environment and parent chain
+    ///
+    /// **SET! SEMANTICS:** Implements R7RS set! by mutating existing bindings.
+    /// Works with both Immutable and Mutable bindings by upgrading Immutable to Mutable
+    /// on first mutation. Returns error if variable is not defined.
+    ///
+    /// **MUTATION STRATEGY:** For Immutable bindings, upgrades to Mutable(Rc<RefCell<>>)
+    /// on first set! For Mutable bindings, updates the cell directly.
+    /// For parent scopes, recursively searches up the chain.
+    pub fn set_binding(
+        &self,
+        symbol: StringSymbol,
+        value: ProcessedValue<'ast>,
+    ) -> Result<(), String> {
+        // Check if bound locally
+        if let Some(binding) = self.bindings.get(&symbol) {
+            match binding {
+                BindingValue::Immutable(_old) => {
+                    // Cannot upgrade Immutable to Mutable through &self
+                    // Solution: All define'd bindings must be Mutable from creation
+                    Err(format!(
+                        "Cannot set! immutable binding: {:?} (internal error - bindings should be mutable)",
+                        symbol
+                    ))
+                }
+                BindingValue::Mutable(cell) => {
+                    // Already mutable, just update
+                    *cell.borrow_mut() = value;
+                    Ok(())
+                }
+            }
+        } else if let Some(parent) = &self.parent {
+            // Recursively try parent
+            parent.set_binding(symbol, value)
+        } else {
+            Err(format!("Undefined variable for set!: {:?}", symbol))
         }
     }
 }

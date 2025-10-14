@@ -69,6 +69,11 @@ pub enum ProcessedValue<'ast> {
         value: &'ast ProcessedValue<'ast>,
     },
 
+    Set {
+        name: StringSymbol,
+        value: &'ast ProcessedValue<'ast>,
+    },
+
     Lambda {
         params: Cow<'ast, [StringSymbol]>,
         body: &'ast ProcessedValue<'ast>,
@@ -124,6 +129,7 @@ impl<'ast> ProcessedValue<'ast> {
             ProcessedValue::Procedure { .. } => "procedure",
             ProcessedValue::If { .. } => "if-expression",
             ProcessedValue::Define { .. } => "define-expression",
+            ProcessedValue::Set { .. } => "set-expression",
             ProcessedValue::Lambda { .. } => "lambda-expression",
             ProcessedValue::Quote { .. } => "quote-expression",
             ProcessedValue::Begin { .. } => "begin-expression",

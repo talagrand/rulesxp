@@ -538,12 +538,10 @@ impl VM {
         // Load function prelude (use CPS prelude if CPS is enabled)
         if enable_cps {
             if let Err(e) = vm.load_cps_function_prelude() {
-                eprintln!("Fatal error loading CPS function prelude: {}", e);
-                std::process::exit(1);
+                panic!("Fatal error loading CPS function prelude: {}", e);
             }
         } else if let Err(e) = vm.load_function_prelude() {
-            eprintln!("Fatal error loading function prelude: {}", e);
-            std::process::exit(1);
+            panic!("Fatal error loading function prelude: {}", e);
         }
 
         vm
@@ -565,8 +563,7 @@ impl VM {
 
         // Load function prelude
         if let Err(e) = vm.load_function_prelude() {
-            eprintln!("Fatal error loading function prelude: {}", e);
-            std::process::exit(1);
+            panic!("Fatal error loading function prelude: {}", e);
         }
 
         vm

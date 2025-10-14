@@ -17,30 +17,35 @@
 //! - Integer/Boolean/String literals → Direct ProcessedValue equivalents
 //! - Symbols → Interned symbols or resolved builtin function references
 //! - Lists → Compiled special forms or function applications
-//! - Special forms (if, define, lambda, quote, begin) → Specialized ProcessedValue variants
+//! - Special forms (if, define, set!, lambda, quote, begin, letrec) → Specialized ProcessedValue variants
 //!
 //! ## R7RS Special Form Support
 //!
-//! **Implemented Special Forms** (compiled directly by ProcessedAST):
+//! **Implemented Special Forms** (compiled directly by ProcessedAST for SuperVM):
 //! - `if` - Conditional expressions with optional else branch
-//! - `define` - Variable and function definitions with R7RS syntax support
-//! - `lambda` - Function creation with lexical scoping
+//! - `define` - Variable and function definitions (creates mutable bindings)
+//! - `set!` - Variable mutation (mutates existing bindings via Rc<RefCell<>>)
+//! - `lambda` - Function creation with lexical scoping and environment capture
 //! - `quote` - Literal data without evaluation
-//! - `begin` - Sequential expression evaluation
+//! - `begin` - Sequential expression evaluation with proper last-value semantics
+//! - `letrec` - Mutually recursive bindings via parallel initialization and back-patching
 //!
-//! **R7RS DEVIATION:** Derived expressions handled by macro system (NOT ProcessedAST):
-//! - `and`, `or` - Logical operators (must be macro-expanded first)
-//! - `when`, `unless` - Simple conditionals (must be macro-expanded first)
-//! - `cond`, `case` - Multi-way conditionals (must be macro-expanded first)
-//! - `let`, `let*`, `do` - Local binding and iteration (must be macro-expanded first)
+//! **Derived Expressions** (handled by macro system, NOT ProcessedAST):
+//! - `and`, `or` - Logical operators (macro-expanded to if expressions)
+//! - `when`, `unless` - Simple conditionals (macro-expanded to if)
+//! - `cond`, `case` - Multi-way conditionals (macro-expanded)
+//! - `let`, `let*`, `do` - Local binding and iteration (macro-expanded)
+//! - See `prelude/macros.scm` for complete macro definitions
 //!
-//! **R7RS RESTRICTED:** Unsupported special forms:
-//! - `letrec` - Mutual recursion not implemented
-//! - `set!` - Variable mutation not supported (immutable bindings only)
+//! **Unsupported Special Forms** (R7RS RESTRICTED):
 //! - `call/cc`, `call-with-current-continuation` - Continuations not implemented
 //! - `dynamic-wind` - Dynamic extent control not implemented
 //! - `let-syntax`, `letrec-syntax` - Local macro definitions not supported
-//! - Variadic lambda forms: `(lambda args body)` and `(lambda (a b . rest) body)`
+//! - `define-syntax` - Should be handled by macro system before compilation
+//!
+//! **Lambda Restrictions** (R7RS RESTRICTED):
+//! - Fully variadic form `(lambda args body)` supported
+//! - Dot notation `(lambda (a b . rest) body)` NOT supported (returns error)
 //!
 //! **CRITICAL:** Input to ProcessedAST must be fully macro-expanded. The macro system
 //! (see `macros.rs`) handles derived expressions before ProcessedAST compilation.
@@ -447,6 +452,13 @@ impl ProcessedAST {
                 result.push_str(&self.dump_value(value, indent + 2));
                 result
             }
+            ProcessedValue::Set { name, value } => {
+                let name_str = self.interner.resolve(*name).unwrap_or("<unresolved>");
+                let mut result = format!("{}Set[{}]\n", prefix, name_str);
+                result.push_str(&format!("{}  value:\n", prefix));
+                result.push_str(&self.dump_value(value, indent + 2));
+                result
+            }
             ProcessedValue::Lambda {
                 params,
                 body,
@@ -541,6 +553,7 @@ impl<'arena> ProcessedCompiler<'arena> {
                     match first.as_str() {
                         "if" => self.compile_if(elements),
                         "define" => self.compile_define(elements),
+                        "set!" => self.compile_set(elements),
                         "lambda" => self.compile_lambda(elements),
                         "quote" => self.compile_quote(elements),
                         "begin" => self.compile_begin(elements),
@@ -554,11 +567,6 @@ impl<'arena> ProcessedCompiler<'arena> {
                             )))
                         }
                         // **R7RS RESTRICTED:** The following forms are not supported at all:
-                        "set!" => {
-                            Err(ProcessedCompileError::new(
-                                "R7RS RESTRICTED: Variable mutation (set!) not supported - all bindings are immutable".to_string()
-                            ))
-                        }
                         "call/cc" | "call-with-current-continuation" => {
                             Err(ProcessedCompileError::new(
                                 "R7RS RESTRICTED: Continuations (call/cc) not implemented in ProcessedAST".to_string()
@@ -713,6 +721,44 @@ impl<'arena> ProcessedCompiler<'arena> {
         let value = self.arena.alloc(self.compile_value(value_expr)?);
 
         Ok(ProcessedValue::Define { name, value })
+    }
+
+    /// Compile set! special form
+    ///
+    /// **R7RS 5.3.2:** set! mutates an existing binding.
+    /// The variable must already be defined, otherwise an error is returned.
+    /// All define'd variables and lambda parameters are mutable (Rc<RefCell<>>).
+    fn compile_set(
+        &mut self,
+        elements: &[Value],
+    ) -> Result<ProcessedValue<'arena>, ProcessedCompileError> {
+        if elements.len() != 3 {
+            return Err(ProcessedCompileError::new(format!(
+                "set! requires exactly 2 arguments (variable and value), got {}",
+                elements.len() - 1
+            )));
+        }
+
+        let var = &elements[1];
+        let value_expr = &elements[2];
+
+        // Variable must be a symbol
+        let name_symbol = match var {
+            Value::Symbol(s) => self.interner.get(s).ok_or_else(|| {
+                ProcessedCompileError::new(format!("Symbol not found in interner: {}", s))
+            })?,
+            _ => {
+                return Err(ProcessedCompileError::new(
+                    "set! requires a symbol as first argument".to_string(),
+                ))
+            }
+        };
+
+        let value = self.arena.alloc(self.compile_value(value_expr)?);
+        Ok(ProcessedValue::Set {
+            name: name_symbol,
+            value,
+        })
     }
 
     /// Compile lambda special form

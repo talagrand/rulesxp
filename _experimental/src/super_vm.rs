@@ -14,6 +14,7 @@
 //! **Fully Implemented Special Forms:**
 //! - `if` - Conditional expressions with R7RS truthiness (#f is false, everything else is true)
 //! - `define` - Variable and function definitions with both syntactic forms
+//! - `set!` - Variable mutation (all define'd bindings are mutable)
 //! - `lambda` - Lexical closures with environment capture
 //! - `quote` - Literal data expressions
 //! - `begin` - Sequential evaluation with proper last-value semantics
@@ -22,7 +23,6 @@
 //! **R7RS RESTRICTED:** The following features are not supported:
 //! - **Variadic functions**: Only fully variadic `(lambda args body)` - dot notation `(lambda (a b . rest) body)` restricted
 //! - **Continuations**: No call/cc or dynamic-wind support
-//! - **Variable mutation**: No set! support (all bindings immutable)
 //! - **Complex forms**: Must be macro-expanded before SuperVM evaluation
 //!
 //! **R7RS COMPLIANT:** Proper tail calls are fully supported in Stack mode
@@ -195,6 +195,9 @@ fn capture_stack_trace<'ast>(
                 SuperEvalFrame::DefineStore { name, .. } => {
                     Some(format!("define-store:symbol_{}", name.to_usize()))
                 }
+                SuperEvalFrame::SetStore { name, .. } => {
+                    Some(format!("set-store:symbol_{}", name.to_usize()))
+                }
                 SuperEvalFrame::LetrecDefineStore { name, .. } => {
                     Some(format!("letrec-define-store:symbol_{}", name.to_usize()))
                 }
@@ -319,6 +322,11 @@ enum SuperEvalFrame<'ast> {
     DefineStore {
         name: StringSymbol,
         original_env: Rc<ProcessedEnvironment<'ast>>,
+    },
+    /// Store set! result after value evaluation completes
+    SetStore {
+        name: StringSymbol,
+        env: Rc<ProcessedEnvironment<'ast>>,
     },
     /// Store letrec define result by updating cell after value evaluation completes
     LetrecDefineStore {
@@ -636,7 +644,11 @@ impl SuperDirectVM {
                     _ => {
                         // Regular define: evaluate value then create new environment
                         let eval_value = self.evaluate_direct(value, Rc::clone(&env))?;
-                        let new_env = env.extend(*name, BindingValue::Immutable(eval_value));
+                        // Use Mutable cell to support set!
+                        let new_env = env.extend(
+                            *name,
+                            BindingValue::Mutable(Rc::new(RefCell::new(eval_value))),
+                        );
 
                         // Update the VM's current_env for REPL access
                         let static_env: Rc<ProcessedEnvironment<'static>> =
@@ -648,13 +660,28 @@ impl SuperDirectVM {
                 // Define returns unspecified in R7RS
                 Ok(ProcessedValue::Unspecified)
             }
+            ProcessedValue::Set { name, value } => {
+                // Set form: mutate existing variable
+                // R7RS 5.3.2: set! requires the variable to already be defined
+                let eval_value = self.evaluate_direct(value, Rc::clone(&env))?;
+
+                // Try to mutate the binding
+                match env.set_binding(*name, eval_value) {
+                    Ok(()) => Ok(ProcessedValue::Unspecified),
+                    Err(e) => Err(RuntimeError {
+                        message: format!("Error in set!: {}", e),
+                        stack_trace: vec![],
+                        source_location: None,
+                    }),
+                }
+            }
             ProcessedValue::Lambda {
                 params,
                 body,
                 variadic,
             } => {
                 // Lambda form: create a closure capturing the current environment
-                // **NEW IMMUTABLE ARCHITECTURE:** Just clone the Rc, no snapshot/freeze needed
+                // Immutability - just clone the Rc, no snapshot/freeze needed
                 let closure = ProcessedValue::Procedure {
                     params: params.clone(),
                     body,
@@ -830,12 +857,18 @@ impl SuperDirectVM {
                     }
                     // Fully variadic: (lambda args body) - all args go into a list
                     let args_list = ProcessedValue::List(Cow::Owned(args.to_vec()));
-                    call_env_rc = call_env_rc.extend(params[0], BindingValue::Immutable(args_list));
+                    call_env_rc = call_env_rc.extend(
+                        params[0],
+                        BindingValue::Mutable(Rc::new(RefCell::new(args_list))),
+                    );
                 } else {
                     // Fixed parameter count - extend environment for each parameter
+                    // Use Mutable to support set! on parameters
                     for (i, param) in params.iter().enumerate() {
-                        call_env_rc =
-                            call_env_rc.extend(*param, BindingValue::Immutable(args[i].clone()));
+                        call_env_rc = call_env_rc.extend(
+                            *param,
+                            BindingValue::Mutable(Rc::new(RefCell::new(args[i].clone()))),
+                        );
                     }
                 }
 
@@ -1117,13 +1150,27 @@ impl SuperStackVM {
                                         original_env: current_env.clone(),
                                     });
                                     stack.push(SuperEvalFrame::Evaluate {
-                                        expr: (*value).clone(),
+                                        expr: value.clone(),
                                         in_tail_position: false,
                                     });
                                     continue;
                                 }
                             }
                         }
+
+                        ProcessedValue::Set { name, value } => {
+                            // Set form: evaluate value then mutate existing binding
+                            stack.push(SuperEvalFrame::SetStore {
+                                name,
+                                env: current_env.clone(),
+                            });
+                            stack.push(SuperEvalFrame::Evaluate {
+                                expr: value.clone(),
+                                in_tail_position: false,
+                            });
+                            continue;
+                        }
+
                         ProcessedValue::Lambda {
                             params,
                             body,
@@ -1449,14 +1496,19 @@ impl SuperStackVM {
                                     // Fully variadic: (lambda args body) - all args go into a list
                                     let args_list =
                                         ProcessedValue::List(Cow::Owned(evaluated_args.to_vec()));
-                                    call_env_rc = call_env_rc
-                                        .extend(params[0], BindingValue::Immutable(args_list));
+                                    call_env_rc = call_env_rc.extend(
+                                        params[0],
+                                        BindingValue::Mutable(Rc::new(RefCell::new(args_list))),
+                                    );
                                 } else {
                                     // Fixed parameter count - extend environment for each parameter
+                                    // Use Mutable to support set! on parameters
                                     for (i, param) in params.iter().enumerate() {
                                         call_env_rc = call_env_rc.extend(
                                             *param,
-                                            BindingValue::Immutable(evaluated_args[i].clone()),
+                                            BindingValue::Mutable(Rc::new(RefCell::new(
+                                                evaluated_args[i].clone(),
+                                            ))),
                                         );
                                     }
                                 }
@@ -1531,11 +1583,31 @@ impl SuperStackVM {
                     // Define form: value has been evaluated, now extend environment
                     let eval_value = result;
 
-                    // **NEW IMMUTABLE ARCHITECTURE:** Create new environment extending original
-                    current_env = original_env.extend(name, BindingValue::Immutable(eval_value));
+                    // Use Mutable cell for all bindings to support set!
+                    current_env = original_env.extend(
+                        name,
+                        BindingValue::Mutable(Rc::new(RefCell::new(eval_value))),
+                    );
 
                     // Define returns unspecified in R7RS
                     result = ProcessedValue::Unspecified;
+                }
+                SuperEvalFrame::SetStore { name, env } => {
+                    // Set form: value has been evaluated, now mutate existing binding
+                    let eval_value = result;
+
+                    match env.set_binding(name, eval_value) {
+                        Ok(()) => {
+                            result = ProcessedValue::Unspecified;
+                        }
+                        Err(e) => {
+                            return Err(create_runtime_error_with_stack_trace(
+                                format!("Error in set!: {}", e),
+                                &stack,
+                                &shared_args_buffer,
+                            ));
+                        }
+                    }
                 }
                 SuperEvalFrame::LetrecDefineStore { name, letrec_env } => {
                     // Internal define/letrec: value has been evaluated, now back-patch cell

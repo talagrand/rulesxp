@@ -121,3 +121,6 @@
 
 ;; ===== ENVIRONMENT UTILITIES =====
 (define (void) (if #f #f))
+
+(define (newline)
+  (display "\n"))

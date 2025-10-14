@@ -787,8 +787,7 @@ impl SuperDirectVM {
                 func,
             } => {
                 // Apply builtin function directly using the function pointer
-                // Apply builtin function directly using the function pointer
-                func(args)
+                func(&self.ast.interner, args)
             }
             ProcessedValue::Procedure {
                 params,
@@ -1370,20 +1369,19 @@ impl SuperStackVM {
 
                     if eval_index >= args_len {
                         // All arguments evaluated - now apply the function
-                        // Get slices from shared buffer for function and arguments
-                        let args_slice =
-                            &shared_args_buffer[args_ref.start_index..args_ref.end_index];
-                        let evaluated_args = &args_slice[1..]; // Skip function at index 0
+                        let func_value = &shared_args_buffer[args_ref.start_index];
+                        let evaluated_args =
+                            &shared_args_buffer[args_ref.start_index + 1..args_ref.end_index];
 
                         // **STACK SAFETY:** Apply function without recursive calls
-                        match &args_slice[0] {
+                        match func_value {
                             ProcessedValue::ResolvedBuiltin {
                                 name: _,
                                 arity: _,
                                 func,
                             } => {
                                 // Apply builtin function directly - no recursion needed
-                                match func(evaluated_args) {
+                                match func(&self.ast.interner, evaluated_args) {
                                     Ok(builtin_result) => {
                                         result = builtin_result;
                                         // Environment unchanged for builtins

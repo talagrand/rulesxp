@@ -62,12 +62,14 @@
 //! let result = vm.evaluate(env)?;  // Returns result of last expression (3)
 //! ```
 
-use crate::super_builtins::{builtin_functions, ProcessedArity, ProcessedValue};
+use crate::super_builtins::{
+    builtin_functions, ProcessedArity, ProcessedValue, SchemeStringInterner,
+};
 use crate::value::Value;
 use bumpalo::Bump;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use string_interner::{DefaultBackend, DefaultSymbol, StringInterner};
+use string_interner::DefaultSymbol;
 
 /// Type alias for string symbols
 pub type StringSymbol = DefaultSymbol;
@@ -76,7 +78,7 @@ pub type StringSymbol = DefaultSymbol;
 /// **NEEDS-FIX:** Using unsafe transmute for lifetime management - requires proper solution
 pub struct ProcessedAST {
     /// String interner for symbols and strings
-    pub interner: StringInterner<DefaultBackend>,
+    pub interner: SchemeStringInterner,
     /// Bump arena for all allocations
     pub arena: Bump,
     /// Root expressions of the AST (multiple expressions can be compiled together)
@@ -119,7 +121,7 @@ impl std::error::Error for ProcessedCompileError {}
 
 /// Compiler context for ProcessedAST creation
 struct ProcessedCompiler<'arena> {
-    interner: &'arena mut StringInterner<DefaultBackend>,
+    interner: &'arena mut SchemeStringInterner,
     arena: &'arena Bump,
     builtins: HashMap<StringSymbol, ProcessedValue<'arena>>,
 }
@@ -132,7 +134,7 @@ impl ProcessedAST {
 
     /// Create a new ProcessedAST from multiple Value expressions
     pub fn compile_multiple(values: &[Value]) -> Result<Self, ProcessedCompileError> {
-        let mut interner = StringInterner::new();
+        let mut interner = SchemeStringInterner::new();
         let arena = Bump::new();
 
         // Create builtin function mappings directly (avoiding borrowing issues)
@@ -169,7 +171,7 @@ impl ProcessedAST {
     /// This is shared between compile and compile_multiple
     fn populate_builtins(
         builtins: &mut HashMap<StringSymbol, ProcessedValue<'_>>,
-        interner: &mut StringInterner<DefaultBackend>,
+        interner: &mut SchemeStringInterner,
     ) {
         // Add arithmetic builtins
         let add_sym = interner.get_or_intern("+");
@@ -187,13 +189,15 @@ impl ProcessedAST {
         let cons_sym = interner.get_or_intern("cons");
         let list_sym = interner.get_or_intern("list");
         let null_sym = interner.get_or_intern("null?");
+        let display_sym = interner.get_or_intern("display");
+        let error_sym = interner.get_or_intern("error");
 
         builtins.insert(
             add_sym,
             ProcessedValue::ResolvedBuiltin {
                 name: add_sym,
                 arity: ProcessedArity::AtLeast(0),
-                func: builtin_functions::add_super,
+                func: builtin_functions::builtin_add,
             },
         );
 
@@ -202,7 +206,7 @@ impl ProcessedAST {
             ProcessedValue::ResolvedBuiltin {
                 name: sub_sym,
                 arity: ProcessedArity::AtLeast(1),
-                func: builtin_functions::sub_super,
+                func: builtin_functions::builtin_sub,
             },
         );
 
@@ -211,7 +215,7 @@ impl ProcessedAST {
             ProcessedValue::ResolvedBuiltin {
                 name: mul_sym,
                 arity: ProcessedArity::AtLeast(0),
-                func: builtin_functions::mul_super,
+                func: builtin_functions::builtin_mul,
             },
         );
 
@@ -220,7 +224,7 @@ impl ProcessedAST {
             ProcessedValue::ResolvedBuiltin {
                 name: eq_sym,
                 arity: ProcessedArity::Exact(2),
-                func: builtin_functions::eq_super,
+                func: builtin_functions::builtin_eq,
             },
         );
 
@@ -231,7 +235,7 @@ impl ProcessedAST {
             ProcessedValue::ResolvedBuiltin {
                 name: lt_sym,
                 arity: ProcessedArity::Exact(2),
-                func: builtin_functions::lt_super,
+                func: builtin_functions::builtin_lt,
             },
         );
 
@@ -240,7 +244,7 @@ impl ProcessedAST {
             ProcessedValue::ResolvedBuiltin {
                 name: gt_sym,
                 arity: ProcessedArity::Exact(2),
-                func: builtin_functions::gt_super,
+                func: builtin_functions::builtin_gt,
             },
         );
 
@@ -249,7 +253,7 @@ impl ProcessedAST {
             ProcessedValue::ResolvedBuiltin {
                 name: le_sym,
                 arity: ProcessedArity::Exact(2),
-                func: builtin_functions::le_super,
+                func: builtin_functions::builtin_le,
             },
         );
 
@@ -258,7 +262,7 @@ impl ProcessedAST {
             ProcessedValue::ResolvedBuiltin {
                 name: ge_sym,
                 arity: ProcessedArity::Exact(2),
-                func: builtin_functions::ge_super,
+                func: builtin_functions::builtin_ge,
             },
         );
 
@@ -267,7 +271,7 @@ impl ProcessedAST {
             ProcessedValue::ResolvedBuiltin {
                 name: not_sym,
                 arity: ProcessedArity::Exact(1),
-                func: builtin_functions::not_super,
+                func: builtin_functions::builtin_not,
             },
         );
 
@@ -276,7 +280,7 @@ impl ProcessedAST {
             ProcessedValue::ResolvedBuiltin {
                 name: car_sym,
                 arity: ProcessedArity::Exact(1),
-                func: builtin_functions::car_super,
+                func: builtin_functions::builtin_car,
             },
         );
 
@@ -285,7 +289,7 @@ impl ProcessedAST {
             ProcessedValue::ResolvedBuiltin {
                 name: cdr_sym,
                 arity: ProcessedArity::Exact(1),
-                func: builtin_functions::cdr_super,
+                func: builtin_functions::builtin_cdr,
             },
         );
 
@@ -294,7 +298,7 @@ impl ProcessedAST {
             ProcessedValue::ResolvedBuiltin {
                 name: cons_sym,
                 arity: ProcessedArity::Exact(2),
-                func: builtin_functions::cons_super,
+                func: builtin_functions::builtin_cons,
             },
         );
 
@@ -303,7 +307,16 @@ impl ProcessedAST {
             ProcessedValue::ResolvedBuiltin {
                 name: list_sym,
                 arity: ProcessedArity::AtLeast(0),
-                func: builtin_functions::list_super,
+                func: builtin_functions::builtin_list,
+            },
+        );
+
+        builtins.insert(
+            display_sym,
+            ProcessedValue::ResolvedBuiltin {
+                name: display_sym,
+                arity: ProcessedArity::Exact(1),
+                func: builtin_functions::builtin_display,
             },
         );
 
@@ -312,7 +325,16 @@ impl ProcessedAST {
             ProcessedValue::ResolvedBuiltin {
                 name: null_sym,
                 arity: ProcessedArity::Exact(1),
-                func: builtin_functions::null_super,
+                func: builtin_functions::builtin_null,
+            },
+        );
+
+        builtins.insert(
+            error_sym,
+            ProcessedValue::ResolvedBuiltin {
+                name: error_sym,
+                arity: ProcessedArity::AtLeast(1),
+                func: builtin_functions::builtin_error,
             },
         );
     }

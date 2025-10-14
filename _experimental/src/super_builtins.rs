@@ -11,6 +11,9 @@ use string_interner::{DefaultBackend, DefaultSymbol, StringInterner};
 /// Type alias for string symbols
 pub type StringSymbol = DefaultSymbol;
 
+/// Type alias for the string interner used throughout the Scheme interpreter
+pub type SchemeStringInterner = StringInterner<DefaultBackend>;
+
 /// ProcessedValue enum - arena-allocated values for SuperVM
 /// **R7RS RESTRICTED:** Numeric tower simplified to i64 integers only for implementation simplicity
 #[derive(Debug, Clone)]
@@ -40,7 +43,10 @@ pub enum ProcessedValue<'ast> {
     ResolvedBuiltin {
         name: StringSymbol,
         arity: ProcessedArity,
-        func: for<'a> fn(&[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError>,
+        func: for<'a> fn(
+            &SchemeStringInterner,
+            &[ProcessedValue<'a>],
+        ) -> Result<ProcessedValue<'a>, RuntimeError>,
     },
 
     /// User-defined procedures (closures)
@@ -127,10 +133,7 @@ impl<'ast> ProcessedValue<'ast> {
     }
 
     /// Get string value from interner for display
-    pub fn resolve_string<'a>(
-        &'a self,
-        interner: &'a StringInterner<DefaultBackend>,
-    ) -> Option<&'a str> {
+    pub fn resolve_string<'a>(&'a self, interner: &'a SchemeStringInterner) -> Option<&'a str> {
         match self {
             ProcessedValue::String(sym) | ProcessedValue::Symbol(sym) => interner.resolve(*sym),
             ProcessedValue::OwnedString(s) | ProcessedValue::OwnedSymbol(s) => Some(s.as_str()),
@@ -167,7 +170,10 @@ pub mod builtin_functions {
 
     /// Addition builtin for ProcessedValue
     /// **R7RS RESTRICTED:** Only supports i64 integers for simplicity
-    pub fn add_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
+    pub fn builtin_add<'a>(
+        _interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.is_empty() {
             return Ok(ProcessedValue::Integer(0));
         }
@@ -195,7 +201,10 @@ pub mod builtin_functions {
 
     /// Subtraction builtin for ProcessedValue
     /// **R7RS RESTRICTED:** Only supports i64 integers for simplicity
-    pub fn sub_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
+    pub fn builtin_sub<'a>(
+        _interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.is_empty() {
             return Err(RuntimeError::new(
                 "Arity error: - requires at least 1 argument",
@@ -248,7 +257,10 @@ pub mod builtin_functions {
 
     /// Multiplication builtin for ProcessedValue
     /// **R7RS RESTRICTED:** Only supports i64 integers for simplicity
-    pub fn mul_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
+    pub fn builtin_mul<'a>(
+        _interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.is_empty() {
             return Ok(ProcessedValue::Integer(1));
         }
@@ -275,7 +287,10 @@ pub mod builtin_functions {
     }
 
     /// Equality builtin for ProcessedValue
-    pub fn eq_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
+    pub fn builtin_eq<'a>(
+        _interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.len() != 2 {
             return Err(RuntimeError::new(format!(
                 "Arity error: = requires exactly 2 arguments, got {}",
@@ -302,7 +317,10 @@ pub mod builtin_functions {
     // Integer division behavior is surprising and error-prone
 
     /// Less than builtin for ProcessedValue
-    pub fn lt_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
+    pub fn builtin_lt<'a>(
+        _interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.len() != 2 {
             return Err(RuntimeError::new(format!(
                 "Arity error: < requires exactly 2 arguments, got {}",
@@ -325,7 +343,10 @@ pub mod builtin_functions {
     }
 
     /// Greater than builtin for ProcessedValue
-    pub fn gt_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
+    pub fn builtin_gt<'a>(
+        _interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.len() != 2 {
             return Err(RuntimeError::new(format!(
                 "Arity error: > requires exactly 2 arguments, got {}",
@@ -348,7 +369,10 @@ pub mod builtin_functions {
     }
 
     /// Less than or equal builtin for ProcessedValue
-    pub fn le_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
+    pub fn builtin_le<'a>(
+        _interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.len() != 2 {
             return Err(RuntimeError::new(format!(
                 "Arity error: <= requires exactly 2 arguments, got {}",
@@ -371,7 +395,10 @@ pub mod builtin_functions {
     }
 
     /// Greater than or equal builtin for ProcessedValue
-    pub fn ge_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
+    pub fn builtin_ge<'a>(
+        _interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.len() != 2 {
             return Err(RuntimeError::new(format!(
                 "Arity error: >= requires exactly 2 arguments, got {}",
@@ -394,7 +421,10 @@ pub mod builtin_functions {
     }
 
     /// Logical not builtin for ProcessedValue
-    pub fn not_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
+    pub fn builtin_not<'a>(
+        _interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.len() != 1 {
             return Err(RuntimeError::new(format!(
                 "Arity error: not requires exactly 1 argument, got {}",
@@ -412,7 +442,10 @@ pub mod builtin_functions {
     }
 
     /// Car builtin for ProcessedValue (first element of list)
-    pub fn car_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
+    pub fn builtin_car<'a>(
+        _interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.len() != 1 {
             return Err(RuntimeError::new(format!(
                 "Arity error: car requires exactly 1 argument, got {}",
@@ -438,7 +471,10 @@ pub mod builtin_functions {
     }
 
     /// Cdr builtin for ProcessedValue (rest of list)
-    pub fn cdr_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
+    pub fn builtin_cdr<'a>(
+        _interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.len() != 1 {
             return Err(RuntimeError::new(format!(
                 "Arity error: cdr requires exactly 1 argument, got {}",
@@ -466,7 +502,10 @@ pub mod builtin_functions {
     }
 
     /// Cons builtin for ProcessedValue (construct list)
-    pub fn cons_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
+    pub fn builtin_cons<'a>(
+        _interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.len() != 2 {
             return Err(RuntimeError::new(format!(
                 "Arity error: cons requires exactly 2 arguments, got {}",
@@ -492,13 +531,51 @@ pub mod builtin_functions {
     }
 
     /// List builtin for ProcessedValue (construct list from arguments)
-    pub fn list_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
+    pub fn builtin_list<'a>(
+        _interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
         // list can take any number of arguments (including zero)
         Ok(ProcessedValue::List(Cow::Owned(args.to_vec())))
     }
 
+    /// Display a value to stdout
+    pub fn builtin_display<'a>(
+        interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
+        if args.len() != 1 {
+            return Err(RuntimeError::new(format!(
+                "Arity error: display requires exactly 1 argument, got {}",
+                args.len()
+            )));
+        }
+
+        match &args[0] {
+            ProcessedValue::String(s) => {
+                if let Some(val) = interner.resolve(*s) {
+                    print!("{}", val);
+                } else {
+                    return Err(RuntimeError::new(format!(
+                        "display: failed to resolve interned string"
+                    )));
+                }
+            }
+            ProcessedValue::OwnedString(s) => print!("{}", s),
+            ProcessedValue::Integer(i) => print!("{}", i),
+            ProcessedValue::Boolean(b) => print!("{}", if *b { "#t" } else { "#f" }),
+            // **R7RS DEVIATION:** Display for procedures, lists, etc., is not specified and shows a debug-like format.
+            other => print!("{:?}", other),
+        }
+
+        Ok(ProcessedValue::Unspecified)
+    }
+
     /// Null predicate for ProcessedValue (check if value is empty list)
-    pub fn null_super<'a>(args: &[ProcessedValue<'a>]) -> Result<ProcessedValue<'a>, RuntimeError> {
+    pub fn builtin_null<'a>(
+        _interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
         if args.len() != 1 {
             return Err(RuntimeError::new(format!(
                 "Arity error: null? requires exactly 1 argument, got {}",
@@ -512,6 +589,47 @@ pub mod builtin_functions {
         };
 
         Ok(ProcessedValue::Boolean(result))
+    }
+
+    /// Error builtin - raises a runtime error with a message
+    pub fn builtin_error<'a>(
+        interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
+        if args.is_empty() {
+            return Err(RuntimeError::new("error: requires at least 1 argument"));
+        }
+
+        // Build error message from all arguments
+        let mut message = String::new();
+        for (i, arg) in args.iter().enumerate() {
+            if i > 0 {
+                message.push(' ');
+            }
+            match arg {
+                ProcessedValue::String(s) | ProcessedValue::Symbol(s) => {
+                    if let Some(val) = interner.resolve(*s) {
+                        message.push_str(val);
+                    } else {
+                        message.push_str("<unresolved>");
+                    }
+                }
+                ProcessedValue::OwnedString(s) | ProcessedValue::OwnedSymbol(s) => {
+                    message.push_str(s);
+                }
+                ProcessedValue::Integer(n) => {
+                    message.push_str(&n.to_string());
+                }
+                ProcessedValue::Boolean(b) => {
+                    message.push_str(if *b { "#t" } else { "#f" });
+                }
+                other => {
+                    message.push_str(&format!("{:?}", other));
+                }
+            }
+        }
+
+        Err(RuntimeError::new(message))
     }
 
     // **R7RS RESTRICTED:** The following builtin functions are not implemented:

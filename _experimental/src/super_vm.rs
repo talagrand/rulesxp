@@ -757,7 +757,8 @@ impl SuperDirectVM {
                         for (i, expr) in expressions.iter().enumerate() {
                             if matches!(expr, ProcessedValue::Define { .. }) {
                                 return Err(RuntimeError::new(format!(
-                                    "Definitions must come before expressions in body (define at position {} after non-define expression)", i
+                                    "Definitions must come before expressions in body at position {}: {}",
+                                    i, expr.display(&self.ast.interner)
                                 )));
                             }
                         }
@@ -817,9 +818,9 @@ impl SuperDirectVM {
                 func(&self.ast.interner, args)
             }
             ProcessedValue::Procedure {
-                params,
+                ref params,
                 body,
-                env: closure_env,
+                env: ref closure_env,
                 variadic,
             } => {
                 // Apply user-defined procedure (lambda)
@@ -827,17 +828,19 @@ impl SuperDirectVM {
                 // Check argument count (exact match for non-variadic functions)
                 if !variadic && args.len() != params.len() {
                     return Err(RuntimeError::new(format!(
-                        "Arity mismatch: expected {} arguments, got {}",
+                        "Arity mismatch: expected {} arguments, got {} for procedure {}",
                         params.len(),
-                        args.len()
+                        args.len(),
+                        func.display(&self.ast.interner)
                     )));
                 }
 
                 if variadic && args.len() < params.len() - 1 {
                     return Err(RuntimeError::new(format!(
-                        "Arity mismatch: expected at least {} arguments, got {}",
+                        "Arity mismatch: expected at least {} arguments, got {} for procedure {}",
                         params.len() - 1,
-                        args.len()
+                        args.len(),
+                        func.display(&self.ast.interner)
                     )));
                 }
 
@@ -875,7 +878,10 @@ impl SuperDirectVM {
                 // **RECURSIVE CALL:** This is why SuperDirectVM can cause stack overflow!
                 self.evaluate_direct(body, call_env_rc)
             }
-            _ => Err(RuntimeError::new("Type error: not a procedure".to_string())),
+            _ => Err(RuntimeError::new(format!(
+                "Type error: not a procedure: {}",
+                func.display(&self.ast.interner)
+            ))),
         }
     }
 }
@@ -1358,7 +1364,10 @@ impl SuperStackVM {
                         // **R7RS COMPLIANCE:** Check for illegal defines mixed with expressions
                         if matches!(expressions[current_index], ProcessedValue::Define { .. }) {
                             return Err(create_runtime_error_with_stack_trace(
-                                "Definitions must come before expressions in body",
+                                format!(
+                                    "Definitions must come before expressions in body: {}",
+                                    expressions[current_index].display(&self.ast.interner)
+                                ),
                                 &stack,
                                 &shared_args_buffer,
                             ));
@@ -1455,9 +1464,10 @@ impl SuperStackVM {
                                 if !*variadic && evaluated_args.len() != params.len() {
                                     return Err(augment_error_with_stack_trace(
                                         RuntimeError::new(format!(
-                                            "Arity mismatch: expected {} arguments, got {}",
+                                            "Arity mismatch: expected {} arguments, got {} for procedure {}",
                                             params.len(),
-                                            evaluated_args.len()
+                                            evaluated_args.len(),
+                                            func_value.display(&self.ast.interner)
                                         )),
                                         &stack,
                                         &shared_args_buffer,
@@ -1467,9 +1477,10 @@ impl SuperStackVM {
                                 if *variadic && evaluated_args.len() < params.len() - 1 {
                                     return Err(augment_error_with_stack_trace(
                                         RuntimeError::new(format!(
-                                            "Arity mismatch: expected at least {} arguments, got {}",
+                                            "Arity mismatch: expected at least {} arguments, got {} for procedure {}",
                                             params.len() - 1,
-                                            evaluated_args.len()
+                                            evaluated_args.len(),
+                                            func_value.display(&self.ast.interner)
                                         )),
                                         &stack,
                                         &shared_args_buffer,
@@ -1527,7 +1538,10 @@ impl SuperStackVM {
                             }
                             _ => {
                                 return Err(augment_error_with_stack_trace(
-                                    RuntimeError::new("Type error: not a procedure".to_string()),
+                                    RuntimeError::new(format!(
+                                        "Type error: not a procedure: {}",
+                                        func_value.display(&self.ast.interner)
+                                    )),
                                     &stack,
                                     &shared_args_buffer,
                                 ))

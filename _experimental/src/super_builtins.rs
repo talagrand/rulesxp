@@ -146,6 +146,138 @@ impl<'ast> ProcessedValue<'ast> {
             _ => None,
         }
     }
+
+    /// Returns a Display adapter that can format this value with interner context
+    pub fn display<'b>(
+        &'b self,
+        interner: &'b SchemeStringInterner,
+    ) -> ProcessedValueDisplay<'b, 'ast> {
+        ProcessedValueDisplay {
+            value: self,
+            interner,
+        }
+    }
+}
+
+/// Display adapter for ProcessedValue that holds interner reference
+pub struct ProcessedValueDisplay<'a, 'ast> {
+    value: &'a ProcessedValue<'ast>,
+    interner: &'a SchemeStringInterner,
+}
+
+impl<'a, 'ast> std::fmt::Display for ProcessedValueDisplay<'a, 'ast> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.value {
+            ProcessedValue::Boolean(b) => write!(f, "#{}", if *b { "t" } else { "f" }),
+            ProcessedValue::Integer(n) => write!(f, "{}", n),
+            ProcessedValue::String(sym) => {
+                let s = self.interner.resolve(*sym).unwrap_or("<unresolved>");
+                write!(f, "\"{}\"", s)
+            }
+            ProcessedValue::OwnedString(s) => write!(f, "\"{}\"", s),
+            ProcessedValue::Symbol(sym) => {
+                let s = self.interner.resolve(*sym).unwrap_or("<unresolved>");
+                write!(f, "{}", s)
+            }
+            ProcessedValue::OwnedSymbol(s) => write!(f, "{}", s),
+            ProcessedValue::List(items) => {
+                write!(f, "(")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{}", item.display(self.interner))?;
+                }
+                write!(f, ")")
+            }
+            ProcessedValue::ResolvedBuiltin { name, arity, .. } => {
+                let name_str = self.interner.resolve(*name).unwrap_or("<unresolved>");
+                write!(f, "#<builtin:{}:{:?}>", name_str, arity)
+            }
+            ProcessedValue::Procedure {
+                params, variadic, ..
+            } => {
+                write!(f, "#<procedure")?;
+                if *variadic {
+                    write!(f, ":variadic")?;
+                }
+                write!(f, " (")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    let param_str = self.interner.resolve(*p).unwrap_or("<unresolved>");
+                    write!(f, "{}", param_str)?;
+                }
+                if *variadic {
+                    write!(f, "...")?;
+                }
+                write!(f, ")>")
+            }
+            ProcessedValue::If {
+                test,
+                then_branch,
+                else_branch,
+            } => {
+                write!(
+                    f,
+                    "(if {} {}",
+                    test.display(self.interner),
+                    then_branch.display(self.interner)
+                )?;
+                if let Some(else_b) = else_branch {
+                    write!(f, " {}", else_b.display(self.interner))?;
+                }
+                write!(f, ")")
+            }
+            ProcessedValue::Define { name, value } => {
+                let name_str = self.interner.resolve(*name).unwrap_or("<unresolved>");
+                write!(f, "(define {} {})", name_str, value.display(self.interner))
+            }
+            ProcessedValue::Set { name, value } => {
+                let name_str = self.interner.resolve(*name).unwrap_or("<unresolved>");
+                write!(f, "(set! {} {})", name_str, value.display(self.interner))
+            }
+            ProcessedValue::Lambda {
+                params, variadic, ..
+            } => {
+                write!(f, "(lambda (")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    let param_str = self.interner.resolve(*p).unwrap_or("<unresolved>");
+                    write!(f, "{}", param_str)?;
+                }
+                if *variadic {
+                    write!(f, "...")?;
+                }
+                write!(f, ") <body>)")
+            }
+            ProcessedValue::Quote { value } => {
+                write!(f, "'{}", value.display(self.interner))
+            }
+            ProcessedValue::Begin { expressions } => {
+                write!(f, "(begin")?;
+                for expr in expressions.iter() {
+                    write!(f, " {}", expr.display(self.interner))?;
+                }
+                write!(f, ")")
+            }
+            ProcessedValue::Letrec { bindings, .. } => {
+                write!(f, "(letrec (")?;
+                for (i, (name, val)) in bindings.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    let name_str = self.interner.resolve(*name).unwrap_or("<unresolved>");
+                    write!(f, "[{} {}]", name_str, val.display(self.interner))?;
+                }
+                write!(f, ") <body>)")
+            }
+            ProcessedValue::Unspecified => write!(f, "#<unspecified>"),
+        }
+    }
 }
 
 impl<'ast> PartialEq for ProcessedValue<'ast> {

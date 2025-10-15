@@ -1108,7 +1108,7 @@ mod comprehensive_evaluator_tests {
             // From inner_mutual_both_results.scm - inner mutual recursion with list result
             TestEnvironment(vec![
                 test_setup!("(define (mutual-test n) (define (is-even x) (if (= x 0) #t (is-odd (- x 1)))) (define (is-odd x) (if (= x 0) #f (is-even (- x 1)))) (is-even n))"),
-                ("(list (mutual-test 4) (mutual-test 5))", success(list_i64(vec![1, 0]))), // true=1, false=0 in list context
+                ("(list (mutual-test 4) (mutual-test 5))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![ProcessedValue::Boolean(true), ProcessedValue::Boolean(false)])))),
             ]),
             // From inner_mutual_recursion_test.scm - individual inner mutual recursion tests
             TestEnvironment(vec![
@@ -1437,12 +1437,16 @@ mod comprehensive_evaluator_tests {
                 ("(test-func 1)", success(1100)), // 1 + 999 + 100 = 1100
             ]),
             // Critical closure capture vs call environment test
+            // **R7RS AMBIGUITY:** Top-level define redefinition behavior is implementation-dependent.
+            // Most REPL implementations (Racket, Guile, etc.) treat redefinition as mutation.
+            // Our implementation follows REPL semantics: redefinition updates the binding.
+            // In strict module semantics, redefinition would create a new binding (or error).
             TestEnvironment(vec![
                 test_setup!("(define x 1)"),
                 test_setup!("(define make-func (lambda () (lambda () x)))"),
                 test_setup!("(define captured-func (make-func))"),
                 test_setup!("(define x 999)"),
-                ("(captured-func)", success(1)), // Should return 1 (definition-time), not 999 (call-time)
+                ("(captured-func)", success(999)), // REPL semantics: closure sees redefined binding
             ]),
         ];
 
@@ -1468,14 +1472,16 @@ mod comprehensive_evaluator_tests {
             // === R7RS 5.2.2: letrec with variable referenced before initialization (should error) ===
             TestEnvironment(vec![(
                 "(letrec ((x y) (y 42)) x)",
-                SpecificError("Unbound variable"),
+                SpecificError("Variable used before initialization"),
             )]),
-            // === R7RS 5.2.2: letrec closure captures initial value, not mutation after definition ===
+            // === R7RS 5.2.2: letrec closure with set! mutation ===
+            // R7RS standard behavior: Closures capture binding locations, not values.
+            // set! mutates the binding, so all closures see the updated value.
             TestEnvironment(vec![
                 (
                     "(letrec ((x 10) (f (lambda () x))) (set! x 99) (f))",
-                    success(10),
-                ), // R7RS RESTRICTED: set! not supported, but if added, closure should see initial value
+                    success(99),
+                ), // Standard R7RS: closure sees mutated binding
             ]),
             // ...existing test environments...
         ];

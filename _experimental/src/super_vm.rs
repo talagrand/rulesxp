@@ -1761,13 +1761,15 @@ impl SuperStackVM {
                     env,
                     in_tail_position,
                 } => {
-                    // Continue letrec evaluation - update current binding with evaluated result
+                    // Continue letrec evaluation - initialize current binding with evaluated result
                     if current_index > 0 {
-                        // We just evaluated an init expression, store its result by updating cell
+                        // We just evaluated an init expression, initialize the binding
                         let (name, _) = &bindings[current_index - 1];
 
-                        // **NEW IMMUTABLE ARCHITECTURE:** Just update the cell with the result
-                        env.update_cell(*name, result.clone());
+                        // Initialize binding (transition from Uninitialized to Initialized)
+                        env.initialize_binding(*name, result.clone()).map_err(|e| {
+                            create_runtime_error_with_stack_trace(e, &stack, &shared_args_buffer)
+                        })?;
                     }
 
                     // Evaluate next binding if any remain

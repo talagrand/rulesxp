@@ -29,6 +29,7 @@
 //! - `quote` - Literal data without evaluation
 //! - `begin` - Sequential expression evaluation with proper last-value semantics
 //! - `letrec` - Mutually recursive bindings via parallel initialization and back-patching
+//! - `letrec*` - Sequential bindings with forward references (see compile_letrec_star)
 //!
 //! **Derived Expressions** (handled by macro system, NOT ProcessedAST):
 //! - `and`, `or` - Logical operators (macro-expanded to if expressions)
@@ -974,11 +975,22 @@ impl<'arena> ProcessedCompiler<'arena> {
             }
         };
 
-        // Zero bindings is an error (R7RS)
+        // **R7RS COMPLIANCE:** Empty bindings are legal - (letrec* () body) → (begin body)
         if bindings_list.is_empty() {
-            return Err(ProcessedCompileError::new(
-                "letrec* requires at least one binding".to_string(),
-            ));
+            // Compile body expressions with implicit begin
+            if elements.len() == 3 {
+                // Single body expression
+                return Ok(self.compile_value(&elements[2])?);
+            } else {
+                // Multiple body expressions - wrap in begin
+                let body_exprs: Result<Vec<_>, _> = elements[2..]
+                    .iter()
+                    .map(|expr| self.compile_value(expr))
+                    .collect();
+                return Ok(ProcessedValue::Begin {
+                    expressions: Cow::Borrowed(self.arena.alloc_slice_fill_iter(body_exprs?)),
+                });
+            }
         }
 
         let mut compiled_bindings = Vec::new();

@@ -94,6 +94,12 @@ pub enum ProcessedValue<'ast> {
         body: &'ast ProcessedValue<'ast>,
     },
 
+    /// letrec* binding construct with sequential left-to-right binding
+    LetrecStar {
+        bindings: Cow<'ast, [(StringSymbol, ProcessedValue<'ast>)]>,
+        body: &'ast ProcessedValue<'ast>,
+    },
+
     /// Unspecified value (returned by some procedures)
     Unspecified,
 }
@@ -134,6 +140,7 @@ impl<'ast> ProcessedValue<'ast> {
             ProcessedValue::Quote { .. } => "quote-expression",
             ProcessedValue::Begin { .. } => "begin-expression",
             ProcessedValue::Letrec { .. } => "letrec-expression",
+            ProcessedValue::LetrecStar { .. } => "letrec*-expression",
             ProcessedValue::Unspecified => "unspecified",
         }
     }
@@ -266,6 +273,17 @@ impl<'a, 'ast> std::fmt::Display for ProcessedValueDisplay<'a, 'ast> {
             }
             ProcessedValue::Letrec { bindings, .. } => {
                 write!(f, "(letrec (")?;
+                for (i, (name, val)) in bindings.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    let name_str = self.interner.resolve(*name).unwrap_or("<unresolved>");
+                    write!(f, "[{} {}]", name_str, val.display(self.interner))?;
+                }
+                write!(f, ") <body>)")
+            }
+            ProcessedValue::LetrecStar { bindings, .. } => {
+                write!(f, "(letrec* (")?;
                 for (i, (name, val)) in bindings.iter().enumerate() {
                     if i > 0 {
                         write!(f, " ")?;

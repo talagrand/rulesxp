@@ -218,6 +218,16 @@ fn capture_stack_trace<'ast>(
                     let progress = format!(" ({}/{} bindings)", current_index, bindings.len());
                     Some(format!("letrec-continue{}{}", progress, tail_info))
                 }
+                SuperEvalFrame::LetrecStarContinue {
+                    bindings,
+                    current_index,
+                    in_tail_position,
+                    ..
+                } => {
+                    let tail_info = if *in_tail_position { " (tail)" } else { "" };
+                    let progress = format!(" ({}/{} bindings)", current_index, bindings.len());
+                    Some(format!("letrec*-continue{}{}", progress, tail_info))
+                }
             };
 
             StackFrame {
@@ -350,6 +360,14 @@ enum SuperEvalFrame<'ast> {
     RestoreEnv { env: Rc<ProcessedEnvironment<'ast>> },
     /// Continue with letrec evaluation - evaluating bindings sequentially  
     LetrecContinue {
+        bindings: std::borrow::Cow<'ast, [(StringSymbol, ProcessedValue<'ast>)]>,
+        body: ProcessedValue<'ast>,
+        current_index: usize,
+        env: Rc<ProcessedEnvironment<'ast>>,
+        in_tail_position: bool,
+    },
+    /// Continue with letrec* evaluation - sequential left-to-right initialization
+    LetrecStarContinue {
         bindings: std::borrow::Cow<'ast, [(StringSymbol, ProcessedValue<'ast>)]>,
         body: ProcessedValue<'ast>,
         current_index: usize,
@@ -709,12 +727,11 @@ impl SuperDirectVM {
                     if !define_tuples.is_empty() {
                         // **R7RS 5.3.2:** Use letrec* (sequential) semantics for internal defines
                         // Each binding is initialized left-to-right before the next init is evaluated
-                        
+
                         // Extract symbols for environment creation and check for duplicates
-                        let symbols: Vec<StringSymbol> = define_tuples.iter()
-                            .map(|(name, _)| *name)
-                            .collect();
-                        
+                        let symbols: Vec<StringSymbol> =
+                            define_tuples.iter().map(|(name, _)| *name).collect();
+
                         // **R7RS 5.3.2:** Duplicate definitions in same body are an error
                         let mut seen_symbols = std::collections::HashSet::new();
                         for symbol in &symbols {
@@ -725,7 +742,7 @@ impl SuperDirectVM {
                                 )));
                             }
                         }
-                        
+
                         // Create environment with all bindings uninitialized
                         let letrec_env_rc = ProcessedEnvironment::create_with_bindings(
                             Some(Rc::clone(&env)),
@@ -797,6 +814,39 @@ impl SuperDirectVM {
                 }
 
                 // Evaluate body in the letrec environment
+                self.evaluate_direct(body, letrec_env_rc)
+            }
+            ProcessedValue::LetrecStar { bindings, body } => {
+                // letrec* with sequential left-to-right initialization
+                // All bindings created in single environment as Uninitialized, then initialized sequentially
+                // Each init expression can reference previously initialized bindings
+
+                // Collect all binding names and check for duplicates
+                let symbols: Vec<StringSymbol> = bindings.iter().map(|(name, _)| *name).collect();
+                let mut seen = std::collections::HashSet::new();
+                for symbol in &symbols {
+                    if !seen.insert(symbol) {
+                        return Err(RuntimeError::new(format!(
+                            "Duplicate binding in letrec*: {:?}",
+                            symbol
+                        )));
+                    }
+                }
+
+                // Create environment with all bindings uninitialized
+                let letrec_env_rc =
+                    ProcessedEnvironment::create_with_bindings(Some(Rc::clone(&env)), &symbols);
+
+                // Initialize bindings sequentially left-to-right
+                // Each init can reference previously initialized bindings
+                for (name, init_expr) in bindings.iter() {
+                    let init_value = self.evaluate_direct(init_expr, Rc::clone(&letrec_env_rc))?;
+                    letrec_env_rc
+                        .initialize_binding(*name, init_value)
+                        .map_err(|e| RuntimeError::new(e))?;
+                }
+
+                // Evaluate body in the letrec* environment
                 self.evaluate_direct(body, letrec_env_rc)
             }
             ProcessedValue::Unspecified => Ok(ProcessedValue::Unspecified),
@@ -1225,12 +1275,11 @@ impl SuperStackVM {
                                 if !define_tuples.is_empty() {
                                     // **R7RS 5.3.2:** Use letrec* (sequential) semantics for internal defines
                                     // Each binding is initialized left-to-right before the next init is evaluated
-                                    
+
                                     // Extract symbols for environment creation and check for duplicates
-                                    let symbols: Vec<StringSymbol> = define_tuples.iter()
-                                        .map(|(name, _)| *name)
-                                        .collect();
-                                    
+                                    let symbols: Vec<StringSymbol> =
+                                        define_tuples.iter().map(|(name, _)| *name).collect();
+
                                     // **R7RS 5.3.2:** Duplicate definitions in same body are an error
                                     let mut seen_symbols = std::collections::HashSet::new();
                                     for symbol in &symbols {
@@ -1238,14 +1287,17 @@ impl SuperStackVM {
                                             return Err(create_runtime_error_with_stack_trace(
                                                 format!(
                                                     "Duplicate definition in body: {}",
-                                                    self.ast.interner.resolve(*symbol).unwrap_or("<unknown>")
+                                                    self.ast
+                                                        .interner
+                                                        .resolve(*symbol)
+                                                        .unwrap_or("<unknown>")
                                                 ),
                                                 &stack,
                                                 &shared_args_buffer,
                                             ));
                                         }
                                     }
-                                    
+
                                     // Create environment with all bindings uninitialized
                                     let letrec_env_rc = ProcessedEnvironment::create_with_bindings(
                                         Some(Rc::clone(&current_env)),
@@ -1320,6 +1372,41 @@ impl SuperStackVM {
 
                             // Push evaluation continuation for letrec
                             stack.push(SuperEvalFrame::LetrecContinue {
+                                bindings: bindings.clone(),
+                                body: body.clone(),
+                                current_index: 0,
+                                env: letrec_env_rc,
+                                in_tail_position,
+                            });
+                            continue;
+                        }
+
+                        ProcessedValue::LetrecStar { bindings, body } => {
+                            // letrec* with sequential left-to-right initialization
+                            // All bindings created in single environment as Uninitialized
+
+                            // Collect all binding names and check for duplicates
+                            let symbols: Vec<StringSymbol> =
+                                bindings.iter().map(|(name, _)| *name).collect();
+                            let mut seen = std::collections::HashSet::new();
+                            for symbol in &symbols {
+                                if !seen.insert(symbol) {
+                                    return Err(create_runtime_error_with_stack_trace(
+                                        format!("Duplicate binding in letrec*: {:?}", symbol),
+                                        &stack,
+                                        &shared_args_buffer,
+                                    ));
+                                }
+                            }
+
+                            // Create environment with all bindings uninitialized
+                            let letrec_env_rc = ProcessedEnvironment::create_with_bindings(
+                                Some(Rc::clone(&current_env)),
+                                &symbols,
+                            );
+
+                            // Push evaluation continuation for letrec*
+                            stack.push(SuperEvalFrame::LetrecStarContinue {
                                 bindings: bindings.clone(),
                                 body: body.clone(),
                                 current_index: 0,
@@ -1707,6 +1794,55 @@ impl SuperStackVM {
                     } else {
                         // All bindings evaluated - cells have been updated, ready to evaluate body
                         // **NEW IMMUTABLE ARCHITECTURE:** No freezing or fixup needed
+                        current_env = env;
+                        stack.push(SuperEvalFrame::Evaluate {
+                            expr: body,
+                            in_tail_position,
+                        });
+                        continue;
+                    }
+                }
+                SuperEvalFrame::LetrecStarContinue {
+                    bindings,
+                    body,
+                    current_index,
+                    env,
+                    in_tail_position,
+                } => {
+                    // Continue letrec* evaluation - initialize current binding with evaluated result
+                    if current_index > 0 {
+                        // We just evaluated an init expression, initialize the binding
+                        let (name, _) = &bindings[current_index - 1];
+
+                        // Initialize binding (transition from Uninitialized to Initialized)
+                        env.initialize_binding(*name, result.clone()).map_err(|e| {
+                            create_runtime_error_with_stack_trace(e, &stack, &shared_args_buffer)
+                        })?;
+                    }
+
+                    // Evaluate next binding if any remain
+                    if current_index < bindings.len() {
+                        let (_, init_expr) = &bindings[current_index];
+
+                        // Continue with next binding
+                        stack.push(SuperEvalFrame::LetrecStarContinue {
+                            bindings: bindings.clone(),
+                            body: body.clone(),
+                            current_index: current_index + 1,
+                            env: Rc::clone(&env),
+                            in_tail_position,
+                        });
+
+                        // Evaluate the init expression in the LETREC* environment
+                        // This enables sequential initialization - each init can reference previous bindings
+                        stack.push(SuperEvalFrame::Evaluate {
+                            expr: init_expr.clone(),
+                            in_tail_position: false,
+                        });
+                        current_env = Rc::clone(&env);
+                        continue;
+                    } else {
+                        // All bindings initialized, ready to evaluate body
                         current_env = env;
                         stack.push(SuperEvalFrame::Evaluate {
                             expr: body,

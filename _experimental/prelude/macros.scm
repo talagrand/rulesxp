@@ -10,6 +10,9 @@
 ;; All forms in this file are R7RS-compliant implementations using syntax-rules
 ;; with proper ellipsis (...) pattern matching and template expansion.
 ;;
+;; ## PRIMITIVE FORMS (compiled natively, NOT macros):
+;; - if, define, set!, lambda, quote, begin, letrec, letrec* (see src/processed_ast.rs)
+;;
 ;; ## R7RS Derived Expressions Implemented:
 ;; - and, or (4.2.1) - logical operators  
 ;; - when, unless (4.2.6) - simple conditionals
@@ -73,6 +76,7 @@
 
 ;; Basic let - transforms to lambda application
 ;; R7RS: (let ((var val) ...) body ...)
+;; **R7RS COMPLIANCE:** Empty bindings legal: (let () body) → ((lambda () body))
 (define-syntax let
   (syntax-rules ()
     ((let ((var val) ...) body ...)
@@ -80,6 +84,7 @@
 
 ;; let* - sequential binding, each binding sees previous ones
 ;; R7RS: (let* ((var val) ...) body ...)
+;; **R7RS COMPLIANCE:** Empty bindings legal: (let* () body) → (begin body)
 ;; Expands to nested let forms for sequential evaluation
 (define-syntax let*
   (syntax-rules ()
@@ -88,27 +93,8 @@
     ((let* ((var val) binding ...) body ...)
      (let ((var val)) (let* (binding ...) body ...)))))
 
-;; letrec - parallel binding for mutual recursion
-;; R7RS: (letrec ((var val) ...) body ...)
-;; This is a PRIMITIVE form handled by the VM, not a macro
-;; Included here for documentation - the VM directly evaluates letrec
+;; note letrec/letrec* are natively supported in the VM
 
-;; letrec* - sequential binding with forward reference support
-;; R7RS: (letrec* ((var val) ...) body ...)
-;; Unlike let*, later bindings can reference earlier ones (like letrec)
-;; but evaluation is left-to-right sequential (like let*)
-;;
-;; **IMPLEMENTATION NOTE:** This expands to nested letrec forms
-;; Each binding gets its own letrec scope so later inits can reference it
-(define-syntax letrec*
-  (syntax-rules ()
-    ((letrec* () body ...)
-     (begin body ...))
-    ((letrec* ((var val)) body ...)
-     (letrec ((var val)) body ...))
-    ((letrec* ((var1 val1) (var2 val2) binding ...) body ...)
-     (letrec ((var1 val1))
-       (letrec* ((var2 val2) binding ...) body ...)))))
 
 ;; ===== ITERATION FORMS =====
 ;; R7RS section 4.2.4 - derived expressions for iteration

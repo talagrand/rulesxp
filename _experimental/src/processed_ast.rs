@@ -511,6 +511,21 @@ impl ProcessedAST {
                 result.push_str(&format!("{}]", prefix));
                 result
             }
+            ProcessedValue::LetrecStar { bindings, body } => {
+                let mut result = format!("{}LetrecStar[\n", prefix);
+                result.push_str(&format!("{}  bindings:\n", prefix));
+                for (name, init) in bindings.iter() {
+                    let name_str = self.interner.resolve(*name).unwrap_or("<unresolved>");
+                    result.push_str(&format!("{}    {} =>\n", prefix, name_str));
+                    result.push_str(&self.dump_value(init, indent + 3));
+                    result.push('\n');
+                }
+                result.push_str(&format!("{}  body:\n", prefix));
+                result.push_str(&self.dump_value(body, indent + 2));
+                result.push('\n');
+                result.push_str(&format!("{}]", prefix));
+                result
+            }
             ProcessedValue::Unspecified => format!("{}Unspecified", prefix),
         }
     }
@@ -558,6 +573,7 @@ impl<'arena> ProcessedCompiler<'arena> {
                         "quote" => self.compile_quote(elements),
                         "begin" => self.compile_begin(elements),
                         "letrec" => self.compile_letrec(elements),
+                        "letrec*" => self.compile_letrec_star(elements),
                         // **R7RS DEVIATION:** The following standard R7RS special forms are NOT implemented in ProcessedAST
                         // These forms are handled by the macro system instead (see prelude/macros.scm):
                         "and" | "or" | "when" | "unless" | "cond" | "case" | "let" | "let*" | "do" => {
@@ -933,6 +949,86 @@ impl<'arena> ProcessedCompiler<'arena> {
         };
 
         Ok(ProcessedValue::Letrec {
+            bindings: Cow::Borrowed(bindings_slice),
+            body,
+        })
+    }
+
+    fn compile_letrec_star(
+        &mut self,
+        elements: &[Value],
+    ) -> Result<ProcessedValue<'arena>, ProcessedCompileError> {
+        if elements.len() < 3 {
+            return Err(ProcessedCompileError::new(
+                "letrec* requires at least 2 arguments: bindings and body".to_string(),
+            ));
+        }
+
+        // Parse bindings list
+        let bindings_list = match &elements[1] {
+            Value::List(bindings) => bindings,
+            _ => {
+                return Err(ProcessedCompileError::new(
+                    "letrec* bindings must be a list".to_string(),
+                ))
+            }
+        };
+
+        // Zero bindings is an error (R7RS)
+        if bindings_list.is_empty() {
+            return Err(ProcessedCompileError::new(
+                "letrec* requires at least one binding".to_string(),
+            ));
+        }
+
+        let mut compiled_bindings = Vec::new();
+        let mut seen_names = std::collections::HashSet::new();
+        for binding in bindings_list {
+            match binding {
+                Value::List(binding_pair) if binding_pair.len() == 2 => {
+                    let name = match &binding_pair[0] {
+                        Value::Symbol(name) => self.interner.get_or_intern(name),
+                        _ => {
+                            return Err(ProcessedCompileError::new(
+                                "letrec* binding variable must be a symbol".to_string(),
+                            ))
+                        }
+                    };
+                    if !seen_names.insert(name) {
+                        return Err(ProcessedCompileError::new(
+                            "Duplicate variable in letrec*".to_string(),
+                        ));
+                    }
+                    let init = self.compile_value(&binding_pair[1])?;
+                    compiled_bindings.push((name, init));
+                }
+                _ => {
+                    return Err(ProcessedCompileError::new(
+                        "letrec* binding must be a list of (variable init)".to_string(),
+                    ))
+                }
+            }
+        }
+
+        let bindings_slice = self.arena.alloc_slice_fill_iter(compiled_bindings);
+
+        // **R7RS COMPLIANCE:** Support multiple body expressions by wrapping in implicit begin
+        let body = if elements.len() == 3 {
+            // Single body expression - use directly
+            self.arena.alloc(self.compile_value(&elements[2])?)
+        } else {
+            // Multiple body expressions - wrap in begin
+            let mut body_exprs = Vec::new();
+            for expr in &elements[2..] {
+                body_exprs.push(self.compile_value(expr)?);
+            }
+            let body_slice = self.arena.alloc_slice_fill_iter(body_exprs);
+            self.arena.alloc(ProcessedValue::Begin {
+                expressions: Cow::Borrowed(body_slice),
+            })
+        };
+
+        Ok(ProcessedValue::LetrecStar {
             bindings: Cow::Borrowed(bindings_slice),
             body,
         })

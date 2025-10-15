@@ -268,10 +268,8 @@ impl<'ast> ProcessedEnvironment<'ast> {
         value: ProcessedValue<'ast>,
     ) -> Result<(), String> {
         // Check if binding exists - use explicit scope to ensure borrow is dropped
-        let existing_binding = {
-            self.bindings.borrow().get(&symbol).cloned()
-        };
-        
+        let existing_binding = { self.bindings.borrow().get(&symbol).cloned() };
+
         if let Some(binding) = existing_binding {
             // Binding exists - redefine it
             *binding.value.borrow_mut() = value;

@@ -194,6 +194,9 @@ fn capture_stack_trace<'ast>(
                 SuperEvalFrame::DefineStore { name, .. } => {
                     Some(format!("define-store:symbol_{}", name.to_usize()))
                 }
+                SuperEvalFrame::DefineRedefineStore { name, .. } => {
+                    Some(format!("define-redefine-store:symbol_{}", name.to_usize()))
+                }
                 SuperEvalFrame::SetStore { name, .. } => {
                     Some(format!("set-store:symbol_{}", name.to_usize()))
                 }
@@ -322,6 +325,11 @@ enum SuperEvalFrame<'ast> {
         name: StringSymbol,
         original_env: Rc<ProcessedEnvironment<'ast>>,
     },
+    /// Store top-level define result by redefining in current environment (REPL semantics)
+    DefineRedefineStore {
+        name: StringSymbol,
+        env: Rc<ProcessedEnvironment<'ast>>,
+    },
     /// Store set! result after value evaluation completes
     SetStore {
         name: StringSymbol,
@@ -442,6 +450,22 @@ impl SuperDirectVM {
                 unsafe { std::mem::transmute(Rc::clone(env)) };
             env_ast
         })
+    }
+
+    /// Check if we're evaluating at top-level (REPL context)
+    ///
+    /// Returns true if the given environment is the same as current_env,
+    /// indicating we're at the top-level REPL scope where redefinition is allowed.
+    fn is_top_level_context<'ast>(&self, env: &Rc<ProcessedEnvironment<'ast>>) -> bool {
+        if let Some(current) = &self.current_env {
+            // **UNSAFE:** Transmute to compare pointers across lifetimes
+            let env_static: *const ProcessedEnvironment<'static> =
+                unsafe { std::mem::transmute(Rc::as_ptr(env)) };
+            let current_ptr: *const ProcessedEnvironment<'static> = Rc::as_ptr(current);
+            env_static == current_ptr
+        } else {
+            false
+        }
     }
 
     /// Get a specific expression from the compiled AST by index
@@ -602,55 +626,28 @@ impl SuperDirectVM {
                 }
             }
             ProcessedValue::Define { name, value } => {
-                // Define form: creates new environment extending current one
+                // Define form: behavior depends on context
                 //
-                // **NEW IMMUTABLE ARCHITECTURE:** Defines create new child environments
-                // rather than mutating the current environment. This fixes closure capture
-                // bugs where closures would see redefined values.
+                // **TOP-LEVEL (REPL) CONTEXT:** Mutates the current environment using
+                // redefine_binding(), allowing redefinition of existing bindings per R7RS 5.3
                 //
-                // **TOP-LEVEL MUTUAL RECURSION:** For lambda definitions at top-level,
-                // we use Mutable cells so that later definitions can be accessed by
-                // earlier ones (e.g., is-even calling is-odd defined later).
-                // This is a practical extension beyond strict R7RS REPL semantics.
+                // **INTERNAL DEFINE CONTEXT:** Should only appear in Begin or Lambda bodies,
+                // where they are handled by body processing (Phase 3/4). If we see a define
+                // outside those contexts, it's an error.
 
-                match value {
-                    ProcessedValue::Lambda {
-                        params,
-                        body,
-                        variadic,
-                    } => {
-                        // Lambda definition: create uninitialized binding first
-                        let new_env_rc = env.define_binding(*name);
+                let is_top_level = self.is_top_level_context(&env);
 
-                        // Create the actual function capturing the NEW environment
-                        // This allows the function to see itself AND later definitions
-                        let actual_function = ProcessedValue::Procedure {
-                            params: params.clone(),
-                            body,
-                            env: Rc::clone(&new_env_rc),
-                            variadic: *variadic,
-                        };
-
-                        // Initialize the binding with the actual function
-                        new_env_rc
-                            .initialize_binding(*name, actual_function)
-                            .map_err(|e| RuntimeError::new(e))?;
-
-                        // Update the VM's current_env for REPL access
-                        let static_env: Rc<ProcessedEnvironment<'static>> =
-                            unsafe { std::mem::transmute(new_env_rc) };
-                        self.current_env = Some(static_env);
-                    }
-                    _ => {
-                        // Regular define: evaluate value then create new environment
-                        let eval_value = self.evaluate_direct(value, Rc::clone(&env))?;
-                        let new_env = env.extend(*name, eval_value);
-
-                        // Update the VM's current_env for REPL access
-                        let static_env: Rc<ProcessedEnvironment<'static>> =
-                            unsafe { std::mem::transmute(new_env) };
-                        self.current_env = Some(static_env);
-                    }
+                if is_top_level {
+                    // Top-level REPL: evaluate value, then mutate current environment
+                    let eval_value = self.evaluate_direct(value, Rc::clone(&env))?;
+                    env.redefine_binding(*name, eval_value)
+                        .map_err(|e| RuntimeError::new(e))?;
+                    // Don't change current_env - we mutated it in place
+                } else {
+                    // Internal define outside Begin/Lambda body - should be caught by body processing
+                    return Err(RuntimeError::new(
+                        "Define outside of body start - should be caught by begin/lambda processing",
+                    ));
                 }
 
                 // Define returns unspecified in R7RS
@@ -915,6 +912,22 @@ impl SuperStackVM {
         })
     }
 
+    /// Check if we're evaluating at top-level (REPL context)
+    ///
+    /// Returns true if the given environment is the same as current_env,
+    /// indicating we're at the top-level REPL scope where redefinition is allowed.
+    fn is_top_level_context<'ast>(&self, env: &Rc<ProcessedEnvironment<'ast>>) -> bool {
+        if let Some(current) = &self.current_env {
+            // **UNSAFE:** Transmute to compare pointers across lifetimes
+            let env_static: *const ProcessedEnvironment<'static> =
+                unsafe { std::mem::transmute(Rc::as_ptr(env)) };
+            let current_ptr: *const ProcessedEnvironment<'static> = Rc::as_ptr(current);
+            env_static == current_ptr
+        } else {
+            false
+        }
+    }
+
     /// Get a specific expression from the compiled AST by index
     /// Used for TestEnvironment functionality to evaluate individual expressions
     pub fn get_expression(&self, index: usize) -> Option<&ProcessedValue<'static>> {
@@ -1111,56 +1124,35 @@ impl SuperStackVM {
                         }
 
                         ProcessedValue::Define { name, value } => {
-                            // Define form: handle recursive function definitions specially
+                            // Define form: behavior depends on context
+                            //
+                            // **TOP-LEVEL (REPL) CONTEXT:** Mutates the current environment using
+                            // redefine_binding(), allowing redefinition of existing bindings per R7RS 5.3
+                            //
+                            // **INTERNAL DEFINE CONTEXT:** Should only appear in Begin or Lambda bodies,
+                            // where they are handled by body processing (Phase 3/4). If we see a define
+                            // outside those contexts, it's an error.
 
-                            // **NEW ARCHITECTURE:** For recursive defines, use uninitialized binding
-                            match value {
-                                ProcessedValue::Lambda {
-                                    params,
-                                    body,
-                                    variadic,
-                                } => {
-                                    // Recursive function definition: create uninitialized binding
-                                    let new_env = current_env.define_binding(name);
+                            let is_top_level = self.is_top_level_context(&current_env);
 
-                                    // Create the function capturing the new environment
-                                    let actual_function = ProcessedValue::Procedure {
-                                        params: params.clone(),
-                                        body,
-                                        env: new_env.clone(),
-                                        variadic: *variadic,
-                                    };
-
-                                    // Initialize the binding
-                                    if let Err(e) =
-                                        new_env.initialize_binding(name, actual_function)
-                                    {
-                                        return Err(create_runtime_error_with_stack_trace(
-                                            e,
-                                            &stack,
-                                            &shared_args_buffer,
-                                        ));
-                                    }
-
-                                    // Update current_env
-                                    current_env = new_env;
-
-                                    // Define returns unspecified in R7RS
-                                    result = ProcessedValue::Unspecified;
-                                }
-                                _ => {
-                                    // Regular define: evaluate value using stack then extend environment
-                                    // Push a DefineStore frame to handle the result, then evaluate the value
-                                    stack.push(SuperEvalFrame::DefineStore {
-                                        name,
-                                        original_env: current_env.clone(),
-                                    });
-                                    stack.push(SuperEvalFrame::Evaluate {
-                                        expr: value.clone(),
-                                        in_tail_position: false,
-                                    });
-                                    continue;
-                                }
+                            if is_top_level {
+                                // Top-level REPL: push DefineRedefineStore frame, then evaluate value
+                                stack.push(SuperEvalFrame::DefineRedefineStore {
+                                    name,
+                                    env: current_env.clone(),
+                                });
+                                stack.push(SuperEvalFrame::Evaluate {
+                                    expr: value.clone(),
+                                    in_tail_position: false,
+                                });
+                                continue;
+                            } else {
+                                // Internal define outside Begin/Lambda body - should be caught by body processing
+                                return Err(create_runtime_error_with_stack_trace(
+                                    "Define outside of body start - should be caught by begin/lambda processing",
+                                    &stack,
+                                    &shared_args_buffer,
+                                ));
                             }
                         }
 
@@ -1595,6 +1587,24 @@ impl SuperStackVM {
 
                     // Define returns unspecified in R7RS
                     result = ProcessedValue::Unspecified;
+                }
+                SuperEvalFrame::DefineRedefineStore { name, env } => {
+                    // Top-level define: value has been evaluated, now redefine in current environment
+                    let eval_value = result;
+
+                    match env.redefine_binding(name, eval_value) {
+                        Ok(()) => {
+                            result = ProcessedValue::Unspecified;
+                        }
+                        Err(e) => {
+                            return Err(create_runtime_error_with_stack_trace(
+                                e,
+                                &stack,
+                                &shared_args_buffer,
+                            ));
+                        }
+                    }
+                    // Don't change current_env - we mutated it in place
                 }
                 SuperEvalFrame::SetStore { name, env } => {
                     // Set form: value has been evaluated, now mutate existing binding

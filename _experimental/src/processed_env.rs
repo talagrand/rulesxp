@@ -32,7 +32,7 @@ pub enum BindingState {
 /// The BindingState tracks whether the binding can be safely read.
 #[derive(Debug, Clone)]
 pub struct BindingValue<'ast> {
-    state: RefCell<BindingState>,
+    state: Rc<RefCell<BindingState>>,
     value: Rc<RefCell<ProcessedValue<'ast>>>,
 }
 
@@ -40,7 +40,7 @@ impl<'ast> BindingValue<'ast> {
     /// Create a new uninitialized binding (for letrec/letrec*/internal-defines)
     pub fn new_uninitialized() -> Self {
         BindingValue {
-            state: RefCell::new(BindingState::Uninitialized),
+            state: Rc::new(RefCell::new(BindingState::Uninitialized)),
             value: Rc::new(RefCell::new(ProcessedValue::Unspecified)),
         }
     }
@@ -48,7 +48,7 @@ impl<'ast> BindingValue<'ast> {
     /// Create a new initialized binding with a value
     pub fn new_initialized(value: ProcessedValue<'ast>) -> Self {
         BindingValue {
-            state: RefCell::new(BindingState::Initialized),
+            state: Rc::new(RefCell::new(BindingState::Initialized)),
             value: Rc::new(RefCell::new(value)),
         }
     }
@@ -92,10 +92,15 @@ use string_interner::{DefaultBackend, StringInterner, Symbol};
 ///
 /// **TDZ ENFORCEMENT:** All bindings use BindingState to track initialization status.
 /// Reading uninitialized bindings is an error per R7RS 5.3.2.
+///
+/// **REPL SEMANTICS:** The bindings HashMap is wrapped in RefCell to support top-level
+/// redefinition in REPL contexts. This allows `redefine_binding` to add new bindings
+/// without creating a new environment.
 #[derive(Debug, Clone)]
 pub struct ProcessedEnvironment<'ast> {
     /// Variable bindings - maps interned symbols to BindingValue with state tracking
-    bindings: HashMap<StringSymbol, BindingValue<'ast>>,
+    /// Wrapped in RefCell to support REPL redefinition (adding new bindings to existing env)
+    bindings: RefCell<HashMap<StringSymbol, BindingValue<'ast>>>,
     /// Parent environment for lexical scoping
     parent: Option<Rc<ProcessedEnvironment<'ast>>>,
 }
@@ -103,30 +108,31 @@ pub struct ProcessedEnvironment<'ast> {
 impl<'ast> ProcessedEnvironment<'ast> {
     /// Check if a symbol is bound (regardless of state)
     pub fn is_bound(&self, symbol: &StringSymbol) -> bool {
-        self.bindings.contains_key(symbol)
+        self.bindings.borrow().contains_key(symbol)
     }
 
     /// Check if a symbol is bound and initialized
     pub fn is_initialized(&self, symbol: &StringSymbol) -> bool {
         self.bindings
+            .borrow()
             .get(symbol)
             .map_or(false, |b| b.state() == BindingState::Initialized)
     }
 
     /// Get the number of bindings in this environment (not including parent)
     pub fn binding_count(&self) -> usize {
-        self.bindings.len()
+        self.bindings.borrow().len()
     }
 
     /// Get all symbol keys in this environment (not including parent)
     pub fn binding_keys(&self) -> Vec<StringSymbol> {
-        self.bindings.keys().copied().collect()
+        self.bindings.borrow().keys().copied().collect()
     }
 
     /// Create a new empty environment
     pub fn new() -> Self {
         ProcessedEnvironment {
-            bindings: HashMap::new(),
+            bindings: RefCell::new(HashMap::new()),
             parent: None,
         }
     }
@@ -134,7 +140,7 @@ impl<'ast> ProcessedEnvironment<'ast> {
     /// Create a new environment with a parent
     pub fn with_parent(parent: Rc<ProcessedEnvironment<'ast>>) -> Self {
         ProcessedEnvironment {
-            bindings: HashMap::new(),
+            bindings: RefCell::new(HashMap::new()),
             parent: Some(parent),
         }
     }
@@ -159,7 +165,7 @@ impl<'ast> ProcessedEnvironment<'ast> {
         new_bindings.insert(symbol, BindingValue::new_initialized(value));
 
         Rc::new(ProcessedEnvironment {
-            bindings: new_bindings,
+            bindings: RefCell::new(new_bindings),
             parent: Some(Rc::clone(self)),
         })
     }
@@ -173,7 +179,10 @@ impl<'ast> ProcessedEnvironment<'ast> {
         parent: Option<Rc<ProcessedEnvironment<'ast>>>,
         bindings: HashMap<StringSymbol, BindingValue<'ast>>,
     ) -> Rc<ProcessedEnvironment<'ast>> {
-        Rc::new(ProcessedEnvironment { bindings, parent })
+        Rc::new(ProcessedEnvironment {
+            bindings: RefCell::new(bindings),
+            parent,
+        })
     }
 
     /// Create a new environment with multiple uninitialized bindings from symbol list
@@ -199,7 +208,10 @@ impl<'ast> ProcessedEnvironment<'ast> {
         for &symbol in symbols {
             bindings.insert(symbol, BindingValue::new_uninitialized());
         }
-        Rc::new(ProcessedEnvironment { bindings, parent })
+        Rc::new(ProcessedEnvironment {
+            bindings: RefCell::new(bindings),
+            parent,
+        })
     }
 
     /// Define a new uninitialized binding in a new environment (for letrec/letrec*/internal-defines setup)
@@ -218,7 +230,7 @@ impl<'ast> ProcessedEnvironment<'ast> {
         new_bindings.insert(symbol, BindingValue::new_uninitialized());
 
         Rc::new(ProcessedEnvironment {
-            bindings: new_bindings,
+            bindings: RefCell::new(new_bindings),
             parent: Some(Rc::clone(self)),
         })
     }
@@ -232,7 +244,7 @@ impl<'ast> ProcessedEnvironment<'ast> {
         symbol: StringSymbol,
         value: ProcessedValue<'ast>,
     ) -> Result<(), String> {
-        if let Some(binding) = self.bindings.get(&symbol) {
+        if let Some(binding) = self.bindings.borrow().get(&symbol).cloned() {
             binding.initialize(value);
             Ok(())
         } else {
@@ -243,26 +255,33 @@ impl<'ast> ProcessedEnvironment<'ast> {
         }
     }
 
-    /// Redefine an existing binding (REPL top-level only)
+    /// Redefine an existing binding or create new binding (REPL top-level only)
     ///
-    /// **R7RS REPL SEMANTICS:** Top-level redefinition is allowed for interactive development.
+    /// **R7RS REPL SEMANTICS:** Top-level redefinition/definition is allowed for interactive development.
     /// This should only be called in REPL contexts, not in nested scopes.
     ///
-    /// Returns error if binding doesn't exist in this environment.
+    /// If binding exists: updates its value and marks it as Initialized.
+    /// If binding doesn't exist: creates a new binding in this environment.
     pub fn redefine_binding(
         &self,
         symbol: StringSymbol,
         value: ProcessedValue<'ast>,
     ) -> Result<(), String> {
-        if let Some(binding) = self.bindings.get(&symbol) {
+        // Check if binding exists - use explicit scope to ensure borrow is dropped
+        let existing_binding = {
+            self.bindings.borrow().get(&symbol).cloned()
+        };
+        
+        if let Some(binding) = existing_binding {
+            // Binding exists - redefine it
             *binding.value.borrow_mut() = value;
             *binding.state.borrow_mut() = BindingState::Initialized;
             Ok(())
         } else {
-            Err(format!(
-                "Cannot redefine non-existent binding: {:?}",
-                symbol
-            ))
+            // Binding doesn't exist - create it (first-time define at top-level)
+            let binding_value = BindingValue::new_initialized(value);
+            self.bindings.borrow_mut().insert(symbol, binding_value);
+            Ok(())
         }
     }
 
@@ -271,7 +290,7 @@ impl<'ast> ProcessedEnvironment<'ast> {
     /// **TDZ ENFORCEMENT:** Returns error if binding exists but is Uninitialized.
     /// Returns None if binding doesn't exist in this environment or parent chain.
     pub fn lookup(&self, symbol: StringSymbol) -> Result<Option<ProcessedValue<'ast>>, String> {
-        if let Some(binding) = self.bindings.get(&symbol) {
+        if let Some(binding) = self.bindings.borrow().get(&symbol).cloned() {
             match binding.state() {
                 BindingState::Uninitialized => Err(format!(
                     "Variable used before initialization (TDZ violation): {:?}",
@@ -291,7 +310,7 @@ impl<'ast> ProcessedEnvironment<'ast> {
     /// **INTERNAL USE ONLY:** Used during letrec back-patching where we need to access
     /// the cell even if uninitialized. Normal code should use lookup().
     pub fn lookup_unchecked(&self, symbol: StringSymbol) -> Option<ProcessedValue<'ast>> {
-        if let Some(binding) = self.bindings.get(&symbol) {
+        if let Some(binding) = self.bindings.borrow().get(&symbol).cloned() {
             Some(binding.value())
         } else if let Some(parent) = &self.parent {
             parent.lookup_unchecked(symbol)
@@ -307,7 +326,7 @@ impl<'ast> ProcessedEnvironment<'ast> {
     ///
     /// **PANICS:** If the symbol is not bound in this environment.
     pub fn update_cell(&self, symbol: StringSymbol, value: ProcessedValue<'ast>) {
-        match self.bindings.get(&symbol) {
+        match self.bindings.borrow().get(&symbol).cloned() {
             Some(binding) => {
                 binding.update(value);
             }
@@ -320,7 +339,10 @@ impl<'ast> ProcessedEnvironment<'ast> {
     /// **LETREC USAGE:** Returns the underlying Rc<RefCell<>> for a binding,
     /// allowing closures to capture the cell for mutual recursion.
     pub fn get_cell(&self, symbol: StringSymbol) -> Option<Rc<RefCell<ProcessedValue<'ast>>>> {
-        self.bindings.get(&symbol).map(|b| Rc::clone(b.cell()))
+        self.bindings
+            .borrow()
+            .get(&symbol)
+            .map(|b| Rc::clone(b.cell()))
     }
 
     /// Set a variable's value, searching this environment and parent chain
@@ -335,7 +357,7 @@ impl<'ast> ProcessedEnvironment<'ast> {
         value: ProcessedValue<'ast>,
     ) -> Result<(), String> {
         // Check if bound locally
-        if let Some(binding) = self.bindings.get(&symbol) {
+        if let Some(binding) = self.bindings.borrow().get(&symbol).cloned() {
             match binding.state() {
                 BindingState::Uninitialized => Err(format!(
                     "Cannot set! uninitialized variable (TDZ violation): {:?}",
@@ -734,5 +756,45 @@ mod tests {
         assert_eq!(env.lookup(sym_x).unwrap(), Some(ProcessedValue::Integer(1)));
         assert_eq!(env.lookup(sym_y).unwrap(), Some(ProcessedValue::Integer(2)));
         assert_eq!(env.lookup(sym_z).unwrap(), Some(ProcessedValue::Integer(3)));
+    }
+
+    // R7RS 5.3.2: REPL first-time define (RefCell borrow conflict regression test)
+    // This test exercises the borrow conflict that occurred before adding explicit scope blocks.
+    // Without the fix, redefine_binding would panic with "already borrowed" when the symbol
+    // doesn't exist and needs to be created (first-time define at top-level).
+    #[test]
+    fn test_repl_first_time_define() {
+        use maplit::hashmap;
+        use std::rc::Rc;
+        let parent = Rc::new(ProcessedEnvironment::new());
+        let sym_new = StringSymbol::try_from_usize(107).unwrap();
+
+        // Start with empty environment
+        let env = ProcessedEnvironment::with_bindings(
+            Some(parent),
+            hashmap! {}, // No existing bindings
+        );
+
+        // First-time define - this used to cause RefCell "already borrowed" panic
+        // because redefine_binding would:
+        // 1. Call self.bindings.borrow().get(&symbol) in if-let
+        // 2. Borrow not dropped before else branch
+        // 3. else branch calls self.bindings.borrow_mut().insert() - PANIC!
+        env.redefine_binding(sym_new, ProcessedValue::Integer(42))
+            .unwrap();
+
+        // Should be readable now
+        assert_eq!(
+            env.lookup(sym_new).unwrap(),
+            Some(ProcessedValue::Integer(42))
+        );
+
+        // Second define should update, not create
+        env.redefine_binding(sym_new, ProcessedValue::Integer(99))
+            .unwrap();
+        assert_eq!(
+            env.lookup(sym_new).unwrap(),
+            Some(ProcessedValue::Integer(99))
+        );
     }
 }

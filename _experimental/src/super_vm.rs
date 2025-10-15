@@ -707,26 +707,37 @@ impl SuperDirectVM {
                     }
 
                     if !define_tuples.is_empty() {
-                        // Use letrec (parallel) semantics for internal defines
-                        // **NEW ARCHITECTURE:** Use uninitialized bindings with TDZ enforcement
-                        use crate::processed_env::BindingValue;
-
-                        // Create HashMap with all bindings uninitialized
-                        let mut letrec_bindings = HashMap::new();
-                        for (name, _) in &define_tuples {
-                            letrec_bindings.insert(*name, BindingValue::new_uninitialized());
+                        // **R7RS 5.3.2:** Use letrec* (sequential) semantics for internal defines
+                        // Each binding is initialized left-to-right before the next init is evaluated
+                        
+                        // Extract symbols for environment creation and check for duplicates
+                        let symbols: Vec<StringSymbol> = define_tuples.iter()
+                            .map(|(name, _)| *name)
+                            .collect();
+                        
+                        // **R7RS 5.3.2:** Duplicate definitions in same body are an error
+                        let mut seen_symbols = std::collections::HashSet::new();
+                        for symbol in &symbols {
+                            if !seen_symbols.insert(*symbol) {
+                                return Err(RuntimeError::new(format!(
+                                    "Duplicate definition in body: {}",
+                                    self.ast.interner.resolve(*symbol).unwrap_or("<unknown>")
+                                )));
+                            }
                         }
-
-                        // Create letrec environment with all uninitialized bindings
-                        let letrec_env_rc = ProcessedEnvironment::with_bindings(
+                        
+                        // Create environment with all bindings uninitialized
+                        let letrec_env_rc = ProcessedEnvironment::create_with_bindings(
                             Some(Rc::clone(&env)),
-                            letrec_bindings,
+                            &symbols,
                         );
 
-                        // Evaluate all init expressions and initialize the bindings
+                        // **LETREC* SEMANTICS:** Initialize bindings left-to-right
+                        // Each init expression can reference previously initialized bindings
                         for (name, value_expr) in define_tuples.iter() {
                             let init_value =
                                 self.evaluate_direct(value_expr, Rc::clone(&letrec_env_rc))?;
+                            // Initialize this binding before evaluating next init expression
                             letrec_env_rc
                                 .initialize_binding(*name, init_value)
                                 .map_err(|e| RuntimeError::new(e))?;
@@ -1212,20 +1223,33 @@ impl SuperStackVM {
                                 }
 
                                 if !define_tuples.is_empty() {
-                                    // **NEW ARCHITECTURE:** Use letrec semantics with uninitialized bindings
-                                    use crate::processed_env::BindingValue;
-
-                                    // Create HashMap with all bindings uninitialized
-                                    let mut letrec_bindings = HashMap::new();
-                                    for (name, _) in &define_tuples {
-                                        letrec_bindings
-                                            .insert(*name, BindingValue::new_uninitialized());
+                                    // **R7RS 5.3.2:** Use letrec* (sequential) semantics for internal defines
+                                    // Each binding is initialized left-to-right before the next init is evaluated
+                                    
+                                    // Extract symbols for environment creation and check for duplicates
+                                    let symbols: Vec<StringSymbol> = define_tuples.iter()
+                                        .map(|(name, _)| *name)
+                                        .collect();
+                                    
+                                    // **R7RS 5.3.2:** Duplicate definitions in same body are an error
+                                    let mut seen_symbols = std::collections::HashSet::new();
+                                    for symbol in &symbols {
+                                        if !seen_symbols.insert(*symbol) {
+                                            return Err(create_runtime_error_with_stack_trace(
+                                                format!(
+                                                    "Duplicate definition in body: {}",
+                                                    self.ast.interner.resolve(*symbol).unwrap_or("<unknown>")
+                                                ),
+                                                &stack,
+                                                &shared_args_buffer,
+                                            ));
+                                        }
                                     }
-
-                                    // Create letrec environment with uninitialized bindings
-                                    let letrec_env_rc = ProcessedEnvironment::with_bindings(
+                                    
+                                    // Create environment with all bindings uninitialized
+                                    let letrec_env_rc = ProcessedEnvironment::create_with_bindings(
                                         Some(Rc::clone(&current_env)),
-                                        letrec_bindings,
+                                        &symbols,
                                     );
 
                                     // Push body evaluation first (bottom of stack, evaluated last)

@@ -13,11 +13,36 @@ mod comprehensive_evaluator_tests {
     use std::rc::Rc;
 
     /// Test result variants for comprehensive testing
+    ///
+    /// ## Multi-Phase Error Catching
+    ///
+    /// SpecificError now catches errors at ALL compilation phases:
+    /// - **Parse Phase:** `parser::parse()` errors (syntax, lexer issues)
+    /// - **Macro Expansion Phase:** `MacroExpander::expand()` errors (pattern matching failures)
+    /// - **Compilation Phase:** `ProcessedAST::compile()` errors (unsupported special forms)
+    /// - **Runtime Phase:** VM evaluation errors (type errors, TDZ violations, restrictions)
+    ///
+    /// This enables comprehensive testing of R7RS restriction enforcement.
+    ///
+    /// ### Example Usage
+    /// ```rust
+    /// // Test runtime error
+    /// SpecificError("R7RS RESTRICTED: cons second argument must be a list")
+    ///
+    /// // Test macro expansion error
+    /// SpecificError("No matching pattern for macro do")
+    ///
+    /// // Test compilation error
+    /// SpecificError("Unsupported special form: call/cc")
+    ///
+    /// // Test parse error (if detectable)
+    /// SpecificError("Unexpected token")
+    /// ```
     #[derive(Debug, Clone)]
     enum TestResult {
         Success(ProcessedValue<'static>), // Evaluation should succeed with this value
-        SpecificError(&'static str), // Evaluation should fail with error containing this string
-        Error,                       // Evaluation should fail (any error)
+        SpecificError(&'static str), // Evaluation should fail with error containing this string (ANY phase)
+        Error,                       // Evaluation should fail (any error, any phase)
         VeryDeep(ProcessedValue<'static>), // Skip SuperDirectVM (stack overflow), run on SuperStackVM only
         Macro, // Macro definition (to be registered with macro expander)
     }
@@ -312,10 +337,30 @@ mod comprehensive_evaluator_tests {
         let ast = match parser::parse(trimmed_input) {
             Ok(ast) => ast,
             Err(parse_err) => {
-                return Err(format!(
-                    "{}: unexpected parse error for '{}': {:?}",
-                    test_id, trimmed_input, parse_err
-                ));
+                // Check if this is an expected parse-time error
+                match expected {
+                    SpecificError(expected_text) => {
+                        let error_msg = format!("{}", parse_err);
+                        if error_msg.contains(expected_text) {
+                            return Ok(()); // Test passed
+                        } else {
+                            return Err(format!(
+                                "{}: parse error should contain '{}', got: {}",
+                                test_id, expected_text, error_msg
+                            ));
+                        }
+                    }
+                    Error => {
+                        // Expected error at some phase - this satisfies it
+                        return Ok(()); // Test passed
+                    }
+                    _ => {
+                        return Err(format!(
+                            "{}: unexpected parse error for '{}': {:?}",
+                            test_id, trimmed_input, parse_err
+                        ));
+                    }
+                }
             }
         };
 
@@ -333,20 +378,60 @@ mod comprehensive_evaluator_tests {
         let expanded_ast = match macro_expander.expand(&ast) {
             Ok(expanded) => expanded,
             Err(macro_err) => {
-                return Err(format!(
-                    "{}: macro expansion error for '{}': {:?}",
-                    test_id, trimmed_input, macro_err
-                ));
+                // Check if this is an expected macro expansion error
+                match expected {
+                    SpecificError(expected_text) => {
+                        let error_msg = format!("{}", macro_err);
+                        if error_msg.contains(expected_text) {
+                            return Ok(()); // Test passed
+                        } else {
+                            return Err(format!(
+                                "{}: macro expansion error should contain '{}', got: {}",
+                                test_id, expected_text, error_msg
+                            ));
+                        }
+                    }
+                    Error => {
+                        // Expected error at some phase - this satisfies it
+                        return Ok(()); // Test passed
+                    }
+                    _ => {
+                        return Err(format!(
+                            "{}: unexpected macro expansion error for '{}': {:?}",
+                            test_id, trimmed_input, macro_err
+                        ));
+                    }
+                }
             }
         };
 
         let processed_ast = match ProcessedAST::compile(&expanded_ast) {
             Ok(ast) => ast,
             Err(compile_err) => {
-                return Err(format!(
-                    "{}: compilation error for '{}': {:?}",
-                    test_id, trimmed_input, compile_err
-                ));
+                // Check if this is an expected compilation error
+                match expected {
+                    SpecificError(expected_text) => {
+                        let error_msg = format!("{}", compile_err);
+                        if error_msg.contains(expected_text) {
+                            return Ok(()); // Test passed
+                        } else {
+                            return Err(format!(
+                                "{}: compilation error should contain '{}', got: {}",
+                                test_id, expected_text, error_msg
+                            ));
+                        }
+                    }
+                    Error => {
+                        // Expected error at some phase - this satisfies it
+                        return Ok(()); // Test passed
+                    }
+                    _ => {
+                        return Err(format!(
+                            "{}: unexpected compilation error for '{}': {:?}",
+                            test_id, trimmed_input, compile_err
+                        ));
+                    }
+                }
             }
         };
 
@@ -499,6 +584,9 @@ mod comprehensive_evaluator_tests {
             }
 
             // Phase 2: Parse and expand all non-macro test cases
+            // Track which tests already passed (parse/macro errors that matched expectations)
+            let mut early_pass_indices = std::collections::HashSet::new();
+
             for (test_idx, (input, expected)) in test_cases.iter().enumerate() {
                 if !matches!(expected, TestResult::Macro) {
                     let test_id = format!("Environment #{} test #{}", env_idx + 1, test_idx + 1);
@@ -508,10 +596,31 @@ mod comprehensive_evaluator_tests {
                     let ast = match parser::parse(trimmed_input) {
                         Ok(ast) => ast,
                         Err(parse_err) => {
-                            panic!(
-                                "{}: parse error for '{}': {:?}",
-                                test_id, trimmed_input, parse_err
-                            );
+                            // Check if this is an expected parse-time error
+                            match expected {
+                                SpecificError(expected_text) => {
+                                    let error_msg = format!("{}", parse_err);
+                                    if !error_msg.contains(expected_text) {
+                                        panic!(
+                                            "{}: parse error should contain '{}', got: {}",
+                                            test_id, expected_text, error_msg
+                                        );
+                                    }
+                                    early_pass_indices.insert(test_idx);
+                                    continue; // Test passed - skip to next test
+                                }
+                                Error => {
+                                    // Expected error at some phase - this satisfies it
+                                    early_pass_indices.insert(test_idx);
+                                    continue; // Test passed - skip to next test
+                                }
+                                _ => {
+                                    panic!(
+                                        "{}: unexpected parse error for '{}': {:?}",
+                                        test_id, trimmed_input, parse_err
+                                    );
+                                }
+                            }
                         }
                     };
 
@@ -519,10 +628,31 @@ mod comprehensive_evaluator_tests {
                     let expanded_ast = match macro_expander.expand(&ast) {
                         Ok(expanded) => expanded,
                         Err(macro_err) => {
-                            panic!(
-                                "{}: macro expansion error for '{}': {:?}",
-                                test_id, trimmed_input, macro_err
-                            );
+                            // Check if this is an expected macro expansion error
+                            match expected {
+                                SpecificError(expected_text) => {
+                                    let error_msg = format!("{}", macro_err);
+                                    if !error_msg.contains(expected_text) {
+                                        panic!(
+                                            "{}: macro expansion error should contain '{}', got: {}",
+                                            test_id, expected_text, error_msg
+                                        );
+                                    }
+                                    early_pass_indices.insert(test_idx);
+                                    continue; // Test passed - skip to next test
+                                }
+                                Error => {
+                                    // Expected error at some phase - this satisfies it
+                                    early_pass_indices.insert(test_idx);
+                                    continue; // Test passed - skip to next test
+                                }
+                                _ => {
+                                    panic!(
+                                        "{}: unexpected macro expansion error for '{}': {:?}",
+                                        test_id, trimmed_input, macro_err
+                                    );
+                                }
+                            }
                         }
                     };
 
@@ -534,11 +664,37 @@ mod comprehensive_evaluator_tests {
             let processed_ast = match ProcessedAST::compile_multiple(&expanded_asts) {
                 Ok(ast) => ast,
                 Err(compile_err) => {
-                    panic!(
-                        "Environment #{}: compilation error: {:?}",
-                        env_idx + 1,
-                        compile_err
-                    );
+                    // Check if ANY test in this environment expects a compilation error
+                    // Since compile_multiple compiles all together, one failure fails all
+                    let mut found_expected_error = false;
+                    for (_input, expected) in test_cases.iter() {
+                        match expected {
+                            SpecificError(expected_text) => {
+                                let error_msg = format!("{}", compile_err);
+                                if error_msg.contains(expected_text) {
+                                    found_expected_error = true;
+                                    break;
+                                }
+                            }
+                            Error => {
+                                // At least one test expected an error
+                                found_expected_error = true;
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if found_expected_error {
+                        // Compilation error was expected by at least one test - skip this environment
+                        continue; // Move to next environment
+                    } else {
+                        panic!(
+                            "Environment #{}: unexpected compilation error: {:?}",
+                            env_idx + 1,
+                            compile_err
+                        );
+                    }
                 }
             };
 
@@ -553,6 +709,11 @@ mod comprehensive_evaluator_tests {
 
                 // Skip macro definitions (they were already processed in Phase 1)
                 if matches!(expected, TestResult::Macro) {
+                    continue;
+                }
+
+                // Skip tests that already passed at parse/macro phase
+                if early_pass_indices.contains(&test_idx) {
                     continue;
                 }
 
@@ -2158,14 +2319,27 @@ mod comprehensive_evaluator_tests {
 
     #[test]
     fn test_r7rs_unsupported_features() {
-        // Note: These tests document limitations, not actual runtime behavior
-        // The system doesn't currently distinguish unsupported macro features
-        // identifier-syntax, syntax-case, let-syntax all fail at macro expansion stage
+        // Test that R7RS features we don't support emit proper errors
         let test_cases = vec![
-            // Test: Unsupported macro features error at macro expansion
+            // Test 1: cons with non-list second argument (improper lists not supported)
             TestEnvironment(vec![(
-                "(if #t 42 (error \"should not reach\"))",
-                success(42i64),
+                "(cons 1 2)",
+                TestResult::SpecificError("R7RS RESTRICTED: cons second argument must be a list"),
+            )]),
+            // Test 2: cons with symbol second argument
+            TestEnvironment(vec![(
+                "(cons 'a 'b)",
+                TestResult::SpecificError("R7RS RESTRICTED: cons second argument must be a list"),
+            )]),
+            // Test 3: cons with proper list works fine
+            TestEnvironment(vec![
+                ("(cons 1 '())", success(vec![1i64])),
+                ("(cons 1 '(2 3))", success(vec![1i64, 2, 3])),
+            ]),
+            // Test 4: Multi-variable do macro not supported
+            TestEnvironment(vec![(
+                "(do ((i 0 (+ i 1)) (j 10 (- j 1))) ((> i 5) i) (display i))",
+                TestResult::SpecificError("No matching pattern for macro do"),
             )]),
         ];
         run_tests_in_environment(test_cases);

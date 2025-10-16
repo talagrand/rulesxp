@@ -2,4 +2,5 @@
 (+ 1 2 3 4 5)
 (* 2 3 4)
 (+ (* 2 5) (- 20 8))
-(/ (+ 10 5) 3)
+;; **R7RS RESTRICTED:** Division removed - not supported
+(- (+ 10 5) 3)

@@ -212,7 +212,10 @@ impl TestRunner {
             String::new()
         };
 
-        let passed = actual.trim() == expected.trim();
+        // Normalize line endings and compare line-by-line
+        let actual_lines = normalize_lines(actual);
+        let expected_lines = normalize_lines(&expected);
+        let passed = actual_lines == expected_lines;
 
         let diff = if !passed {
             Some(self.generate_diff(&expected, actual))
@@ -330,6 +333,14 @@ pub fn print_test_results(results: &[TestResult]) {
         let status = if result.passed { "✅" } else { "❌" };
         println!("{} {} ({:?})", status, result.test_name, result.mode);
     }
+}
+
+/// Normalize text into an array of lines with trailing whitespace removed
+/// This handles line ending differences (CRLF vs LF) and trailing spaces
+fn normalize_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|line| line.trim_end().to_string())
+        .collect()
 }
 
 #[cfg(test)]

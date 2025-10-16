@@ -356,6 +356,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "CPS VM no longer maintained"]
     fn test_add_cps_with_identity() {
         // Test: (+ 1 2 identity) should return 3
         let identity = Value::Builtin {
@@ -370,6 +371,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "CPS VM no longer maintained"]
     fn test_cps_arithmetic_arity() {
         let identity = Value::Builtin {
             name: "identity".to_string(),
@@ -396,6 +398,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "CPS VM no longer maintained"]
     fn test_mul_cps() {
         let identity = Value::Builtin {
             name: "identity".to_string(),
@@ -408,6 +411,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "CPS VM no longer maintained"]
     fn test_sub_cps() {
         let identity = Value::Builtin {
             name: "identity".to_string(),
@@ -420,6 +424,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "CPS VM no longer maintained"]
     fn test_eq_cps() {
         let identity = Value::Builtin {
             name: "identity".to_string(),
@@ -435,6 +440,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "CPS VM no longer maintained"]
     fn test_lt_cps() {
         let identity = Value::Builtin {
             name: "identity".to_string(),
@@ -452,6 +458,7 @@ mod tests {
     // **R7RS RESTRICTED:** Division and modulo tests removed
 
     #[test]
+    #[ignore = "CPS VM no longer maintained"]
     fn test_gt_cps() {
         let identity = Value::Builtin {
             name: "identity".to_string(),
@@ -467,6 +474,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "CPS VM no longer maintained"]
     fn test_car_cps() {
         let identity = Value::Builtin {
             name: "identity".to_string(),
@@ -484,6 +492,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "CPS VM no longer maintained"]
     fn test_cdr_cps() {
         let identity = Value::Builtin {
             name: "identity".to_string(),
@@ -504,6 +513,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "CPS VM no longer maintained"]
     fn test_cons_cps() {
         let identity = Value::Builtin {
             name: "identity".to_string(),
@@ -524,6 +534,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "CPS VM no longer maintained"]
     fn test_list_cps() {
         let identity = Value::Builtin {
             name: "identity".to_string(),

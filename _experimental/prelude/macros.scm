@@ -98,8 +98,8 @@
 
 ;; ===== ITERATION FORMS =====
 ;; R7RS section 4.2.4 - derived expressions for iteration
-;; **R7RS DEVIATION:** do macro simplified due to nested ellipsis pattern limitations
-;; **NEEDS-ENFORCEMENT**
+;; **R7RS RESTRICTED:** do macro supports strict subset of R7RS syntax
+;; **ENFORCED:** Unsupported patterns fail at macro expansion with clear error
 ;;
 ;; R7RS full `do` syntax: (do ((var init step) ...) (test expr ...) command ...) 
 ;; Our simplified version only supports:
@@ -110,6 +110,9 @@
 ;; The full R7RS form requires nested ellipsis patterns like:
 ;; ((var init step ...) ...) where both step and the entire binding list can repeat
 ;; Our macro system cannot handle this level of pattern complexity yet.
+;;
+;; **ENFORCEMENT:** Attempting to use unsupported patterns will fail at macro expansion:
+;;   (do ((i 0 (+ i 1)) (j 10)) ...) → MacroError("No matching pattern for macro do")
 ;;
 ;; This covers most practical use cases while staying within our macro system's
 ;; capabilities. For complex iteration, use named let with explicit recursion.

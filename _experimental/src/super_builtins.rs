@@ -676,12 +676,16 @@ pub mod builtin_functions {
                 Ok(ProcessedValue::List(Cow::Owned(new_list)))
             }
             _ => {
-                // **R7RS DEVIATION:** Should create improper list, but we only support proper lists
-                // For now, create a 2-element list
-                Ok(ProcessedValue::List(Cow::Owned(vec![
-                    args[0].clone(),
-                    args[1].clone(),
-                ])))
+                // **R7RS RESTRICTED:** Improper lists (dotted pairs) not supported
+                // R7RS requires: (cons 1 2) → (1 . 2) [improper list]
+                // We emit an error instead of silently creating wrong structure
+                Err(RuntimeError::new(format!(
+                    "R7RS RESTRICTED: cons second argument must be a list (improper lists not supported). \
+                     Got {} for second argument. Use (list {} {}) for a proper 2-element list.",
+                    args[1].type_name(),
+                    args[0].display(_interner),
+                    args[1].display(_interner)
+                )))
             }
         }
     }

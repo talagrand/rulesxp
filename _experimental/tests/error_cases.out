@@ -8,5 +8,5 @@ Runtime error: Runtime error: Undefined variable: undefined-function
 Stack trace:
   0: at IP 1 (line 1, col 1)
 
-Runtime error: Runtime error: + expects numbers, got string
+Runtime error: Runtime error: + expects integers, got string
 

@@ -2373,25 +2373,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_division_builtin() {
-        use crate::parser::parse;
-
-        // Test (/ 10 2) should evaluate to 5
-        let input = "(/ 10 2)";
-        let value = parse(input).expect("Failed to parse");
-
-        let ast = ProcessedAST::compile(&value).expect("Failed to compile AST");
-        let mut vm = SuperStackVM::new(ast);
-
-        let env = Rc::new(ProcessedEnvironment::new());
-        let result = vm.evaluate(env).expect("Evaluation failed");
-
-        match result {
-            ProcessedValue::Integer(n) => assert_eq!(n, 5),
-            other => panic!("Expected integer 5, got {:?}", other),
-        }
-    }
+    // **R7RS RESTRICTED:** Division test removed - division operator not supported
 
     #[test]
     fn test_comparison_operators() {

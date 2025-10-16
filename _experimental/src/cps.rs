@@ -380,6 +380,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "CPS VM no longer maintained"]
     fn test_transform_literal() {
         let mut transformer = CPSTransformer::new();
         let input = Value::Integer(42);

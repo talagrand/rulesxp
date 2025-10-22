@@ -17,6 +17,10 @@
 // - String escape sequences - basic support for \" and \\ only
 // - Symbol character set - simplified, missing some R7RS characters
 //
+// **Supported Comment Syntax:**
+// - Line comments: `;` to end of line
+// - Block comments: `#| ... |#` (supports nesting per R7RS spec)
+//
 // **Error Enforcement:**
 // - Character literals emit parse errors when encountered
 // - Improper lists emit parse errors when encountered
@@ -65,6 +69,7 @@ pub fn parse_multiple(input: &str) -> Result<Vec<Value>, ParseError> {
 
     let mut expressions = Vec::new();
     let mut remaining = preprocessed.as_str();
+    let original_length = preprocessed.len();
 
     while !remaining.trim().is_empty() {
         // Skip remaining whitespace (comments already removed)
@@ -80,7 +85,21 @@ pub fn parse_multiple(input: &str) -> Result<Vec<Value>, ParseError> {
                 expressions.push(value);
                 remaining = rest;
             }
-            Err(e) => return Err(ParseError(format!("Parse error: {:?}", e))),
+            Err(e) => {
+                // Calculate position for better error reporting
+                let position = original_length - remaining.len();
+                let lines_before = preprocessed[..position].lines().count();
+
+                // Get context around error (up to 200 chars)
+                let context_start = position.saturating_sub(100);
+                let context_end = (position + 100).min(preprocessed.len());
+                let context = &preprocessed[context_start..context_end];
+
+                return Err(ParseError(format!(
+                    "Parse error at position {} (around line {}): {:?}\nContext: {}",
+                    position, lines_before, e, context
+                )));
+            }
         }
     }
 
@@ -89,6 +108,7 @@ pub fn parse_multiple(input: &str) -> Result<Vec<Value>, ParseError> {
 
 /// Remove all comments from input, handling:
 /// - Line comments starting with `;`
+/// - Block comments `#| ... |#` (can be nested per R7RS)
 /// - Comments at end of lines
 /// - Comments inside multi-line expressions
 /// - Preserves string literals (comments inside strings are kept)
@@ -97,32 +117,73 @@ fn remove_all_comments(input: &str) -> String {
     let mut chars = input.chars().peekable();
     let mut in_string = false;
     let mut in_string_escape = false;
+    let mut block_comment_depth = 0;
 
     while let Some(ch) = chars.next() {
-        match ch {
-            '"' if !in_string_escape => {
-                in_string = !in_string;
-                result.push(ch);
-            }
-            '\\' if in_string => {
-                in_string_escape = !in_string_escape;
-                result.push(ch);
-            }
-            ';' if !in_string => {
-                // Start of comment - skip until end of line
-                for next_ch in chars.by_ref() {
-                    if next_ch == '\n' {
-                        result.push('\n'); // Preserve newline for line structure
-                        break;
-                    }
-                    // Skip comment characters
-                }
-            }
-            _ => {
-                in_string_escape = false;
-                result.push(ch);
-            }
+        // Handle string escape sequences
+        if in_string && in_string_escape {
+            in_string_escape = false;
+            result.push(ch);
+            continue;
         }
+
+        // Handle string state
+        if ch == '"' && !in_string_escape && block_comment_depth == 0 {
+            in_string = !in_string;
+            result.push(ch);
+            continue;
+        }
+
+        if ch == '\\' && in_string {
+            in_string_escape = true;
+            result.push(ch);
+            continue;
+        }
+
+        // Skip processing if inside string
+        if in_string {
+            result.push(ch);
+            continue;
+        }
+
+        // Handle block comment start: #|
+        if ch == '#' && chars.peek() == Some(&'|') {
+            chars.next(); // Consume '|'
+            block_comment_depth += 1;
+            continue;
+        }
+
+        // Handle block comment end: |#
+        if ch == '|' && chars.peek() == Some(&'#') && block_comment_depth > 0 {
+            chars.next(); // Consume '#'
+            block_comment_depth -= 1;
+            continue;
+        }
+
+        // Skip characters inside block comments
+        if block_comment_depth > 0 {
+            // Preserve newlines for line structure even in block comments
+            if ch == '\n' {
+                result.push('\n');
+            }
+            continue;
+        }
+
+        // Handle line comments: ;
+        if ch == ';' {
+            // Start of comment - skip until end of line
+            for next_ch in chars.by_ref() {
+                if next_ch == '\n' {
+                    result.push('\n'); // Preserve newline for line structure
+                    break;
+                }
+                // Skip comment characters
+            }
+            continue;
+        }
+
+        // Normal character - add to result
+        result.push(ch);
     }
 
     result

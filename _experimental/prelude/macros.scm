@@ -19,6 +19,8 @@
 ;; - cond, case (4.2.1, 4.2.5) - multi-way conditionals
 ;; - let, let* (4.2.2) - local binding forms
 ;; - do (4.2.4) - iteration form
+;; - case-lambda - procedure with multiple arities
+;; - let-values, let*-values - multiple value binding (NEW with list-within-ellipsis)
 
 ;; ===== LOGICAL OPERATORS =====
 ;; R7RS section 4.2.1 - derived expressions for logical operations
@@ -91,26 +93,15 @@
 ;; R7RS: (let ((var val) ...) body ...)
 ;; Also supports named let for recursion: (let name ((var val) ...) body ...)
 ;; **R7RS COMPLIANCE:** Empty bindings legal: (let () body) → ((lambda () body))
-;; **R7RS RESTRICTED:** Named let limited to 1-4 bindings for implementation simplicity
+;; **IMPROVED:** Now uses list-within-ellipsis patterns for cleaner implementation
 (define-syntax let
   (syntax-rules ()
-    ;; Named let with 3 bindings (must come before general ellipsis patterns)
-    ((let name ((var1 val1) (var2 val2) (var3 val3)) body ...)
-     ((letrec ((name (lambda (var1 var2 var3) body ...))) name) val1 val2 val3))
+    ;; Named let - uses list-within-ellipsis to extract vars and vals separately
+    ;; Pattern ((var val) ...) binds var→[v1,v2,...] and val→[val1,val2,...]
+    ((let name ((var val) ...) body ...)
+     ((letrec ((name (lambda (var ...) body ...))) name) val ...))
     
-    ;; Named let with 2 bindings
-    ((let name ((var1 val1) (var2 val2)) body ...)
-     ((letrec ((name (lambda (var1 var2) body ...))) name) val1 val2))
-    
-    ;; Named let with 1 binding
-    ((let name ((var val)) body ...)
-     ((letrec ((name (lambda (var) body ...))) name) val))
-    
-    ;; Named let with 4 bindings
-    ((let name ((var1 val1) (var2 val2) (var3 val3) (var4 val4)) body ...)
-     ((letrec ((name (lambda (var1 var2 var3 var4) body ...))) name) val1 val2 val3 val4))
-    
-    ;; Regular let (non-recursive) - must come after named let patterns
+    ;; Regular let (non-recursive)
     ((let ((var val) ...) body ...)
      ((lambda (var ...) body ...) val ...))))
 
@@ -130,155 +121,72 @@
 
 ;; ===== ITERATION FORMS =====
 ;; R7RS section 4.2.4 - derived expressions for iteration
-;; **R7RS RESTRICTED:** do macro supports strict subset of R7RS syntax
-;; **ENFORCED:** Unsupported patterns fail at macro expansion with clear error
+;; **IMPROVED WITH LIST-WITHIN-ELLIPSIS:** Now supports arbitrary variables with optional steps
 ;;
-;; R7RS full `do` syntax: (do ((var init step) ...) (test expr ...) command ...) 
-;; Our simplified version supports common cases with explicit patterns:
-;; - 1-3 variables with optional step expressions
-;; - Single test expression and result expression
-;; - Optional command in body (do can have empty body)
+;; R7RS `do` syntax: (do ((var init step) ...) (test expr ...) command ...) 
+;; Uses list-within-ellipsis patterns to extract vars, inits, and steps separately:
+;; - Pattern ((var init step) ...) binds var→[v1,v2,...], init→[i1,i2,...], step→[s1,s2,...]
+;; - Optional step defaults to init value when not provided
 ;;
-;; The full R7RS form requires nested ellipsis patterns like:
-;; ((var init step ...) ...) where both step and the entire binding list can repeat
-;; Our macro system cannot handle arbitrary nesting, so we enumerate common cases.
+;; **R7RS RESTRICTED:** step must be present or absent for all variables (no mixing)
+;; Full R7RS allows (var init) and (var init step) mixed, which requires nested ellipsis
+;; depth tracking that Phase 2 would enable. Current implementation covers two common cases:
+;; 1. All variables have steps: ((var init step) ...)
+;; 2. No variables have steps: ((var init) ...)
 ;;
-;; **ENFORCEMENT:** Attempting to use unsupported patterns will fail at macro expansion:
-;;   (do ((a 1 (+ a 1)) (b 2) (c 3) (d 4)) ...) → MacroError (too many vars)
-;;
-;; For complex iteration, use named let with explicit recursion.
+;; For mixed cases, users can explicitly provide init as the step: ((x 0 (+ x 1)) (y 0 0))
 (define-syntax do
   (syntax-rules ()
-    ;; Two variables with steps, no body command
-    ((do ((var1 init1 step1)
-          (var2 init2 step2))
-         (test expr))
-     (let loop ((var1 init1) (var2 init2))
+    ;; All variables with explicit step expressions, with body commands
+    ((do ((var init step) ...)
+         (test result ...)
+         command ...)
+     (let loop ((var init) ...)
        (if test
-           expr
-           (loop step1 step2))))
+           (begin result ...)
+           (begin command ... (loop step ...)))))
     
-    ;; Two variables with steps, with body command
-    ((do ((var1 init1 step1)
-          (var2 init2 step2))
-         (test expr)
-         command)
-     (let loop ((var1 init1) (var2 init2))
+    ;; All variables with explicit step expressions, no body commands
+    ((do ((var init step) ...)
+         (test result ...))
+     (let loop ((var init) ...)
        (if test
-           expr
-           (begin command (loop step1 step2)))))
+           (begin result ...)
+           (loop step ...))))
     
-    ;; Single variable with step, no body command
-    ((do ((var init step))
-         (test expr))
-     (let loop ((var init))
+    ;; All variables without step (step = init), with body commands
+    ((do ((var init) ...)
+         (test result ...)
+         command ...)
+     (let loop ((var init) ...)
        (if test
-           expr
-           (loop step))))
+           (begin result ...)
+           (begin command ... (loop init ...)))))
     
-    ;; Single variable with step, with body command
-    ((do ((var init step))
-         (test expr)
-         command)
-     (let loop ((var init))
+    ;; All variables without step (step = init), no body commands
+    ((do ((var init) ...)
+         (test result ...))
+     (let loop ((var init) ...)
        (if test
-           expr
-           (begin command (loop step)))))
+           (begin result ...)
+           (loop init ...))))
     
-    ;; Single variable without step (same as init), no body
-    ((do ((var init))
-         (test expr))
-     (let loop ((var init))
+    ;; Empty variable list (infinite loop until test becomes true), with body
+    ((do ()
+         (test result ...)
+         command ...)
+     (let loop ()
        (if test
-           expr
-           (loop init))))
+           (begin result ...)
+           (begin command ... (loop)))))
     
-    ;; Single variable without step, with body command
-    ((do ((var init))
-         (test expr)
-         command)
-     (let loop ((var init))
+    ;; Empty variable list, no body
+    ((do ()
+         (test result ...))
+     (let loop ()
        (if test
-           expr
-           (begin command (loop init)))))
-    
-    ;; Two variables, first with step, second without, no body
-    ((do ((var1 init1 step1)
-          (var2 init2))
-         (test expr))
-     (let loop ((var1 init1) (var2 init2))
-       (if test
-           expr
-           (loop step1 init2))))
-    
-    ;; Two variables, first with step, second without, with body
-    ((do ((var1 init1 step1)
-          (var2 init2))
-         (test expr)
-         command)
-     (let loop ((var1 init1) (var2 init2))
-       (if test
-           expr
-           (begin command (loop step1 init2)))))
-    
-    ;; Two variables, first without step, second with, no body
-    ((do ((var1 init1)
-          (var2 init2 step2))
-         (test expr))
-     (let loop ((var1 init1) (var2 init2))
-       (if test
-           expr
-           (loop init1 step2))))
-    
-    ;; Two variables, first without step, second with, with body
-    ((do ((var1 init1)
-          (var2 init2 step2))
-         (test expr)
-         command)
-     (let loop ((var1 init1) (var2 init2))
-       (if test
-           expr
-           (begin command (loop init1 step2)))))
-    
-    ;; Two variables without steps, no body
-    ((do ((var1 init1)
-          (var2 init2))
-         (test expr))
-     (let loop ((var1 init1) (var2 init2))
-       (if test
-           expr
-           (loop init1 init2))))
-    
-    ;; Two variables without steps, with body
-    ((do ((var1 init1)
-          (var2 init2))
-         (test expr)
-         command)
-     (let loop ((var1 init1) (var2 init2))
-       (if test
-           expr
-           (begin command (loop init1 init2)))))
-    
-    ;; Three variables with steps, no body
-    ((do ((var1 init1 step1)
-          (var2 init2 step2)
-          (var3 init3 step3))
-         (test expr))
-     (let loop ((var1 init1) (var2 init2) (var3 init3))
-       (if test
-           expr
-           (loop step1 step2 step3))))
-    
-    ;; Three variables with steps, with body
-    ((do ((var1 init1 step1)
-          (var2 init2 step2)
-          (var3 init3 step3))
-         (test expr)
-         command)
-     (let loop ((var1 init1) (var2 init2) (var3 init3))
-       (if test
-           expr
-           (begin command (loop step1 step2 step3)))))))
+           (begin result ...)
+           (loop))))))
 
 ;;; **R7RS RESTRICTED:** case-lambda - Only enumerates common arities (0-4 fixed args,
 ;;; optional rest args). Full R7RS case-lambda supports arbitrary arities via nested 

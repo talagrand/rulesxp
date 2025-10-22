@@ -2476,11 +2476,12 @@ mod comprehensive_evaluator_tests {
                 ("(cons 1 '())", success(vec![1i64])),
                 ("(cons 1 '(2 3))", success(vec![1i64, 2, 3])),
             ]),
-            // Test 4: Multi-variable do with 4+ variables - requires nested ellipsis (not yet supported)
-            // **R7RS RESTRICTED:** Current do macro only handles 1-3 variables explicitly.
-            // Full R7RS do with arbitrary variables requires nested ellipsis patterns like ((var init step) ...)
+            // Test 4: Mixed step/no-step in do (not supported - requires Phase 2)
+            // **R7RS RESTRICTED:** Current do macro requires ALL variables to have steps
+            // or ALL variables to have no steps. Mixing is not supported without Phase 2
+            // nested ellipsis depth tracking: ((var init step ...) ...)
             TestEnvironment(vec![(
-                "(do ((i 0 (+ i 1)) (j 10 (- j 1)) (k 5 (+ k 2)) (m 1 (* m 2))) ((> i 3) i) (display i))",
+                "(do ((i 0 (+ i 1)) (j 10)) ((> i 3) i))",
                 TestResult::SpecificError("No matching pattern for macro do"),
             )]),
         ];
@@ -2627,6 +2628,150 @@ mod comprehensive_evaluator_tests {
                     ProcessedValue::OwnedSymbol("b".to_string()),
                     ProcessedValue::OwnedSymbol("c".to_string())
                 ])))), // Each x becomes a quoted symbol
+            ]),
+        ];
+        run_tests_in_environment(test_cases);
+    }
+
+    #[test]
+    fn test_list_within_ellipsis_patterns() {
+        // Test list-within-ellipsis patterns: ((a b) ...)
+        // This pattern binds multiple variables from each structured iteration
+        // Pattern ((a b) ...) matching ((1 2) (3 4)) binds a→[1,3], b→[2,4]
+        let test_cases = vec![
+            TestEnvironment(vec![
+                // Test 1: Basic flatten-pairs - extract and reorder
+                ("(define-syntax flatten-pairs (syntax-rules () ((flatten-pairs ((a b) ...)) (list a ... b ...))))", Macro),
+                ("(flatten-pairs ((1 2) (3 4) (5 6)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(1),
+                    ProcessedValue::Integer(3),
+                    ProcessedValue::Integer(5),
+                    ProcessedValue::Integer(2),
+                    ProcessedValue::Integer(4),
+                    ProcessedValue::Integer(6)
+                ])))), // a→[1,3,5], b→[2,4,6], template produces (list 1 3 5 2 4 6)
+
+                // Test 2: Extract first elements from pairs
+                ("(define-syntax extract-first (syntax-rules () ((extract-first ((a b) ...)) (list a ...))))", Macro),
+                ("(extract-first ((10 20) (30 40) (50 60)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(10),
+                    ProcessedValue::Integer(30),
+                    ProcessedValue::Integer(50)
+                ])))), // a→[10,30,50], template produces (list 10 30 50)
+
+                // Test 3: Extract second elements from pairs
+                ("(define-syntax extract-second (syntax-rules () ((extract-second ((a b) ...)) (list b ...))))", Macro),
+                ("(extract-second ((10 20) (30 40) (50 60)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(20),
+                    ProcessedValue::Integer(40),
+                    ProcessedValue::Integer(60)
+                ])))), // b→[20,40,60], template produces (list 20 40 60)
+
+                // Test 4: Pattern with literals inside ellipsis
+                ("(define-syntax extract-names (syntax-rules (define) ((extract-names ((define name value) ...)) (list (quote name) ...))))", Macro),
+                ("(extract-names ((define x 1) (define y 2) (define z 3)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("x".to_string()),
+                    ProcessedValue::OwnedSymbol("y".to_string()),
+                    ProcessedValue::OwnedSymbol("z".to_string())
+                ])))), // Pattern matches literal 'define', extracts name from each
+
+                // Test 5: Three-element tuples
+                ("(define-syntax extract-triples (syntax-rules () ((extract-triples ((a b c) ...)) (list a ... b ... c ...))))", Macro),
+                ("(extract-triples ((1 2 3) (4 5 6)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(1),
+                    ProcessedValue::Integer(4),
+                    ProcessedValue::Integer(2),
+                    ProcessedValue::Integer(5),
+                    ProcessedValue::Integer(3),
+                    ProcessedValue::Integer(6)
+                ])))), // a→[1,4], b→[2,5], c→[3,6]
+
+                // Test 6: Empty list case
+                ("(define-syntax flatten-empty (syntax-rules () ((flatten-empty ((a b) ...)) (list a ... b ...))))", Macro),
+                ("(flatten-empty ())", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![])))), // No iterations, empty result
+
+                // Test 7: Single pair
+                ("(flatten-pairs ((100 200)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(100),
+                    ProcessedValue::Integer(200)
+                ])))), // Single iteration: a→[100], b→[200]
+
+                // Test 8: Combine with computation
+                ("(define-syntax sum-pairs (syntax-rules () ((sum-pairs ((a b) ...)) (list (+ a b) ...))))", Macro),
+                ("(sum-pairs ((1 2) (3 4) (5 6)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(3),
+                    ProcessedValue::Integer(7),
+                    ProcessedValue::Integer(11)
+                ])))), // Computes (+ 1 2), (+ 3 4), (+ 5 6)
+
+                // Test 9: Pattern with nested structure and literal matching
+                ("(define-syntax extract-let-bindings (syntax-rules (let) ((extract-let-bindings (let ((var val) ...) body ...)) (list (quote var) ...))))", Macro),
+                ("(extract-let-bindings (let ((x 1) (y 2) (z 3)) (+ x y z)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("x".to_string()),
+                    ProcessedValue::OwnedSymbol("y".to_string()),
+                    ProcessedValue::OwnedSymbol("z".to_string())
+                ])))), // Extract variable names from let bindings
+
+                // Test 10: Reverse order - b's then a's
+                ("(define-syntax reverse-pairs (syntax-rules () ((reverse-pairs ((a b) ...)) (list b ... a ...))))", Macro),
+                ("(reverse-pairs ((1 2) (3 4) (5 6)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(2),
+                    ProcessedValue::Integer(4),
+                    ProcessedValue::Integer(6),
+                    ProcessedValue::Integer(1),
+                    ProcessedValue::Integer(3),
+                    ProcessedValue::Integer(5)
+                ])))), // List all b's first, then all a's
+            ]),
+        ];
+        run_tests_in_environment(test_cases);
+    }
+
+    #[test]
+    fn test_improved_let_and_do_macros() {
+        // Test improved let and do macros enabled by list-within-ellipsis patterns
+        let test_cases = vec![
+            TestEnvironment(vec![
+                // Test 1: Named let with 5 bindings (previously limited to 4)
+                ("(let loop ((a 1) (b 2) (c 3) (d 4) (e 5)) (+ a b c d e))",
+                 Success(ProcessedValue::Integer(15))),
+                
+                // Test 2: Named let with 6 bindings
+                ("(let sum ((a 1) (b 2) (c 3) (d 4) (e 5) (f 6)) (+ a b c d e f))",
+                 Success(ProcessedValue::Integer(21))),
+                
+                // Test 3: Named let factorial with recursion
+                test_setup!("(define (factorial n) (let loop ((n n) (acc 1)) (if (<= n 1) acc (loop (- n 1) (* acc n)))))"),
+                ("(factorial 5)", Success(ProcessedValue::Integer(120))),
+                ("(factorial 0)", Success(ProcessedValue::Integer(1))),
+                
+                // Test 4: Do loop with 4 variables (all with steps)
+                ("(do ((i 0 (+ i 1)) (j 10 (- j 1)) (k 5 (+ k 2)) (m 1 (* m 2))) ((> i 3) (list i j k m)))",
+                 Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                     ProcessedValue::Integer(4),  // i: 0→1→2→3→4
+                     ProcessedValue::Integer(6),  // j: 10→9→8→7→6
+                     ProcessedValue::Integer(13), // k: 5→7→9→11→13
+                     ProcessedValue::Integer(16)  // m: 1→2→4→8→16
+                 ])))),
+                
+                // Test 5: Do loop with 5 variables
+                ("(do ((a 0 (+ a 1)) (b 0 (+ b 2)) (c 0 (+ c 3)) (d 0 (+ d 4)) (e 0 (+ e 5))) ((> a 2) (+ a b c d e)))",
+                 Success(ProcessedValue::Integer(45))), // a=3, b=6, c=9, d=12, e=15
+                
+                // Test 6: Do loop with 6 variables
+                ("(do ((a 0 (+ a 1)) (b 0 (+ b 1)) (c 0 (+ c 2)) (d 0 (+ d 3)) (e 0 (+ e 4)) (f 0 (+ f 5))) ((> a 2) (+ a b c d e f)))",
+                 Success(ProcessedValue::Integer(48))), // a=3, b=3, c=6, d=9, e=12, f=15
+                
+                // Test 7: Do loop with no steps (all variables static)
+                ("(do ((x 10) (y 20) (z 30)) ((> x 5) (+ x y z)))",
+                 Success(ProcessedValue::Integer(60))),
+                
+                // Test 8: Do loop with 4 variables, no steps
+                ("(do ((a 1) (b 2) (c 3) (d 4)) (#t (+ a b c d)))",
+                 Success(ProcessedValue::Integer(10))),
+                
+                // Test 9: Empty do loop (infinite loop protection with immediate exit)
+                ("(do () (#t 42))", Success(ProcessedValue::Integer(42))),
             ]),
         ];
         run_tests_in_environment(test_cases);

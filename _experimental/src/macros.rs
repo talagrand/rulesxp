@@ -378,7 +378,7 @@ impl MacroExpander {
     }
 
     /// Parse a pattern from a rule with proper literal handling
-    /// **R7RS Deviations:** Missing underscore wildcards, vector patterns, improper lists
+    /// **R7RS Deviations:** Missing vector patterns, improper lists
     #[allow(clippy::only_used_in_recursion)]
     fn parse_pattern_with_literals(
         &self,
@@ -387,19 +387,17 @@ impl MacroExpander {
     ) -> Result<MacroPattern, MacroError> {
         match pattern {
             Value::Symbol(s) => {
-                // **R7RS DEVIATION:** No underscore wildcard support
-                if s == "_" {
-                    return Err(MacroError(
-                        "R7RS DEVIATION: Underscore wildcard patterns (_) are not supported"
-                            .to_string(),
-                    ));
-                }
+                // **R7RS:** Underscore (_) is a wildcard that matches anything
+                // It is treated as a special variable name that never binds
+                // (handled separately in match_pattern_recursive)
+
                 // **R7RS DEVIATION:** This uses string equality instead of proper identifier comparison
                 // R7RS requires identifier comparison based on binding, not string equality
                 // **NEEDS-ENFORCEMENT:** Should emit error for cases where this matters
                 if literals.contains(s) {
                     Ok(MacroPattern::Literal(s.clone()))
                 } else {
+                    // Variable pattern (includes underscore which is handled specially in matching)
                     Ok(MacroPattern::Variable(s.clone()))
                 }
             }
@@ -654,6 +652,17 @@ impl MacroExpander {
     ) -> Result<(), MacroError> {
         match pattern {
             MacroPattern::Variable(name) => {
+                // **R7RS:** Underscore (_) is a wildcard that matches anything without binding
+                if name == "_" {
+                    if args.len() != 1 {
+                        return Err(MacroError(
+                            "Wildcard pattern (_) expects exactly one argument".to_string(),
+                        ));
+                    }
+                    // Match succeeds but don't bind
+                    return Ok(());
+                }
+
                 if literals.contains(name) {
                     // This is a literal - must match exactly
                     if args.len() != 1 {
@@ -954,6 +963,7 @@ impl MacroExpander {
 
     /// **R7RS RESTRICTED:** Validate pattern variables are used consistently in templates
     /// Enforces that template variables exist in pattern and are used at consistent ellipsis depths
+    /// **R7RS RESTRICTED:** Rejects nested ellipsis patterns (depth > 1) which are not supported
     fn validate_pattern_template_consistency(
         &self,
         pattern: &MacroPattern,
@@ -962,6 +972,26 @@ impl MacroExpander {
         // Collect pattern variables with their ellipsis depths
         let mut pattern_vars: HashMap<String, usize> = HashMap::new();
         Self::collect_pattern_vars(pattern, 0, &mut pattern_vars);
+
+        // **CHECK 1:** Reject nested ellipsis in patterns (depth > 1)
+        let max_pattern_depth = pattern_vars.values().max().copied().unwrap_or(0);
+        if max_pattern_depth > 1 {
+            return Err(MacroError(format!(
+                "R7RS RESTRICTED: Nested ellipsis patterns (depth {}) are not supported. \
+                 Only single-level ellipsis like (var ...) is supported, not ((var ...) ...) or deeper nesting.",
+                max_pattern_depth
+            )));
+        }
+
+        // **CHECK 2:** Reject nested ellipsis in templates (depth > 1)
+        let max_template_depth = Self::template_max_depth(template, 0);
+        if max_template_depth > 1 {
+            return Err(MacroError(format!(
+                "R7RS RESTRICTED: Nested ellipsis in templates (depth {}) are not supported. \
+                 Only single-level ellipsis expansion is supported.",
+                max_template_depth
+            )));
+        }
 
         // Validate template variables exist in pattern with correct depths
         Self::validate_template_vars(template, 0, &pattern_vars)?;
@@ -977,7 +1007,10 @@ impl MacroExpander {
     ) {
         match pattern {
             MacroPattern::Variable(name) => {
-                vars.insert(name.clone(), depth);
+                // **R7RS:** Skip underscore wildcard - it doesn't bind
+                if name != "_" {
+                    vars.insert(name.clone(), depth);
+                }
             }
             MacroPattern::List(patterns) => {
                 for p in patterns {
@@ -997,8 +1030,25 @@ impl MacroExpander {
         depth: usize,
         pattern_vars: &HashMap<String, usize>,
     ) -> Result<(), MacroError> {
+        Self::validate_template_vars_impl(template, depth, pattern_vars, false)
+    }
+
+    fn validate_template_vars_impl(
+        template: &MacroTemplate,
+        depth: usize,
+        pattern_vars: &HashMap<String, usize>,
+        inside_quote: bool,
+    ) -> Result<(), MacroError> {
         match template {
             MacroTemplate::Variable(name) => {
+                // **R7RS:** Underscore is not allowed in templates (it doesn't bind)
+                // But skip this check inside quoted forms where _ is a literal symbol
+                if name == "_" && !inside_quote {
+                    return Err(MacroError(
+                        "R7RS: Underscore (_) wildcard cannot be used in templates - it doesn't bind a value".to_string()
+                    ));
+                }
+
                 if let Some(&pattern_depth) = pattern_vars.get(name) {
                     if pattern_depth != depth {
                         return Err(MacroError(format!(
@@ -1012,15 +1062,45 @@ impl MacroExpander {
                 Ok(())
             }
             MacroTemplate::List(templates) => {
+                // Check if this is a quote form
+                let is_quote = if let Some(MacroTemplate::Variable(name)) = templates.first() {
+                    name == "quote"
+                } else {
+                    false
+                };
+
                 for t in templates {
-                    Self::validate_template_vars(t, depth, pattern_vars)?;
+                    Self::validate_template_vars_impl(
+                        t,
+                        depth,
+                        pattern_vars,
+                        inside_quote || is_quote,
+                    )?;
                 }
                 Ok(())
             }
-            MacroTemplate::Ellipsis(sub_template) => {
-                Self::validate_template_vars(sub_template, depth + 1, pattern_vars)
-            }
+            MacroTemplate::Ellipsis(sub_template) => Self::validate_template_vars_impl(
+                sub_template,
+                depth + 1,
+                pattern_vars,
+                inside_quote,
+            ),
             MacroTemplate::Literal(_) => Ok(()),
+        }
+    }
+
+    /// Compute maximum ellipsis depth in a template
+    fn template_max_depth(template: &MacroTemplate, current_depth: usize) -> usize {
+        match template {
+            MacroTemplate::Variable(_) | MacroTemplate::Literal(_) => current_depth,
+            MacroTemplate::List(templates) => templates
+                .iter()
+                .map(|t| Self::template_max_depth(t, current_depth))
+                .max()
+                .unwrap_or(current_depth),
+            MacroTemplate::Ellipsis(sub_template) => {
+                Self::template_max_depth(sub_template, current_depth + 1)
+            }
         }
     }
 

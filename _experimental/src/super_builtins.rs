@@ -780,6 +780,43 @@ pub mod builtin_functions {
         Ok(ProcessedValue::Boolean(result))
     }
 
+    /// Pair predicate - check if value is a non-empty list
+    pub fn builtin_pair_p<'a>(
+        _interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
+        if args.len() != 1 {
+            return Err(RuntimeError::new(format!(
+                "Arity error: pair? requires exactly 1 argument, got {}",
+                args.len()
+            )));
+        }
+
+        let result = match &args[0] {
+            ProcessedValue::List(elements) => !elements.is_empty(),
+            _ => false,
+        };
+
+        Ok(ProcessedValue::Boolean(result))
+    }
+
+    /// List predicate - check if value is a list (empty or non-empty)
+    pub fn builtin_list_p<'a>(
+        _interner: &SchemeStringInterner,
+        args: &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, RuntimeError> {
+        if args.len() != 1 {
+            return Err(RuntimeError::new(format!(
+                "Arity error: list? requires exactly 1 argument, got {}",
+                args.len()
+            )));
+        }
+
+        let result = matches!(&args[0], ProcessedValue::List(_));
+
+        Ok(ProcessedValue::Boolean(result))
+    }
+
     /// Error builtin - raises a runtime error with a message
     pub fn builtin_error<'a>(
         interner: &SchemeStringInterner,

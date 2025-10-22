@@ -53,5 +53,8 @@ pub mod vm;
 pub use compiler::{compile, CompileError};
 pub use macros::MacroExpander;
 pub use parser::{parse, ParseError};
+pub use processed_ast::{CustomBuiltin, ProcessedAST, ProcessedCompileError};
+pub use super_builtins::{ProcessedArity, ProcessedValue, SchemeStringInterner};
+pub use super_vm::{SuperDirectVM, SuperStackVM};
 pub use value::Value;
 pub use vm::{BytecodeModule, RuntimeError, VM};

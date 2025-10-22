@@ -556,6 +556,29 @@ mod comprehensive_evaluator_tests {
                 );
             }
 
+            // Load function prelude for evaluator environment
+            let function_prelude = include_str!("../prelude/functions.scm");
+            let function_prelude_asts = match parser::parse_multiple(function_prelude) {
+                Ok(asts) => asts,
+                Err(e) => panic!(
+                    "Environment #{}: failed to parse function prelude: {:?}",
+                    env_idx + 1,
+                    e
+                ),
+            };
+            let prelude_expr_count = function_prelude_asts.len();
+            for ast in function_prelude_asts {
+                let expanded = match macro_expander.expand(&ast) {
+                    Ok(expanded) => expanded,
+                    Err(e) => panic!(
+                        "Environment #{}: failed to expand function prelude: {:?}",
+                        env_idx + 1,
+                        e
+                    ),
+                };
+                expanded_asts.push(expanded);
+            }
+
             // Phase 1: Register all macro definitions directly with the macro expander (no parsing)
             for (test_idx, (input, expected)) in test_cases.iter().enumerate() {
                 if matches!(expected, TestResult::Macro) {
@@ -702,8 +725,34 @@ mod comprehensive_evaluator_tests {
             let mut vm = VMWrapper::new(processed_ast, vm_type);
             let mut accumulated_env = Rc::new(ProcessedEnvironment::new());
 
-            // Execute each compiled expression sequentially, accumulating environment state
-            let mut compiled_expr_idx = 0; // Track index in compiled expressions (non-macro only)
+            // First, execute all prelude expressions to populate the environment
+            for prelude_idx in 0..prelude_expr_count {
+                let expression = match vm.get_expression(prelude_idx) {
+                    Some(expr) => expr.clone(),
+                    None => panic!(
+                        "Environment #{}: prelude expression index {} not found",
+                        env_idx + 1,
+                        prelude_idx
+                    ),
+                };
+                match vm.evaluate_single(&expression, Rc::clone(&accumulated_env)) {
+                    Ok(_) => {
+                        // Extract the updated environment with prelude definitions
+                        if let Some(updated_env) = vm.get_current_env() {
+                            accumulated_env = updated_env;
+                        }
+                    }
+                    Err(e) => panic!(
+                        "Environment #{}: failed to evaluate prelude expression {}: {:?}",
+                        env_idx + 1,
+                        prelude_idx,
+                        e
+                    ),
+                }
+            }
+
+            // Execute each test expression sequentially, accumulating environment state
+            let mut compiled_expr_idx = prelude_expr_count; // Start after prelude expressions
             for (test_idx, (_input, expected)) in test_cases.iter().enumerate() {
                 let test_id = format!("Environment #{} test #{}", env_idx + 1, test_idx + 1);
 
@@ -747,10 +796,22 @@ mod comprehensive_evaluator_tests {
                                     }
                                     _ => {
                                         if !values_equal_with_interner(&actual, expected_val, &vm) {
-                                            panic!(
-                                                "{}: expected {:?}, got {:?}",
-                                                test_id, expected_val, actual
-                                            );
+                                            // Enhanced debug output for list mismatches
+                                            let detailed_msg = match (&actual, expected_val) {
+                                                (
+                                                    ProcessedValue::List(actual_list),
+                                                    ProcessedValue::List(expected_list),
+                                                ) => {
+                                                    format!("{}: expected list {:?} (len={}), got list {:?} (len={})",
+                                                        test_id, expected_list.as_ref(), expected_list.len(),
+                                                        actual_list.as_ref(), actual_list.len())
+                                                }
+                                                _ => format!(
+                                                    "{}: expected {:?}, got {:?}",
+                                                    test_id, expected_val, actual
+                                                ),
+                                            };
+                                            panic!("{}", detailed_msg);
                                         }
                                     }
                                 }
@@ -1178,10 +1239,10 @@ mod comprehensive_evaluator_tests {
             // From debug_self_recursion.scm - simple recursive countdown
             TestEnvironment(vec![
                 test_setup!(
-                    r#"(define simple-recursive 
-                      (lambda (n) 
-                        (if (<= n 0) 
-                            n 
+                    r#"(define simple-recursive
+                      (lambda (n)
+                        (if (<= n 0)
+                            n
                             (simple-recursive (- n 1)))))"#
                 ),
                 ("(simple-recursive 5)", success(0)), // Counts down to 0
@@ -1193,26 +1254,26 @@ mod comprehensive_evaluator_tests {
             TestEnvironment(vec![
                 test_setup!(
                     r#"
-                    (define (test1) 
-                      (define x 10) 
-                      (define y (+ x 5)) 
+                    (define (test1)
+                      (define x 10)
+                      (define y (+ x 5))
                       y)
                 "#
                 ),
                 test_setup!(
                     r#"
-                    (define (test2) 
-                      (define a 1) 
-                      (define b 2) 
-                      (define c (+ a b)) 
+                    (define (test2)
+                      (define a 1)
+                      (define b 2)
+                      (define c (+ a b))
                       c)
                 "#
                 ),
                 test_setup!(
                     r#"
-                    (define (test3 n) 
-                      (define double (* n 2)) 
-                      (define triple (* n 3)) 
+                    (define (test3 n)
+                      (define double (* n 2))
+                      (define triple (* n 3))
                       (+ double triple))
                 "#
                 ),
@@ -1225,9 +1286,9 @@ mod comprehensive_evaluator_tests {
             TestEnvironment(vec![
                 (
                     r#"
-                    (begin 
-                      (define square (lambda (x) (* x x))) 
-                      (define multiply-add (lambda (a b c) (+ (* a b) c))) 
+                    (begin
+                      (define square (lambda (x) (* x x)))
+                      (define multiply-add (lambda (a b c) (+ (* a b) c)))
                       (+ (square 10) (multiply-add 7 6 5)))
                 "#,
                     success(147),
@@ -1249,18 +1310,18 @@ mod comprehensive_evaluator_tests {
             TestEnvironment(vec![
                 test_setup!(
                     r#"
-                    (define (test1) 
-                      (define x 10) 
-                      (define y (+ x 5)) 
+                    (define (test1)
+                      (define x 10)
+                      (define y (+ x 5))
                       y)
                 "#
                 ),
                 test_setup!(
                     r#"
-                    (define (test2) 
-                      (define a 1) 
-                      (define b 2) 
-                      (define c (+ a b)) 
+                    (define (test2)
+                      (define a 1)
+                      (define b 2)
+                      (define c (+ a b))
                       c)
                 "#
                 ),
@@ -1419,7 +1480,7 @@ mod comprehensive_evaluator_tests {
                 ),
                 test_setup!(
                     r#"
-                    (define complex-calc (lambda (x y z) 
+                    (define complex-calc (lambda (x y z)
                       (+ (* x x) (* y y) (* z z))))
                 "#
                 ),
@@ -1600,8 +1661,8 @@ mod comprehensive_evaluator_tests {
             TestEnvironment(vec![
                 test_setup!("(define outer-var 100)"),
                 test_setup!(
-                    r#"(define (outer-func x) 
-                    (begin 
+                    r#"(define (outer-func x)
+                    (begin
                         (define inner-var 200)
                         (define (inner-func y) (+ x y inner-var outer-var))
                         (inner-func 5)))"#
@@ -1628,7 +1689,7 @@ mod comprehensive_evaluator_tests {
                 test_setup!("(define global-var 100)"),
                 test_setup!(
                     r#"(define (test-func param)
-                    (begin 
+                    (begin
                         (define local-var 999)
                         (+ param local-var global-var)))"#
                 ),
@@ -1842,7 +1903,7 @@ mod comprehensive_evaluator_tests {
             // Tests that parameter bindings are preserved across if evaluation
             TestEnvironment(vec![(
                 r#"(letrec ((foo (lambda (n) 42))
-                             (bar (lambda (n) 
+                             (bar (lambda (n)
                                     (if (= n 0)
                                         0
                                         (foo n)))))
@@ -2356,7 +2417,7 @@ mod comprehensive_evaluator_tests {
             // Test 4: Nested ellipsis - define collection
             TestEnvironment(vec![
                 scheme_macro!("(define-syntax collect-defines (syntax-rules (define) ((collect-defines (define name value) ...) (quote ((name value) ...)))))"),
-                ("(collect-defines (define a 1) (define b 2) (define c 3))", 
+                ("(collect-defines (define a 1) (define b 2) (define c 3))",
                  Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                      ProcessedValue::List(std::borrow::Cow::Owned(vec![
                          ProcessedValue::OwnedSymbol("a".to_string()),
@@ -2415,11 +2476,158 @@ mod comprehensive_evaluator_tests {
                 ("(cons 1 '())", success(vec![1i64])),
                 ("(cons 1 '(2 3))", success(vec![1i64, 2, 3])),
             ]),
-            // Test 4: Multi-variable do macro not supported
+            // Test 4: Multi-variable do with 4+ variables - requires nested ellipsis (not yet supported)
+            // **R7RS RESTRICTED:** Current do macro only handles 1-3 variables explicitly.
+            // Full R7RS do with arbitrary variables requires nested ellipsis patterns like ((var init step) ...)
             TestEnvironment(vec![(
-                "(do ((i 0 (+ i 1)) (j 10 (- j 1))) ((> i 5) i) (display i))",
+                "(do ((i 0 (+ i 1)) (j 10 (- j 1)) (k 5 (+ k 2)) (m 1 (* m 2))) ((> i 3) i) (display i))",
                 TestResult::SpecificError("No matching pattern for macro do"),
             )]),
+        ];
+        run_tests_in_environment(test_cases);
+    }
+
+    #[test]
+    fn test_underscore_wildcard_patterns() {
+        // Test underscore wildcard in macro patterns
+        let test_cases = vec![
+            TestEnvironment(vec![
+                // Define test macros
+                ("(define-syntax ignore-first (syntax-rules () ((ignore-first _ x) x)))", Macro),
+                ("(define-syntax take-middle (syntax-rules () ((take-middle _ x _) x)))", Macro),
+                ("(define-syntax count-args (syntax-rules () ((count-args x ...) (length '(x ...)))))", Macro),
+                ("(define-syntax swap-args (syntax-rules () ((swap-args _ x) (list x '_))))", Macro),
+                ("(define-syntax test-no-bind (syntax-rules () ((test-no-bind (_ y)) y)))", Macro),
+                // Test cases
+                ("(ignore-first 'a 'b)", Success(ProcessedValue::OwnedSymbol("b".to_string()))),
+                ("(take-middle 1 2 3)", Success(ProcessedValue::Integer(2))),
+                ("(count-args 1 2 3 4 5)", Success(ProcessedValue::Integer(5))),
+                ("(swap-args 'ignored 'kept)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![ProcessedValue::OwnedSymbol("kept".to_string()), ProcessedValue::OwnedSymbol("_".to_string())])))),
+                ("(test-no-bind (99 42))", Success(ProcessedValue::Integer(42))), // Pattern expects a single list argument
+            ]),
+        ];
+        run_tests_in_environment(test_cases);
+    }
+
+    #[test]
+    fn test_underscore_in_template_error() {
+        // Test that underscore in template is properly rejected
+        let test_cases = vec![TestEnvironment(vec![(
+            "(define-syntax bad-macro (syntax-rules () ((bad _ ) _)))",
+            SpecificError("Underscore (_) wildcard cannot be used in templates"),
+        )])];
+        run_tests_in_environment(test_cases);
+    }
+
+    #[test]
+    fn test_case_lambda() {
+        // Test hybrid case-lambda with static and runtime dispatch
+        let test_cases = vec![
+            TestEnvironment(vec![
+                // Test 1: Variable arity addition (0/1/2 args - static dispatch)
+                ("(define add (case-lambda (() 0) ((x) x) ((x y) (+ x y))))", Success(ProcessedValue::Unspecified)),
+                ("(add)", Success(ProcessedValue::Integer(0))),
+                ("(add 5)", Success(ProcessedValue::Integer(5))),
+                ("(add 3 4)", Success(ProcessedValue::Integer(7))),
+
+                // Test 2: Three args (runtime dispatch)
+                ("(define add3 (case-lambda ((x y z) (+ x y z))))", Success(ProcessedValue::Unspecified)),
+                ("(add3 1 2 3)", Success(ProcessedValue::Integer(6))),
+
+                // Test 3: Four args (runtime dispatch)
+                ("(define add4 (case-lambda ((a b c d) (+ a b c d))))", Success(ProcessedValue::Unspecified)),
+                ("(add4 1 2 3 4)", Success(ProcessedValue::Integer(10))),
+
+                // Test 4: Rest args with apply
+                ("(define sum-all (case-lambda (() 0) ((x) x) ((x y) (+ x y)) ((x y z) (+ x y z)) (rest (apply + rest))))", Success(ProcessedValue::Unspecified)),
+                ("(sum-all)", Success(ProcessedValue::Integer(0))),
+                ("(sum-all 1)", Success(ProcessedValue::Integer(1))),
+                ("(sum-all 1 2)", Success(ProcessedValue::Integer(3))),
+                ("(sum-all 1 2 3)", Success(ProcessedValue::Integer(6))),
+                ("(sum-all 1 2 3 4)", Success(ProcessedValue::Integer(10))),
+                ("(sum-all 1 2 3 4 5)", Success(ProcessedValue::Integer(15))),
+
+                // Test 5: Pattern with list construction
+                ("(define rest-arity (case-lambda (() '(none)) ((x) (list 'one x)) ((x y) (list 'two x y)) (args (cons 'more args))))", Success(ProcessedValue::Unspecified)),
+                ("(rest-arity)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![ProcessedValue::OwnedSymbol("none".to_string())])))),
+                ("(rest-arity 1)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![ProcessedValue::OwnedSymbol("one".to_string()), ProcessedValue::Integer(1)])))),
+                ("(rest-arity 1 2)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![ProcessedValue::OwnedSymbol("two".to_string()), ProcessedValue::Integer(1), ProcessedValue::Integer(2)])))),
+                ("(rest-arity 1 2 3)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![ProcessedValue::OwnedSymbol("more".to_string()), ProcessedValue::Integer(1), ProcessedValue::Integer(2), ProcessedValue::Integer(3)])))),
+            ]),
+        ];
+        run_tests_in_environment(test_cases);
+    }
+
+    #[test]
+    fn test_quote_in_macros() {
+        // Test R7RS quote behavior in macro patterns and templates
+        let test_cases = vec![
+            TestEnvironment(vec![
+                // Test 1: Quote in template - pattern variable gets substituted then quoted
+                ("(define-syntax make-quoted (syntax-rules () ((make-quoted x) 'x)))", Macro),
+                // **R7RS:** 'x in template should substitute x, then quote result.
+                // So (make-quoted foo) matches x→foo, then 'x becomes 'foo which evaluates to symbol foo.
+                ("(make-quoted foo)", Success(ProcessedValue::OwnedSymbol("foo".to_string()))),
+
+                // Test 2: Quote with list - pattern variables expand THEN quote is applied
+                ("(define-syntax quote-it (syntax-rules () ((quote-it x) '(result x))))", Macro),
+                // **R7RS:** Pattern variable x gets substituted first, then quote is applied.
+                // So (quote-it 42) expands '(result x) to '(result 42) which becomes (result 42).
+                ("(quote-it 42)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("result".to_string()),
+                    ProcessedValue::Integer(42)
+                ])))),
+
+                // Test 3: Building quoted list with pattern variable OUTSIDE quote
+                ("(define-syntax build-quoted (syntax-rules () ((build-quoted x) (list 'result x))))", Macro),
+                ("(build-quoted 42)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("result".to_string()),
+                    ProcessedValue::Integer(42)
+                ])))), // x interpolated because it's outside the quote
+
+                // Test 4: Quote in pattern - matches literal (quote x) structure
+                ("(define-syntax unquote-it (syntax-rules () ((unquote-it 'x) x)))", Macro),
+                test_setup!("(define foo 99)"), // Define foo so extracted symbol can be evaluated
+                ("(unquote-it 'foo)", Success(ProcessedValue::Integer(99))), // Pattern extracts foo symbol, template returns it, evaluates to 99
+
+                // Test 5: Nested quotes in template - pattern variables get substituted
+                ("(define-syntax double-quote (syntax-rules () ((double-quote x) ''x)))", Macro),
+                // **R7RS:** ''x means (quote 'x), and 'x gets pattern substitution to become 'bar
+                // So ''x becomes (quote 'bar) which evaluates to the quoted form 'bar = (quote bar)
+                ("(double-quote bar)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("quote".to_string()),
+                    ProcessedValue::OwnedSymbol("bar".to_string())
+                ])))), // ''bar becomes (quote bar) after substitution
+
+                // Test 6: Empty list literal in template
+                ("(define-syntax make-empty (syntax-rules () ((make-empty) '())))", Macro),
+                ("(make-empty)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![])))),
+
+                // Test 7: Quoted underscore (literal symbol, not wildcard)
+                ("(define-syntax quote-underscore (syntax-rules () ((quote-underscore x) (list x '_))))", Macro),
+                ("(quote-underscore 99)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(99),
+                    ProcessedValue::OwnedSymbol("_".to_string())
+                ])))), // '_ is a literal quoted symbol, not the wildcard pattern
+
+                // Test 8: Quote with ellipsis - pattern variables expand THEN quote result
+                ("(define-syntax quote-each (syntax-rules () ((quote-each x ...) '(x ...))))", Macro),
+                // **R7RS:** Ellipsis expansion happens first, then quote is applied to result.
+                // So (quote-each a b c) expands '(x ...) to '(a b c) which becomes (a b c) after evaluation.
+                ("(quote-each a b c)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("a".to_string()),
+                    ProcessedValue::OwnedSymbol("b".to_string()),
+                    ProcessedValue::OwnedSymbol("c".to_string())
+                ])))),
+
+                // Test 9: Building list of quoted symbols with ellipsis OUTSIDE quote
+                ("(define-syntax make-symbol-list (syntax-rules () ((make-symbol-list x ...) (list 'x ...))))", Macro),
+                ("(make-symbol-list a b c)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("a".to_string()),
+                    ProcessedValue::OwnedSymbol("b".to_string()),
+                    ProcessedValue::OwnedSymbol("c".to_string())
+                ])))), // Each x becomes a quoted symbol
+            ]),
         ];
         run_tests_in_environment(test_cases);
     }

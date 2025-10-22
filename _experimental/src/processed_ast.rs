@@ -375,6 +375,16 @@ impl ProcessedAST {
             },
         );
 
+        let list_sym_pred = interner.get_or_intern("list?");
+        builtins.insert(
+            list_sym_pred,
+            ProcessedValue::ResolvedBuiltin {
+                name: list_sym_pred,
+                arity: ProcessedArity::Exact(1),
+                func: builtin_functions::builtin_list_p,
+            },
+        );
+
         builtins.insert(
             error_sym,
             ProcessedValue::ResolvedBuiltin {
@@ -890,8 +900,49 @@ impl<'arena> ProcessedCompiler<'arena> {
             ));
         }
 
-        let value = self.arena.alloc(self.compile_value(&elements[1])?);
+        let value = self.arena.alloc(self.compile_quoted_value(&elements[1])?);
         Ok(ProcessedValue::Quote { value })
+    }
+
+    /// Compile a quoted value - keeps symbols as symbols, doesn't resolve to builtins
+    fn compile_quoted_value(
+        &mut self,
+        value: &Value,
+    ) -> Result<ProcessedValue<'arena>, ProcessedCompileError> {
+        match value {
+            // Literals compile directly
+            Value::Boolean(b) => Ok(ProcessedValue::Boolean(*b)),
+            Value::Integer(n) => Ok(ProcessedValue::Integer(*n)),
+
+            // Strings get interned
+            Value::String(s) => {
+                let symbol = self.interner.get_or_intern(s);
+                Ok(ProcessedValue::String(symbol))
+            }
+
+            // Symbols get interned but NOT resolved to builtins (that's the key difference)
+            Value::Symbol(s) => {
+                let symbol = self.interner.get_or_intern(s);
+                Ok(ProcessedValue::Symbol(symbol))
+            }
+
+            // Lists are recursively quoted (not evaluated as special forms or applications)
+            Value::List(elements) => {
+                let mut compiled_elements = Vec::new();
+                for element in elements {
+                    compiled_elements.push(self.compile_quoted_value(element)?);
+                }
+                let slice = self.arena.alloc_slice_fill_iter(compiled_elements);
+                Ok(ProcessedValue::List(Cow::Borrowed(slice)))
+            }
+
+            Value::Unspecified => Ok(ProcessedValue::Unspecified),
+
+            // These should never appear in source code being compiled
+            Value::Builtin { .. } | Value::Procedure { .. } => Err(ProcessedCompileError::new(
+                "Cannot quote runtime-only values (Builtin/Procedure)".to_string(),
+            )),
+        }
     }
 
     /// Compile begin special form

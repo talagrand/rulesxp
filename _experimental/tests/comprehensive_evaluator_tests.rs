@@ -2735,16 +2735,16 @@ mod comprehensive_evaluator_tests {
                 // Test 1: Named let with 5 bindings (previously limited to 4)
                 ("(let loop ((a 1) (b 2) (c 3) (d 4) (e 5)) (+ a b c d e))",
                  Success(ProcessedValue::Integer(15))),
-                
+
                 // Test 2: Named let with 6 bindings
                 ("(let sum ((a 1) (b 2) (c 3) (d 4) (e 5) (f 6)) (+ a b c d e f))",
                  Success(ProcessedValue::Integer(21))),
-                
+
                 // Test 3: Named let factorial with recursion
                 test_setup!("(define (factorial n) (let loop ((n n) (acc 1)) (if (<= n 1) acc (loop (- n 1) (* acc n)))))"),
                 ("(factorial 5)", Success(ProcessedValue::Integer(120))),
                 ("(factorial 0)", Success(ProcessedValue::Integer(1))),
-                
+
                 // Test 4: Do loop with 4 variables (all with steps)
                 ("(do ((i 0 (+ i 1)) (j 10 (- j 1)) (k 5 (+ k 2)) (m 1 (* m 2))) ((> i 3) (list i j k m)))",
                  Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
@@ -2753,27 +2753,209 @@ mod comprehensive_evaluator_tests {
                      ProcessedValue::Integer(13), // k: 5→7→9→11→13
                      ProcessedValue::Integer(16)  // m: 1→2→4→8→16
                  ])))),
-                
+
                 // Test 5: Do loop with 5 variables
                 ("(do ((a 0 (+ a 1)) (b 0 (+ b 2)) (c 0 (+ c 3)) (d 0 (+ d 4)) (e 0 (+ e 5))) ((> a 2) (+ a b c d e)))",
                  Success(ProcessedValue::Integer(45))), // a=3, b=6, c=9, d=12, e=15
-                
+
                 // Test 6: Do loop with 6 variables
                 ("(do ((a 0 (+ a 1)) (b 0 (+ b 1)) (c 0 (+ c 2)) (d 0 (+ d 3)) (e 0 (+ e 4)) (f 0 (+ f 5))) ((> a 2) (+ a b c d e f)))",
                  Success(ProcessedValue::Integer(48))), // a=3, b=3, c=6, d=9, e=12, f=15
-                
+
                 // Test 7: Do loop with no steps (all variables static)
                 ("(do ((x 10) (y 20) (z 30)) ((> x 5) (+ x y z)))",
                  Success(ProcessedValue::Integer(60))),
-                
+
                 // Test 8: Do loop with 4 variables, no steps
                 ("(do ((a 1) (b 2) (c 3) (d 4)) (#t (+ a b c d)))",
                  Success(ProcessedValue::Integer(10))),
-                
+
                 // Test 9: Empty do loop (infinite loop protection with immediate exit)
                 ("(do () (#t 42))", Success(ProcessedValue::Integer(42))),
             ]),
         ];
+        run_tests_in_environment(test_cases);
+    }
+
+    #[test]
+    fn test_multi_ellipsis_macros() {
+        // Test multi-ellipsis macros (flatten, zip)
+        // These macros use nested ellipsis patterns (x ... ...) to manipulate nested list structures
+        let test_cases = vec![TestEnvironment(vec![
+            // Flatten tests - convert nested lists to flat lists using (list x ... ...)
+            (
+                "(define flat1 (flatten ((1 2) (3 4) (5 6))))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            ("(length flat1)", Success(ProcessedValue::Integer(6))),
+            ("(car flat1)", Success(ProcessedValue::Integer(1))),
+            ("(car (cdr flat1))", Success(ProcessedValue::Integer(2))),
+            (
+                "(car (cdr (cdr (cdr (cdr (cdr flat1))))))",
+                Success(ProcessedValue::Integer(6)),
+            ),
+            // Flatten with single-element sublists
+            (
+                "(define flat2 (flatten ((1) (2) (3))))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            ("(length flat2)", Success(ProcessedValue::Integer(3))),
+            ("(car flat2)", Success(ProcessedValue::Integer(1))),
+            (
+                "(car (cdr (cdr flat2)))",
+                Success(ProcessedValue::Integer(3)),
+            ),
+            // Flatten with single sublist
+            (
+                "(define flat3 (flatten ((1 2 3 4 5))))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            ("(length flat3)", Success(ProcessedValue::Integer(5))),
+            ("(car flat3)", Success(ProcessedValue::Integer(1))),
+            (
+                "(car (cdr (cdr (cdr (cdr flat3)))))",
+                Success(ProcessedValue::Integer(5)),
+            ),
+            // Zip tests - combine two lists into list of pairs using (list (list a b) ...)
+            (
+                "(define zip1 (zip (1 2 3) (4 5 6)))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            ("(length zip1)", Success(ProcessedValue::Integer(3))),
+            ("(car (car zip1))", Success(ProcessedValue::Integer(1))),
+            (
+                "(car (cdr (car zip1)))",
+                Success(ProcessedValue::Integer(4)),
+            ),
+            (
+                "(car (car (cdr zip1)))",
+                Success(ProcessedValue::Integer(2)),
+            ),
+            (
+                "(car (cdr (car (cdr zip1))))",
+                Success(ProcessedValue::Integer(5)),
+            ),
+            // Zip with single elements
+            (
+                "(define zip2 (zip (1) (2)))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            ("(length zip2)", Success(ProcessedValue::Integer(1))),
+            ("(car (car zip2))", Success(ProcessedValue::Integer(1))),
+            (
+                "(car (cdr (car zip2)))",
+                Success(ProcessedValue::Integer(2)),
+            ),
+            // Zip with multiple quoted symbols - need to use list instead of individual quotes
+            (
+                "(define sym-list '(a b c))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            (
+                "(define zip3 (zip (1 2 3) (10 20 30)))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            ("(length zip3)", Success(ProcessedValue::Integer(3))),
+            ("(car (car zip3))", Success(ProcessedValue::Integer(1))),
+            (
+                "(car (cdr (car zip3)))",
+                Success(ProcessedValue::Integer(10)),
+            ),
+            // Zip with longer lists
+            (
+                "(define zip4 (zip (1 2 3 4 5) (10 20 30 40 50)))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            ("(length zip4)", Success(ProcessedValue::Integer(5))),
+            ("(car (car zip4))", Success(ProcessedValue::Integer(1))),
+            (
+                "(car (cdr (car zip4)))",
+                Success(ProcessedValue::Integer(10)),
+            ),
+            (
+                "(car (car (cdr (cdr (cdr (cdr zip4))))))",
+                Success(ProcessedValue::Integer(5)),
+            ),
+            (
+                "(car (cdr (car (cdr (cdr (cdr (cdr zip4)))))))",
+                Success(ProcessedValue::Integer(50)),
+            ),
+            // Flatten with varying sublist sizes
+            (
+                "(define flat4 (flatten ((1) (2 3) (4 5 6))))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            ("(length flat4)", Success(ProcessedValue::Integer(6))),
+            ("(car flat4)", Success(ProcessedValue::Integer(1))),
+            ("(car (cdr flat4))", Success(ProcessedValue::Integer(2))),
+            (
+                "(car (cdr (cdr flat4)))",
+                Success(ProcessedValue::Integer(3)),
+            ),
+            // Flatten with two-element sublists
+            (
+                "(define flat5 (flatten ((1 2) (3 4))))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            ("(length flat5)", Success(ProcessedValue::Integer(4))),
+            ("(car flat5)", Success(ProcessedValue::Integer(1))),
+            (
+                "(car (cdr (cdr (cdr flat5))))",
+                Success(ProcessedValue::Integer(4)),
+            ),
+            // Zip and then access pairs
+            (
+                "(define zip5 (zip (10 20) (30 40)))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            ("(length zip5)", Success(ProcessedValue::Integer(2))),
+            (
+                "(define pair1 (car zip5))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            (
+                "(define pair2 (car (cdr zip5)))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            ("(car pair1)", Success(ProcessedValue::Integer(10))),
+            ("(car (cdr pair1))", Success(ProcessedValue::Integer(30))),
+            ("(car pair2)", Success(ProcessedValue::Integer(20))),
+            ("(car (cdr pair2))", Success(ProcessedValue::Integer(40))),
+            // Use flatten result in arithmetic
+            (
+                "(define nums (flatten ((1 2) (3 4))))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            (
+                "(+ (car nums) (car (cdr nums)))",
+                Success(ProcessedValue::Integer(3)),
+            ),
+            (
+                "(+ (car (cdr (cdr nums))) (car (cdr (cdr (cdr nums)))))",
+                Success(ProcessedValue::Integer(7)),
+            ),
+            // Use zip result to extract pairs
+            (
+                "(define pairs (zip (100 200) (300 400)))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            (
+                "(define first-pair (car pairs))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            (
+                "(define second-pair (car (cdr pairs)))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            (
+                "(+ (car first-pair) (car (cdr first-pair)))",
+                Success(ProcessedValue::Integer(400)),
+            ),
+            (
+                "(+ (car second-pair) (car (cdr second-pair)))",
+                Success(ProcessedValue::Integer(600)),
+            ),
+        ])];
         run_tests_in_environment(test_cases);
     }
 }

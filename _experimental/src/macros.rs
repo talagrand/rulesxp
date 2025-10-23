@@ -488,8 +488,27 @@ impl MacroExpander {
                             if s == "..." {
                                 // This is an ellipsis template
                                 let sub_template = self.parse_template(&items[i])?;
-                                templates.push(MacroTemplate::Ellipsis(Box::new(sub_template)));
-                                i += 2; // Skip the ... symbol
+                                let mut ellipsis_template =
+                                    MacroTemplate::Ellipsis(Box::new(sub_template));
+                                i += 2; // Skip the item and first ...
+
+                                // **PHASE 2/3:** Handle consecutive ellipses (x ... ... or ((x ...) ...) flattening)
+                                // Check if more ellipses follow: (x ... ... ...) creates nested Ellipsis layers
+                                while i < items.len() {
+                                    if let Value::Symbol(next_s) = &items[i] {
+                                        if next_s == "..." {
+                                            // Wrap current ellipsis in another ellipsis layer
+                                            ellipsis_template = MacroTemplate::Ellipsis(Box::new(
+                                                ellipsis_template,
+                                            ));
+                                            i += 1;
+                                            continue;
+                                        }
+                                    }
+                                    break;
+                                }
+
+                                templates.push(ellipsis_template);
                                 continue;
                             }
                         }
@@ -582,20 +601,23 @@ impl MacroExpander {
                                 if let MacroPattern::Variable(_) = sub_pattern.as_ref() {
                                     ellipsis_matches.push(items[item_idx].clone());
                                 } else {
-                                    // For complex patterns: check if sub-pattern contains nested ellipsis
-                                    // If yes, wrap sub-bindings in Lists to preserve iteration boundaries
-                                    // If no, just extend bindings directly (no wrapping needed)
-                                    let has_nested_ellipsis = self.contains_ellipsis(sub_pattern);
+                                    // **PHASE 2:** Depth-aware wrapping for nested ellipsis
+                                    // Check sub-pattern depth: if depth > 0, wrap this iteration's bindings
+                                    // This enables patterns like ((x ...) ...) where x at depth 2 needs wrapping
+                                    let sub_depth = self.get_ellipsis_depth(sub_pattern);
 
                                     for (var, values) in sub_bindings {
-                                        if has_nested_ellipsis {
-                                            // Nested ellipsis: wrap this iteration's values in a List
+                                        if sub_depth > 0 {
+                                            // Sub-pattern contains ellipsis: wrap to preserve iteration boundaries
+                                            // Example: ((x ...) ...) matching ((1 2) (3 4))
+                                            // First iteration: x=[1,2] wrapped as List([1,2])
+                                            // Second iteration: x=[3,4] wrapped as List([3,4])
                                             bindings
                                                 .entry(var)
                                                 .or_default()
                                                 .push(Value::List(values));
                                         } else {
-                                            // Simple list pattern: just extend with the values
+                                            // Sub-pattern has no ellipsis: direct binding (Phase 1 simple case)
                                             bindings.entry(var).or_default().extend(values);
                                         }
                                     }
@@ -839,6 +861,38 @@ impl MacroExpander {
                                     }
                                     // If no values bound, splice nothing (zero matches)
                                 }
+                                // **PHASE 2/3:** Nested ellipsis (x ... ...)
+                                // Ellipsis(Ellipsis(Variable(x))) means flatten: unwrap and splice all inner values
+                                MacroTemplate::Ellipsis(inner_template) => {
+                                    match inner_template.as_ref() {
+                                        MacroTemplate::Variable(name) => {
+                                            // Get bindings for variable (wrapped at depth 2)
+                                            if let Some(values) = bindings.get(name) {
+                                                // values are List-wrapped: [List([1,2]), List([3,4])]
+                                                // Double ellipsis means: unwrap each and splice all together
+                                                for value in values {
+                                                    if let Value::List(inner_values) = value {
+                                                        for inner_val in inner_values {
+                                                            self.track_emitted_macro_symbols(
+                                                                inner_val,
+                                                            );
+                                                            result.push(inner_val.clone());
+                                                        }
+                                                    } else {
+                                                        // Not wrapped, just splice
+                                                        self.track_emitted_macro_symbols(value);
+                                                        result.push(value.clone());
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            return Err(MacroError(
+                                                "Complex nested ellipsis patterns not yet fully supported".to_string()
+                                            ));
+                                        }
+                                    }
+                                }
                                 MacroTemplate::List(ellipsis_sub_templates) => {
                                     // Complex ellipsis - find max repetition length
                                     let mut max_len = 0;
@@ -855,7 +909,8 @@ impl MacroExpander {
                                         let mut instance_bindings = bindings.clone();
 
                                         // For each variable, select the i-th value
-                                        // If the value is a List (from nested ellipsis), use it as the binding
+                                        // **PHASE 2:** Unwrap List-wrapped bindings from nested ellipsis
+                                        // If the value is a List (from depth > 0 patterns), unwrap it for next level
                                         for (var_name, values) in instance_bindings.iter_mut() {
                                             if i < values.len() {
                                                 let value = values[i].clone();
@@ -902,6 +957,34 @@ impl MacroExpander {
                     MacroTemplate::Variable(name) => {
                         if let Some(values) = bindings.get(name) {
                             expanded_values.extend(values.clone());
+                        }
+                    }
+                    // **PHASE 2/3:** Handle nested ellipsis (x ... ...)
+                    // Ellipsis(Ellipsis(Variable(x))) means: for each value in x (which are Lists),
+                    // unwrap and splice the inner values
+                    MacroTemplate::Ellipsis(inner_template) => {
+                        // Recursively expand the inner ellipsis for each outer iteration
+                        match inner_template.as_ref() {
+                            MacroTemplate::Variable(name) => {
+                                if let Some(values) = bindings.get(name) {
+                                    // values are List-wrapped from depth 2: [List([1,2]), List([3,4])]
+                                    // Outer ellipsis iterates: unwrap each List and splice
+                                    for value in values {
+                                        if let Value::List(inner_values) = value {
+                                            expanded_values.extend(inner_values.clone());
+                                        } else {
+                                            // If not wrapped in List, just use the value
+                                            expanded_values.push(value.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                return Err(MacroError(
+                                    "Complex nested ellipsis templates not yet fully supported"
+                                        .to_string(),
+                                ));
+                            }
                         }
                     }
                     MacroTemplate::List(sub_templates) => {
@@ -1077,13 +1160,17 @@ impl MacroExpander {
                 }
 
                 if let Some(&pattern_depth) = pattern_vars.get(name) {
-                    if pattern_depth != depth {
+                    // **PHASE 2:** Allow pattern_depth > template_depth for nested ellipsis
+                    // Example: ((x ...) ...) in pattern, (x ... ...) in template is valid
+                    // This works because pattern matching wraps values in Lists at higher depths
+                    if pattern_depth < depth {
                         return Err(MacroError(format!(
                             "R7RS RESTRICTED: Pattern variable '{}' used at inconsistent ellipsis depth \
-                             (pattern depth: {}, template depth: {})",
+                             (pattern depth: {}, template depth: {}) - template depth cannot exceed pattern depth",
                             name, pattern_depth, depth
                         )));
                     }
+                    // pattern_depth >= depth is OK (Phase 2 handles unwrapping)
                 }
                 // Variables not in pattern_vars are literals from the template (OK)
                 Ok(())
@@ -1140,11 +1227,18 @@ impl MacroExpander {
     /// Check if a pattern contains nested ellipsis patterns
     /// **R7RS DEVIATION:** Helper to detect unsupported nested ellipsis
     #[allow(clippy::only_used_in_recursion)]
-    fn contains_ellipsis(&self, pattern: &MacroPattern) -> bool {
+    /// Get the ellipsis depth of a pattern
+    /// Returns: 0 = no ellipsis, 1 = one level (...), 2+ = nested (... within ...)
+    /// **PHASE 2:** Enables true nested ellipsis patterns like ((x ...) ...)
+    fn get_ellipsis_depth(&self, pattern: &MacroPattern) -> usize {
         match pattern {
-            MacroPattern::Ellipsis(_) => true,
-            MacroPattern::List(patterns) => patterns.iter().any(|p| self.contains_ellipsis(p)),
-            _ => false,
+            MacroPattern::Ellipsis(sub) => 1 + self.get_ellipsis_depth(sub),
+            MacroPattern::List(patterns) => patterns
+                .iter()
+                .map(|p| self.get_ellipsis_depth(p))
+                .max()
+                .unwrap_or(0),
+            _ => 0,
         }
     }
 

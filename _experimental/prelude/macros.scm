@@ -367,4 +367,21 @@
 
 ;; Note: $length* helper function is defined in functions.scm
 
+;; ===== NESTED ELLIPSIS MACROS (Phase 2) =====
+;; These macros use nested ellipsis patterns (x ... ...) to manipulate
+;; nested list structures. Requires multi-ellipsis template support.
+
+;; Flatten: Convert nested list structure to flat list
+;; (flatten ((1 2) (3 4) (5 6))) => (1 2 3 4 5 6)
+(define-syntax flatten
+  (syntax-rules ()
+    ((_ ((x ...) ...))
+     (list x ... ...))))
+
+;; Zip: Combine two lists into list of pairs
+;; (zip (1 2 3) (4 5 6)) => ((1 4) (2 5) (3 6))
+(define-syntax zip
+  (syntax-rules ()
+    ((_ (a ...) (b ...))
+     (list (list a b) ...))))
 

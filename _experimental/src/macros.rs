@@ -173,8 +173,6 @@ pub struct MacroExpander {
     emitted_macro_symbols: std::collections::HashSet<String>,
     /// **PERFORMANCE:** Dirty flag to avoid unnecessary AST comparisons
     expansion_dirty: bool,
-    /// **PERFORMANCE:** String interner for repeated symbol names
-    symbol_cache: HashMap<String, String>,
 }
 
 impl MacroExpander {
@@ -185,7 +183,6 @@ impl MacroExpander {
             known_macro_symbols: HashSet::new(),
             emitted_macro_symbols: HashSet::new(),
             expansion_dirty: false,
-            symbol_cache: HashMap::with_capacity(64), // Pre-allocate common symbol cache
         }
     }
 
@@ -404,7 +401,6 @@ impl MacroExpander {
 
     /// Parse a pattern from a rule with proper literal handling
     /// **R7RS Deviations:** Missing vector patterns, improper lists
-    #[allow(clippy::only_used_in_recursion)]
     fn parse_pattern_with_literals(
         &self,
         pattern: &Value,
@@ -533,7 +529,6 @@ impl MacroExpander {
     }
 
     /// Parse a template from a rule
-    #[allow(clippy::only_used_in_recursion)]
     fn parse_template(&self, template: &Value) -> Result<MacroTemplate, MacroError> {
         match template {
             Value::Symbol(s) => Ok(MacroTemplate::Variable(s.clone())),
@@ -902,13 +897,11 @@ impl MacroExpander {
                     }
                 } else {
                     // Not a pattern variable - this is a literal symbol from the template
-                    // **R7RS HYGIENE:** Check if this is a binding form that needs fresh names
-                    let symbol_name = self.maybe_generate_fresh_binding(name)?;
-
+                    // **R7RS HYGIENE:** Basic hygiene is handled by template expansion system
                     if self.known_macro_symbols.contains(name) {
                         self.emitted_macro_symbols.insert(name.clone());
                     }
-                    Ok(Value::Symbol(symbol_name))
+                    Ok(Value::Symbol(name.clone()))
                 }
             }
             MacroTemplate::Literal(value) => {
@@ -983,7 +976,7 @@ impl MacroExpander {
                                         // For each variable, select the i-th value
                                         // **PHASE 2:** Unwrap List-wrapped bindings from nested ellipsis
                                         // If the value is a List (from depth > 0 patterns), unwrap it for next level
-                                        for (var_name, values) in instance_bindings.iter_mut() {
+                                        for (_var_name, values) in instance_bindings.iter_mut() {
                                             if i < values.len() {
                                                 let value = values[i].clone();
                                                 // Check if this is a nested ellipsis binding (wrapped in List)
@@ -1128,14 +1121,6 @@ impl MacroExpander {
     /// **DEBUG:** Public accessor for macro definitions (for testing)
     pub fn get_macro_def(&self, name: &str) -> Option<MacroDefinition> {
         self.get_macro(name)
-    }
-
-    /// **PERFORMANCE:** Intern commonly used symbol names to reduce allocations
-    fn intern_symbol(&mut self, name: &str) -> &str {
-        if !self.symbol_cache.contains_key(name) {
-            self.symbol_cache.insert(name.to_string(), name.to_string());
-        }
-        self.symbol_cache.get(name).unwrap()
     }
 
     /// **SIMPLIFIED:** Generate a fresh identifier when needed
@@ -1304,10 +1289,10 @@ impl MacroExpander {
 
     /// Check if a pattern contains nested ellipsis patterns
     /// **R7RS DEVIATION:** Helper to detect unsupported nested ellipsis
-    #[allow(clippy::only_used_in_recursion)]
     /// Get the ellipsis depth of a pattern
     /// Returns: 0 = no ellipsis, 1 = one level (...), 2+ = nested (... within ...)
     /// **PHASE 2:** Enables true nested ellipsis patterns like ((x ...) ...)
+    #[allow(clippy::only_used_in_recursion)]
     fn get_ellipsis_depth(&self, pattern: &MacroPattern) -> usize {
         match pattern {
             MacroPattern::Ellipsis(sub) => 1 + self.get_ellipsis_depth(sub),

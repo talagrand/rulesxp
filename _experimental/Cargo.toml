@@ -20,6 +20,3 @@ version = "0.17.0"
 default-features = false
 features = ["std", "backends"]
 
-
-[profile.release]
-features = ["release-optimizations"]

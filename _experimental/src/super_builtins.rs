@@ -618,10 +618,7 @@ pub mod builtin_functions {
         }
 
         // **R7RS SEMANTICS:** Only #f is false, everything else is true
-        let result = match &args[0] {
-            ProcessedValue::Boolean(false) => true,
-            _ => false,
-        };
+        let result = matches!(&args[0], ProcessedValue::Boolean(false));
 
         Ok(ProcessedValue::Boolean(result))
     }
@@ -745,9 +742,9 @@ pub mod builtin_functions {
                 if let Some(val) = interner.resolve(*s) {
                     print!("{}", val);
                 } else {
-                    return Err(RuntimeError::new(format!(
-                        "display: failed to resolve interned string"
-                    )));
+                    return Err(RuntimeError::new(
+                        "display: failed to resolve interned string".to_string(),
+                    ));
                 }
             }
             ProcessedValue::OwnedString(s) => print!("{}", s),

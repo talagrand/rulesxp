@@ -78,16 +78,6 @@ mod comprehensive_evaluator_tests {
             }
         }
 
-        fn evaluate<'ast>(
-            &mut self,
-            env: Rc<ProcessedEnvironment<'ast>>,
-        ) -> Result<ProcessedValue<'ast>, RuntimeError> {
-            match self {
-                VMWrapper::DirectVM(vm) => vm.evaluate(env),
-                VMWrapper::StackVM(vm) => vm.evaluate(env),
-            }
-        }
-
         fn evaluate_single<'ast>(
             &mut self,
             expr: &ProcessedValue<'ast>,

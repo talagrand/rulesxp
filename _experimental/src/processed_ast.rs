@@ -146,7 +146,7 @@ pub struct CustomBuiltin {
 impl ProcessedAST {
     /// Create a new ProcessedAST from a Value expression
     pub fn compile(value: &Value) -> Result<Self, ProcessedCompileError> {
-        Self::compile_multiple(&[value.clone()])
+        Self::compile_multiple(std::slice::from_ref(value))
     }
 
     /// Create a new ProcessedAST with custom builtin functions
@@ -154,7 +154,7 @@ impl ProcessedAST {
         value: &Value,
         custom_builtins: &[CustomBuiltin],
     ) -> Result<Self, ProcessedCompileError> {
-        Self::compile_multiple_with_builtins(&[value.clone()], custom_builtins)
+        Self::compile_multiple_with_builtins(std::slice::from_ref(value), custom_builtins)
     }
 
     /// Create a new ProcessedAST from multiple Value expressions
@@ -991,7 +991,7 @@ impl<'arena> ProcessedCompiler<'arena> {
             // Compile body expressions with implicit begin
             if elements.len() == 3 {
                 // Single body expression
-                return Ok(self.compile_value(&elements[2])?);
+                return self.compile_value(&elements[2]);
             } else {
                 // Multiple body expressions - wrap in begin
                 let body_exprs: Result<Vec<_>, _> = elements[2..]
@@ -1082,7 +1082,7 @@ impl<'arena> ProcessedCompiler<'arena> {
             // Compile body expressions with implicit begin
             if elements.len() == 3 {
                 // Single body expression
-                return Ok(self.compile_value(&elements[2])?);
+                return self.compile_value(&elements[2]);
             } else {
                 // Multiple body expressions - wrap in begin
                 let body_exprs: Result<Vec<_>, _> = elements[2..]

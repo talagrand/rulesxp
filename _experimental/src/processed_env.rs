@@ -326,7 +326,9 @@ impl<'ast> ProcessedEnvironment<'ast> {
     }
 
     /// Get a reference to the bindings map (for debug/error reporting)
-    pub fn bindings(&self) -> std::cell::Ref<HashMap<StringSymbol, Rc<RefCell<Location<'ast>>>>> {
+    pub fn bindings(
+        &self,
+    ) -> std::cell::Ref<'_, HashMap<StringSymbol, Rc<RefCell<Location<'ast>>>>> {
         self.bindings.borrow()
     }
 

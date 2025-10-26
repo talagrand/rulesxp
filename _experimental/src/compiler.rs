@@ -129,6 +129,7 @@ impl Compiler {
     }
 
     /// Check if a lambda body references a given function name (for recursion detection)
+    #[expect(clippy::only_used_in_recursion)]
     fn lambda_references_name(&self, body: &Value, func_name: &str) -> bool {
         match body {
             Value::Symbol(name) => name == func_name,

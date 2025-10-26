@@ -510,10 +510,6 @@ fn capture_stack_trace<'ast>(
                         tail
                     ))
                 }
-                SuperEvalFrame::DefineStore { name, .. } => {
-                    let name_str = resolve_sym(name);
-                    Some(format!("DEFINE-STORE {}", name_str))
-                }
                 SuperEvalFrame::DefineRedefineStore { name, .. } => {
                     let name_str = resolve_sym(name);
                     Some(format!("DEFINE-REDEFINE {}", name_str))
@@ -558,12 +554,6 @@ fn capture_stack_trace<'ast>(
                         bindings.len(),
                         tail
                     ))
-                }
-                SuperEvalFrame::FreezeAndEvaluate {
-                    in_tail_position, ..
-                } => {
-                    let tail = if *in_tail_position { " [TAIL]" } else { "" };
-                    Some(format!("FREEZE-EVAL{}", tail))
                 }
             };
 
@@ -724,11 +714,6 @@ enum SuperEvalFrame<'ast> {
         expr: ProcessedValue<'ast>,
         in_tail_position: bool, // True if this evaluation is in tail position
     },
-    /// Freeze Mutable bindings then evaluate an expression (used after internal defines/letrec complete)
-    FreezeAndEvaluate {
-        expr: ProcessedValue<'ast>,
-        in_tail_position: bool,
-    },
     /// Continue with if evaluation (then_expr, else_expr) - test result is in evaluation result
     IfContinue {
         then_expr: ProcessedValue<'ast>,
@@ -765,11 +750,6 @@ enum SuperEvalFrame<'ast> {
         is_tail_position: bool, // True if this is a tail call (enables optimization)
     },
 
-    /// Store define result after value evaluation completes
-    DefineStore {
-        name: StringSymbol,
-        original_env: Rc<ProcessedEnvironment<'ast>>,
-    },
     /// Store top-level define result by redefining in current environment (REPL semantics)
     DefineRedefineStore {
         name: StringSymbol,
@@ -1090,7 +1070,7 @@ impl SuperDirectVM {
                     // Top-level REPL: evaluate value, then mutate current environment
                     let eval_value = self.evaluate_direct(value, Rc::clone(&env))?;
                     env.redefine_binding(*name, eval_value)
-                        .map_err(|e| RuntimeError::new(e))?;
+                        .map_err(RuntimeError::new)?;
                     // Don't change current_env - we mutated it in place
                 } else {
                     // Internal define outside Begin/Lambda body - should be caught by body processing
@@ -1194,7 +1174,7 @@ impl SuperDirectVM {
                             // Initialize this binding before evaluating next init expression
                             letrec_env_rc
                                 .initialize_binding(*name, init_value)
-                                .map_err(|e| RuntimeError::new(e))?;
+                                .map_err(RuntimeError::new)?;
                         }
 
                         // Evaluate body expressions in letrec environment
@@ -1242,7 +1222,7 @@ impl SuperDirectVM {
                     let init_value = self.evaluate_direct(init_expr, Rc::clone(&letrec_env_rc))?;
                     letrec_env_rc
                         .initialize_binding(*name, init_value)
-                        .map_err(|e| RuntimeError::new(e))?;
+                        .map_err(RuntimeError::new)?;
                 }
 
                 // Evaluate body in the letrec environment
@@ -1275,7 +1255,7 @@ impl SuperDirectVM {
                     let init_value = self.evaluate_direct(init_expr, Rc::clone(&letrec_env_rc))?;
                     letrec_env_rc
                         .initialize_binding(*name, init_value)
-                        .map_err(|e| RuntimeError::new(e))?;
+                        .map_err(RuntimeError::new)?;
                 }
 
                 // Evaluate body in the letrec* environment
@@ -1332,7 +1312,7 @@ impl SuperDirectVM {
 
                 // Create new environment extending closure's captured environment
                 // **PERFORMANCE:** Use Rc::clone instead of expensive environment clone
-                let mut call_env_rc = Rc::clone(&closure_env);
+                let mut call_env_rc = Rc::clone(closure_env);
 
                 // Bind parameters to arguments using extend()
                 if variadic {
@@ -1679,7 +1659,7 @@ impl SuperStackVM {
                                 params: params.clone(),
                                 body,
                                 env: current_env.clone(),
-                                variadic: variadic.clone(),
+                                variadic,
                             };
                         }
                         ProcessedValue::Quote { value } => {
@@ -1881,17 +1861,6 @@ impl SuperStackVM {
                     stack.push(SuperEvalFrame::Evaluate {
                         expr: chosen_expr,
                         in_tail_position, // Pass through tail position
-                    });
-                }
-                SuperEvalFrame::FreezeAndEvaluate {
-                    expr,
-                    in_tail_position,
-                } => {
-                    // **NEW IMMUTABLE ARCHITECTURE:** No freezing needed, cells stay as cells
-                    // Just evaluate the expression normally
-                    stack.push(SuperEvalFrame::Evaluate {
-                        expr,
-                        in_tail_position,
                     });
                 }
                 SuperEvalFrame::BeginContinue {
@@ -2136,15 +2105,6 @@ impl SuperStackVM {
                         in_tail_position: true,
                     });
                     continue;
-                }
-                SuperEvalFrame::DefineStore { name, original_env } => {
-                    // Define form: value has been evaluated, now extend environment
-                    let eval_value = result;
-
-                    current_env = original_env.extend(name, eval_value);
-
-                    // Define returns unspecified in R7RS
-                    result = ProcessedValue::Unspecified;
                 }
                 SuperEvalFrame::DefineRedefineStore { name, env } => {
                     // Top-level define: value has been evaluated, now redefine in current environment

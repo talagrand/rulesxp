@@ -16,12 +16,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
         eprintln!("Usage: {} <mode> <file.scm>", args[0]);
-        eprintln!("Modes: ast, stackast, noncps, superast, superstackast");
+        eprintln!("Modes: ast, stackast, bytecode, superast, superstackast");
         std::process::exit(1);
     }
 
     let mode = &args[1];
-    let filename = &args[2];
+        let filename = &args[2];
     let source = fs::read_to_string(filename)?;
 
     println!("=== RUNSCRIPT ===");
@@ -116,8 +116,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Stack-based AST: {:?}", result);
         }
 
-        "noncps" => {
-            println!("=== NON-CPS BYTECODE COMPILATION ===");
+        "bytecode" => {
+            println!("=== BYTECODE COMPILATION ===");
 
             // Expand macros with standard prelude
             let mut macro_expander = MacroExpander::new(env.clone());
@@ -136,7 +136,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!();
 
             // Combine all expressions into a begin block for compilation
-            let non_cps_program = if expanded_exprs.len() == 1 {
+            let program = if expanded_exprs.len() == 1 {
                 expanded_exprs.into_iter().next().unwrap()
             } else {
                 let mut begin_list = vec![Value::Symbol("begin".to_string())];
@@ -145,11 +145,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             println!("=== COMBINED PROGRAM ===");
-            println!("Program: {:?}", non_cps_program);
+            println!("Program: {:?}", program);
             println!();
 
             // Compile to bytecode
-            let module = compiler::compile(&non_cps_program, source.clone(), env.clone())?;
+            let module = compiler::compile(&program, source.clone(), env.clone())?;
 
             println!("=== BYTECODE ASSEMBLY ===");
             for (i, instruction) in module.code.iter().enumerate() {
@@ -164,7 +164,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let result = vm.execute(&module)?;
 
             println!("=== FINAL RESULT ===");
-            println!("Non-CPS Bytecode: {:?}", result);
+            println!("Bytecode Result: {:?}", result);
         }
 
         "superast" => {
@@ -255,17 +255,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("ProcessedAST Result: {:?}", result);
         }
 
-        "cps" => {
-            println!("❌ CPS mode disabled due to stack overflow issues in macro expansion");
-            println!(
-                "Use 'ast', 'stackast', 'noncps', 'superast', or 'superstackast' modes instead."
-            );
-            std::process::exit(1);
-        }
+
 
         _ => {
             eprintln!(
-                "Invalid mode: {}. Use ast, stackast, noncps, superast, or superstackast",
+                "Invalid mode: {}. Use ast, stackast, bytecode, superast, or superstackast",
                 mode
             );
             std::process::exit(1);

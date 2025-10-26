@@ -1486,19 +1486,6 @@ impl MacroExpander {
         self.load_prelude_from_str(STANDARD_MACRO_PRELUDE, "standard prelude")
     }
 
-    /// Load prelude macros for CPS mode
-    pub fn load_cps_prelude(&mut self) -> Result<(), MacroError> {
-        // Combined macro prelude including both standard R7RS and CPS macros
-        // This provides all macros needed for CPS operations
-        const COMBINED_MACRO_PRELUDE: &str = concat!(
-            include_str!("../prelude/macros.scm"),
-            "\n",
-            include_str!("../prelude/cps_macros.scm")
-        );
-
-        self.load_prelude_from_str(COMBINED_MACRO_PRELUDE, "CPS prelude")
-    }
-
     /// Internal helper to load prelude from a string
     fn load_prelude_from_str(
         &mut self,

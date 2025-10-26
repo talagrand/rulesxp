@@ -84,7 +84,7 @@ Tests are organized as:
 
 ## Implementation Notes
 
-- Tests run in **non-CPS mode** by default to avoid continuation requirements
+- Tests run using standard evaluation mode (no continuation support)
 - The test runner uses the public `compiler::compile()` API
 - Bytecode is formatted as human-readable assembly for easier debugging
 - The test runner creates fresh VM instances for each test mode
@@ -95,5 +95,5 @@ Tests are organized as:
 - **Display capture**: Currently captures final results, could capture actual `display` builtin calls
 - **Error testing**: Test expected compilation/runtime errors
 - **Performance testing**: Benchmark test execution times  
-- **CPS testing**: Add CPS-mode specific tests
+- **Advanced testing**: Add more comprehensive edge case tests
 - **Macro testing**: Test macro expansion results

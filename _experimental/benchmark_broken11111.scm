@@ -1,5 +1,5 @@
-;; Complex benchmark example for CPS vs non-CPS performance comparison
-;; This example includes recursion, higher-order functions, conditionals, 
+;; Complex benchmark example
+;; This example includes recursion, higher-order functions, conditionals,
 ;; arithmetic, and function definitions to stress-test both compilation and evaluation
 
 ;; Recursive factorial with accumulator

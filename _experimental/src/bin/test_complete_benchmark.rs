@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Execute
     println!("Executing...");
-    let mut vm = VM::new_with_cps(false);
+    let mut vm = VM::new_with_env(env.clone(), false);
     let result = vm.execute(&bytecode)?;
 
     println!("Result: {}", result);

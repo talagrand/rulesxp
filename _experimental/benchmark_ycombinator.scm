@@ -1,5 +1,5 @@
-;; Complex benchmark example for CPS vs non-CPS performance comparison
-;; This example uses Y-combinator instead of direct recursion to avoid CPS limitations
+;; Complex benchmark example
+;; This example uses Y-combinator instead of direct recursion to avoid implementation limitations
 ;; Includes higher-order functions, conditionals, arithmetic, and function definitions
 
 ;; Y-combinator for recursion without self-reference (2-argument version)
@@ -8,7 +8,7 @@
     ((lambda (x) (f (lambda (a b) ((x x) a b))))
      (lambda (x) (f (lambda (a b) ((x x) a b)))))))
 
-;; Y-combinator for recursion without self-reference (1-argument version)  
+;; Y-combinator for recursion without self-reference (1-argument version)
 (define Y1
   (lambda (f)
     ((lambda (x) (f (lambda (v) ((x x) v))))

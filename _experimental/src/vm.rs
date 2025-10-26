@@ -1,5 +1,4 @@
 // Virtual machine module - executes bytecode
-use crate::cps_builtins;
 use crate::value::{Environment, Value};
 use std::rc::Rc;
 
@@ -192,25 +191,6 @@ pub enum Opcode {
     /// Arg: number of elements
     MakeVector(u8),
 
-    // === CPS-specific opcodes ===
-    /// Call a continuation with N arguments
-    /// Pops continuation and N arguments, calls continuation directly
-    /// Optimized for CPS calling convention - no stack frame overhead
-    /// Arg: number of arguments (not including continuation)
-    CallCont(u8),
-
-    /// Create a continuation object for first-class continuations
-    /// Args: code offset to jump to, number of captured variables
-    /// Captures current environment and instruction pointer
-    /// NOTE: Reserved for call/cc implementation - not used for basic CPS transformation
-    /// Basic CPS uses regular function calls with continuation parameters
-    MakeCont(usize, u8),
-
-    /// Direct jump to continuation (most optimized)
-    /// Used when continuation is known at compile time
-    /// Arg: signed offset from current instruction
-    ContJump(i16),
-
     /// Create a recursive procedure that can reference itself
     /// Args: name constant index, params constant index, body constant index
     /// Creates a procedure with self-reference in its environment
@@ -262,92 +242,6 @@ struct CallFrame {
     function_name: Option<String>,
 }
 
-/// Continuation object for CPS execution
-#[derive(Debug, Clone)]
-pub struct Continuation {
-    /// Instruction pointer to jump to
-    pub target_ip: usize,
-
-    /// Environment captured when continuation was created
-    pub captured_env: Rc<Environment>,
-
-    /// Number of arguments expected by continuation
-    pub arity: u8,
-
-    /// Whether this is a cached continuation (identity, etc.)
-    pub is_cached: bool,
-}
-
-/// Continuation pool for caching frequently used continuations
-#[derive(Debug)]
-pub struct ContinuationPool {
-    /// Identity continuation (most common)
-    identity: Option<Rc<Continuation>>,
-
-    /// Cache for other common continuations
-    cache: std::collections::HashMap<String, Rc<Continuation>>,
-
-    /// Pool statistics
-    hits: usize,
-    misses: usize,
-}
-
-impl Default for ContinuationPool {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ContinuationPool {
-    pub fn new() -> Self {
-        ContinuationPool {
-            identity: None,
-            cache: std::collections::HashMap::new(),
-            hits: 0,
-            misses: 0,
-        }
-    }
-
-    /// Get or create identity continuation
-    pub fn get_identity(&mut self, env: Rc<Environment>) -> Rc<Continuation> {
-        if let Some(ref identity) = self.identity {
-            self.hits += 1;
-            identity.clone()
-        } else {
-            self.misses += 1;
-            let identity = Rc::new(Continuation {
-                target_ip: 0, // Identity just returns its argument
-                captured_env: env,
-                arity: 1,
-                is_cached: true,
-            });
-            self.identity = Some(identity.clone());
-            identity
-        }
-    }
-
-    /// Cache a continuation with given key
-    pub fn cache_continuation(&mut self, key: String, cont: Rc<Continuation>) {
-        self.cache.insert(key, cont);
-    }
-
-    /// Get cached continuation
-    pub fn get_cached(&mut self, key: &str) -> Option<Rc<Continuation>> {
-        if let Some(cont) = self.cache.get(key) {
-            self.hits += 1;
-            Some(cont.clone())
-        } else {
-            self.misses += 1;
-            None
-        }
-    }
-
-    /// Get cache statistics
-    pub fn stats(&self) -> (usize, usize) {
-        (self.hits, self.misses)
-    }
-}
-
 /// Stack-based virtual machine
 pub struct VM {
     /// Value stack
@@ -368,12 +262,6 @@ pub struct VM {
 
     /// Track recursion depth for warnings
     recursion_depth: std::collections::HashMap<String, usize>,
-
-    /// CPS mode enabled (experimental)
-    cps_mode: bool,
-
-    /// Continuation pool for CPS optimization
-    continuation_pool: ContinuationPool,
 }
 
 impl BytecodeModule {
@@ -467,7 +355,6 @@ impl BytecodeModule {
             }
             Opcode::Call(argc) => format!("CALL {}", argc),
             Opcode::TailCall(argc) => format!("TAIL_CALL {}", argc),
-            Opcode::CallCont(argc) => format!("CALL_CONT {}", argc),
             Opcode::Return => "RETURN".to_string(),
             Opcode::Jump(offset) => format!("JUMP {}", offset),
             Opcode::JumpIfFalse(offset) => format!("JUMP_IF_FALSE {}", offset),
@@ -480,8 +367,6 @@ impl BytecodeModule {
             Opcode::MakeList(count) => format!("MAKE_LIST {}", count),
             Opcode::LoadNil => "LOAD_NIL".to_string(),
             Opcode::MakeVector(count) => format!("MAKE_VECTOR {}", count),
-            Opcode::MakeCont(target, vars) => format!("MAKE_CONT {} {}", target, vars),
-            Opcode::ContJump(offset) => format!("CONT_JUMP {}", offset),
             Opcode::MakeRecursiveProcedure(name_idx, params_idx, body_idx) => {
                 format!(
                     "MAKE_RECURSIVE_PROC {} {} {}",
@@ -503,8 +388,8 @@ impl VM {
         Self::new_with_cps(true)
     }
 
-    /// Create a new VM with or without CPS mode
-    pub fn new_with_cps(enable_cps: bool) -> Self {
+    /// Create a new VM with standard built-ins
+    pub fn new_with_cps(_enable_cps: bool) -> Self {
         let global_env = Environment::new();
 
         // Load built-in procedures into global environment
@@ -521,48 +406,6 @@ impl VM {
             current_env: global_env.clone(),
             global_env,
             recursion_depth: std::collections::HashMap::new(),
-            cps_mode: enable_cps,
-            continuation_pool: ContinuationPool::new(),
-        };
-
-        if enable_cps {
-            // Load CPS builtins to replace regular builtins (e.g., + becomes add_cps)
-            // Note: CPS builtins no longer take continuation parameters - they return values directly
-            let cps_builtins = cps_builtins::get_cps_builtins();
-            for (name, func) in cps_builtins {
-                let cps_builtin = Value::Builtin {
-                    name: name.to_string(),
-                    arity: crate::value::Arity::AtLeast(0), // Flexible arity, no continuation needed
-                    func,
-                };
-                vm.current_env.define(name.to_string(), cps_builtin);
-            }
-        }
-
-        // Load function prelude (use CPS prelude if CPS is enabled)
-        if enable_cps {
-            if let Err(e) = vm.load_cps_function_prelude() {
-                panic!("Fatal error loading CPS function prelude: {}", e);
-            }
-        } else if let Err(e) = vm.load_function_prelude() {
-            panic!("Fatal error loading function prelude: {}", e);
-        }
-
-        vm
-    }
-
-    /// Create a new VM with a provided environment and CPS mode setting
-    /// This allows sharing environment state between multiple VM executions
-    pub fn new_with_env(env: Rc<Environment>, enable_cps: bool) -> Self {
-        let mut vm = VM {
-            stack: Vec::new(),
-            call_stack: Vec::new(),
-            ip: 0,
-            current_env: env.clone(),
-            global_env: env,
-            recursion_depth: std::collections::HashMap::new(),
-            cps_mode: enable_cps,
-            continuation_pool: ContinuationPool::new(),
         };
 
         // Load function prelude
@@ -573,20 +416,9 @@ impl VM {
         vm
     }
 
-    /// Create a new VM with a provided environment pre-configured with CPS builtins
-    /// This matches the behavior of new_with_cps(true) but with a provided environment
-    pub fn new_with_cps_env(env: Rc<Environment>) -> Self {
-        // Add CPS builtins to the provided environment
-        let cps_builtins = crate::cps_builtins::get_cps_builtins();
-        for (name, func) in cps_builtins {
-            let cps_builtin = Value::Builtin {
-                name: name.to_string(),
-                arity: crate::value::Arity::AtLeast(0),
-                func,
-            };
-            env.define(name.to_string(), cps_builtin);
-        }
-
+    /// Create a new VM with a provided environment
+    /// This allows sharing environment state between multiple VM executions
+    pub fn new_with_env(env: Rc<Environment>, _enable_cps: bool) -> Self {
         let mut vm = VM {
             stack: Vec::new(),
             call_stack: Vec::new(),
@@ -594,33 +426,14 @@ impl VM {
             current_env: env.clone(),
             global_env: env,
             recursion_depth: std::collections::HashMap::new(),
-            cps_mode: true,
-            continuation_pool: ContinuationPool::new(),
         };
 
-        // Load CPS function prelude (includes both regular and CPS functions like identity)
-        if let Err(e) = vm.load_cps_function_prelude() {
-            eprintln!("Fatal error loading CPS function prelude: {}", e);
-            std::process::exit(1);
+        // Load function prelude
+        if let Err(e) = vm.load_function_prelude() {
+            panic!("Fatal error loading function prelude: {}", e);
         }
 
         vm
-    }
-
-    /// Enable CPS mode (experimental)
-    pub fn enable_cps_mode(&mut self) {
-        self.cps_mode = true;
-
-        // Load CPS builtins into environment
-        let cps_builtins = cps_builtins::get_cps_builtins();
-        for (name, func) in cps_builtins {
-            let cps_builtin = Value::Builtin {
-                name: name.to_string(),
-                arity: crate::value::Arity::AtLeast(1), // At least the continuation
-                func,
-            };
-            self.current_env.define(name.to_string(), cps_builtin);
-        }
     }
 
     /// Create a new VM for direct AST interpretation (no bytecode compilation)
@@ -633,8 +446,6 @@ impl VM {
             current_env: env.clone(),
             global_env: env,
             recursion_depth: std::collections::HashMap::new(),
-            cps_mode: false, // Direct interpretation doesn't use CPS
-            continuation_pool: ContinuationPool::new(),
         }
     }
 
@@ -648,20 +459,7 @@ impl VM {
             current_env: env.clone(),
             global_env: env,
             recursion_depth: std::collections::HashMap::new(),
-            cps_mode: false, // Stack-based interpretation doesn't use CPS
-            continuation_pool: ContinuationPool::new(),
         }
-    }
-
-    /// Disable CPS mode
-    pub fn disable_cps_mode(&mut self) {
-        self.cps_mode = false;
-        // Note: CPS builtins remain in environment but won't be used in non-CPS compilation
-    }
-
-    /// Check if CPS mode is enabled
-    pub fn is_cps_mode(&self) -> bool {
-        self.cps_mode
     }
 
     /// Load the function prelude into the VM environment
@@ -699,82 +497,6 @@ impl VM {
             Err(e) => {
                 return Err(RuntimeError::new(format!(
                     "Failed to parse function prelude: {}\nThe interpreter cannot continue with a broken prelude.", 
-                    e
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    fn load_cps_function_prelude(&mut self) -> Result<(), RuntimeError> {
-        use crate::compiler::compile;
-        use crate::parser::parse_multiple;
-
-        // Load regular functions first (compiled normally)
-        const FUNCTION_PRELUDE: &str = include_str!("../prelude/functions.scm");
-        match parse_multiple(FUNCTION_PRELUDE) {
-            Ok(expressions) => {
-                for expression in expressions {
-                    match compile(
-                        &expression,
-                        "<prelude>".to_string(),
-                        self.current_env.clone(),
-                    ) {
-                        Ok(module) => {
-                            if let Err(e) = self.execute(&module) {
-                                return Err(RuntimeError::new(format!(
-                                    "Failed to execute prelude function '{}': {}\nThe interpreter cannot continue with a broken prelude.", 
-                                    expression, e
-                                )));
-                            }
-                        }
-                        Err(e) => {
-                            return Err(RuntimeError::new(format!(
-                                "Failed to compile prelude function '{}': {}\nThe interpreter cannot continue with a broken prelude.", 
-                                expression, e
-                            )));
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                return Err(RuntimeError::new(format!(
-                    "Failed to parse function prelude: {}\nThe interpreter cannot continue with a broken prelude.", 
-                    e
-                )));
-            }
-        }
-
-        // Load CPS-specific functions (compiled normally, not with CPS transformation)
-        const CPS_FUNCTION_PRELUDE: &str = include_str!("../prelude/cps_functions.scm");
-        match parse_multiple(CPS_FUNCTION_PRELUDE) {
-            Ok(expressions) => {
-                for expression in expressions {
-                    match compile(
-                        &expression,
-                        "<cps_prelude>".to_string(),
-                        self.current_env.clone(),
-                    ) {
-                        Ok(module) => {
-                            if let Err(e) = self.execute(&module) {
-                                return Err(RuntimeError::new(format!(
-                                    "Failed to execute CPS prelude function '{}': {}\nThe interpreter cannot continue with a broken prelude.", 
-                                    expression, e
-                                )));
-                            }
-                        }
-                        Err(e) => {
-                            return Err(RuntimeError::new(format!(
-                                "Failed to compile CPS prelude function '{}': {}\nThe interpreter cannot continue with a broken prelude.", 
-                                expression, e
-                            )));
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                return Err(RuntimeError::new(format!(
-                    "Failed to parse CPS function prelude: {}\nThe interpreter cannot continue with a broken prelude.", 
                     e
                 )));
             }
@@ -2299,163 +2021,6 @@ impl VM {
                     // For now, vectors are not implemented, so this will fail
                     return Err(self
                         .create_runtime_error("Vectors not implemented yet".to_string(), module));
-                }
-
-                // === CPS-specific opcodes ===
-                Opcode::CallCont(arg_count) => {
-                    let arg_count = *arg_count as usize;
-                    if self.stack.len() < arg_count + 1 {
-                        return Err(self.create_runtime_error(
-                            format!("Stack underflow in call-cont: need {} arguments + continuation, got {}", 
-                                arg_count, self.stack.len()),
-                            module,
-                        ));
-                    }
-
-                    // Pop continuation and arguments
-                    let continuation = self.stack.pop().unwrap();
-                    let mut args = Vec::with_capacity(arg_count);
-                    for _ in 0..arg_count {
-                        args.insert(0, self.stack.pop().unwrap());
-                    }
-
-                    // Handle different continuation types
-                    match continuation {
-                        Value::Builtin { func, .. } => {
-                            // Built-in continuation (like identity)
-                            match func(&args) {
-                                Ok(result) => self.stack.push(result),
-                                Err(err) => return Err(self.create_runtime_error(err, module)),
-                            }
-                        }
-                        Value::Procedure {
-                            params,
-                            body,
-                            env,
-                            variadic,
-                        } => {
-                            // User-defined continuation - treat as regular function call
-                            // This is exactly what we want for CPS-transformed code!
-
-                            // Verify argument count
-                            if variadic {
-                                if args.len() < params.len() - 1 {
-                                    return Err(self.create_runtime_error(
-                                        format!(
-                                            "Wrong number of arguments to continuation: expected at least {}, got {}",
-                                            params.len() - 1,
-                                            args.len()
-                                        ),
-                                        module,
-                                    ));
-                                }
-                            } else if args.len() != params.len() {
-                                return Err(self.create_runtime_error(
-                                    format!(
-                                        "Wrong number of arguments to continuation: expected {}, got {}",
-                                        params.len(),
-                                        args.len()
-                                    ),
-                                    module,
-                                ));
-                            }
-
-                            // Create new environment for continuation
-                            let call_env = Rc::new(Environment::with_parent(env.clone()));
-
-                            // Bind parameters to arguments
-                            if variadic {
-                                // Bind regular args
-                                for (i, param) in params.iter().enumerate().take(params.len() - 1) {
-                                    if i < args.len() {
-                                        call_env.define(param.clone(), args[i].clone());
-                                    }
-                                }
-                                // Bind rest args as list
-                                let rest_args = if args.len() >= params.len() - 1 {
-                                    args[params.len() - 1..].to_vec()
-                                } else {
-                                    vec![]
-                                };
-                                call_env
-                                    .define(params.last().unwrap().clone(), Value::List(rest_args));
-                            } else {
-                                // Bind all parameters
-                                for (param, arg) in params.iter().zip(args.iter()) {
-                                    call_env.define(param.clone(), arg.clone());
-                                }
-                            }
-
-                            // Execute continuation body in its environment
-                            let old_env = self.current_env.clone();
-                            self.current_env = call_env;
-
-                            let result = self.execute_value_in_current_env(&body);
-
-                            self.current_env = old_env;
-
-                            match result {
-                                Ok(value) => self.stack.push(value),
-                                Err(err) => return Err(err),
-                            }
-                        }
-                        _ => {
-                            return Err(self.create_runtime_error(
-                                format!("Expected continuation, got {}", continuation.type_name()),
-                                module,
-                            ));
-                        }
-                    }
-                }
-
-                Opcode::MakeCont(target_ip, _captured_vars) => {
-                    // Create a continuation object that captures current environment
-                    let _continuation = Continuation {
-                        target_ip: *target_ip,
-                        captured_env: self.current_env.clone(),
-                        arity: 1, // Most continuations expect 1 argument
-                        is_cached: false,
-                    };
-
-                    // For now, create a simple identity continuation as placeholder
-                    // Real implementation would store the continuation object and use it for jumps
-                    fn continuation_placeholder(args: &[Value]) -> Result<Value, String> {
-                        if args.len() == 1 {
-                            Ok(args[0].clone())
-                        } else {
-                            Err(format!(
-                                "Continuation expects 1 argument, got {}",
-                                args.len()
-                            ))
-                        }
-                    }
-
-                    let cont_value = Value::Builtin {
-                        name: format!("continuation@{}", target_ip),
-                        func: continuation_placeholder,
-                        arity: crate::value::Arity::Exact(1),
-                    };
-
-                    self.stack.push(cont_value);
-                }
-
-                Opcode::ContJump(offset) => {
-                    // Direct continuation jump - most optimized CPS operation
-                    let new_ip = if *offset >= 0 {
-                        self.ip + (*offset as usize)
-                    } else {
-                        self.ip.saturating_sub((-*offset) as usize)
-                    };
-
-                    if new_ip >= module.code.len() {
-                        return Err(self.create_runtime_error(
-                            "Continuation jump out of bounds".to_string(),
-                            module,
-                        ));
-                    }
-
-                    self.ip = new_ip;
-                    continue; // Skip normal IP increment
                 }
 
                 Opcode::MakeRecursiveProcedure(name_idx, params_idx, body_idx) => {

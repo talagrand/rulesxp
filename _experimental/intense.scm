@@ -1,4 +1,4 @@
-;; Intensive computational benchmark for CPS vs non-CPS performance comparison
+;; Intensive computational benchmark
 ;; This example focuses on heavy computation without recursion or Y-combinators
 ;; Features: deep function composition, complex arithmetic, higher-order functions, conditionals
 

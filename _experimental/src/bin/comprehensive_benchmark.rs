@@ -208,8 +208,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
 
-    // 3. Non-CPS Bytecode Benchmark
-    println!("=== 3. NON-CPS BYTECODE EVALUATION ===");
+    // 3. Bytecode Benchmark
+    println!("=== 3. BYTECODE EVALUATION ===");
     let mut compile_times = Vec::new();
     let mut bytecode_times = Vec::new();
     let mut bytecode_result = Value::Integer(0);

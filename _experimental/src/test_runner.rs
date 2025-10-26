@@ -154,8 +154,9 @@ impl TestRunner {
 
     /// Test evaluation results against reference file
     fn test_result(&self, test_name: &str, source_code: &str) -> Result<TestResult, TestError> {
-        // Create VM in non-CPS mode for regular tests
-        let mut vm = VM::new_with_cps(false);
+        // Create VM for regular tests
+        let env = Rc::new(Environment::new());
+        let mut vm = VM::new_with_env(env.clone(), false);
 
         // Parse and expand macros, capturing errors as output
         let mut results = Vec::new();

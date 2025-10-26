@@ -155,7 +155,17 @@ impl TestRunner {
     /// Test evaluation results against reference file
     fn test_result(&self, test_name: &str, source_code: &str) -> Result<TestResult, TestError> {
         // Create VM for regular tests
-        let env = Rc::new(Environment::new());
+        let env = {
+            let global_env = Environment::new();
+
+            // Load built-in procedures into global environment
+            let builtins = crate::builtins::create_builtins();
+            for (name, value) in builtins {
+                global_env.define(name, value);
+            }
+
+            Rc::new(global_env)
+        };
         let mut vm = VM::new_with_env(env.clone(), false);
 
         // Parse and expand macros, capturing errors as output

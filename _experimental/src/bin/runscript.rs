@@ -16,12 +16,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
         eprintln!("Usage: {} <mode> <file.scm>", args[0]);
-        eprintln!("Modes: ast, stackast, bytecode, superast, superstackast");
+        eprintln!("Modes: ast, bytecode, superast, superstackast");
         std::process::exit(1);
     }
 
     let mode = &args[1];
-        let filename = &args[2];
+    let filename = &args[2];
     let source = fs::read_to_string(filename)?;
 
     println!("=== RUNSCRIPT ===");
@@ -82,38 +82,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             println!("=== FINAL RESULT ===");
             println!("Direct AST: {:?}", result);
-        }
-
-        "stackast" => {
-            println!("=== STACK-BASED AST INTERPRETATION ===");
-
-            // Expand macros for AST interpretation
-            let mut macro_expander = MacroExpander::new(env.clone());
-            macro_expander.load_prelude()?;
-
-            let mut expanded_exprs = Vec::new();
-            for expr in &expressions {
-                let expanded = macro_expander.expand(expr)?;
-                expanded_exprs.push(expanded);
-            }
-
-            println!("=== MACRO-EXPANDED AST ===");
-            for (i, expr) in expanded_exprs.iter().enumerate() {
-                println!("Expanded {}: {:?}", i, expr);
-            }
-            println!();
-
-            // Evaluate with stack-based AST interpreter
-            let mut vm = VM::new_stack_ast_interpreter(env.clone());
-            let mut result = Value::Integer(0);
-
-            for expanded_expr in &expanded_exprs {
-                result = vm.evaluate_ast_stack(expanded_expr)?;
-                println!("Stack AST evaluation result: {:?}", result);
-            }
-
-            println!("=== FINAL RESULT ===");
-            println!("Stack-based AST: {:?}", result);
         }
 
         "bytecode" => {
@@ -254,8 +222,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("=== FINAL RESULT ===");
             println!("ProcessedAST Result: {:?}", result);
         }
-
-
 
         _ => {
             eprintln!(

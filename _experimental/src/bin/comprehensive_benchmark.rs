@@ -171,45 +171,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
 
-    // 2. Stack-based AST Interpretation Benchmark
-    println!("=== 2. STACK-BASED AST INTERPRETATION ===");
-    let mut stack_ast_times = Vec::new();
-    let mut stack_ast_result = Value::Integer(0);
-    let mut stack_ast_success = false;
-
-    match (|| -> Result<(), Box<dyn std::error::Error>> {
-        for i in 0..ITERATIONS {
-            let start = Instant::now();
-            let mut vm = VM::new_stack_ast_interpreter(env.clone());
-            stack_ast_result = vm.evaluate_ast_stack(&combined_program)?;
-            let elapsed = start.elapsed();
-            stack_ast_times.push(elapsed);
-            if i == 0 {
-                println!("First result: {:?}", stack_ast_result);
-            }
-        }
-        Ok(())
-    })() {
-        Ok(()) => {
-            stack_ast_success = true;
-            let stack_ast_avg =
-                stack_ast_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
-            let stack_ast_min = stack_ast_times.iter().min().unwrap();
-            let stack_ast_max = stack_ast_times.iter().max().unwrap();
-            println!(
-                "Stack AST - Avg: {:?}, Min: {:?}, Max: {:?}",
-                stack_ast_avg, stack_ast_min, stack_ast_max
-            );
-        }
-        Err(e) => {
-            println!("Stack-based AST evaluation failed: {}", e);
-            println!("Continuing with other interpreters...");
-        }
-    }
-    println!();
-
-    // 3. Bytecode Benchmark
-    println!("=== 3. BYTECODE EVALUATION ===");
+    // 2. Bytecode Benchmark
+    println!("=== 2. BYTECODE EVALUATION ===");
     let mut compile_times = Vec::new();
     let mut bytecode_times = Vec::new();
     let mut bytecode_result = Value::Integer(0);
@@ -273,8 +236,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
 
-    // 4. ProcessedAST Compilation + Direct Evaluation Benchmark
-    println!("=== 4. PROCESSED AST DIRECT EVALUATION ===");
+    // 3. ProcessedAST Compilation + Direct Evaluation Benchmark
+    println!("=== 3. PROCESSED AST DIRECT EVALUATION ===");
     let mut super_direct_compile_times = Vec::new();
     let mut super_direct_exec_times = Vec::new();
     let mut super_direct_result = ProcessedValue::Integer(0);
@@ -342,8 +305,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
 
-    // 5. ProcessedAST Compilation + Stack Evaluation Benchmark
-    println!("=== 5. PROCESSED AST STACK EVALUATION ===");
+    // 4. ProcessedAST Compilation + Stack Evaluation Benchmark
+    println!("=== 4. PROCESSED AST STACK EVALUATION ===");
     let mut super_stack_exec_times = Vec::new();
     let mut super_stack_result = ProcessedValue::Integer(0);
     let mut super_stack_final_vm = None;
@@ -436,11 +399,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("Direct AST result: FAILED");
     }
-    if stack_ast_success {
-        println!("Stack AST result: {:?}", stack_ast_result);
-    } else {
-        println!("Stack AST result: FAILED");
-    }
     if bytecode_success {
         println!("Bytecode result: {:?}", bytecode_result);
     } else {
@@ -464,8 +422,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Find a baseline from successful interpreters
     let baseline = if ast_success {
         Some(ast_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32)
-    } else if stack_ast_success {
-        Some(stack_ast_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32)
     } else if !bytecode_times.is_empty() {
         Some(bytecode_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32)
     } else {
@@ -480,35 +436,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("1. Direct AST:           FAILED");
         }
 
-        if stack_ast_success {
-            let stack_ast_avg =
-                stack_ast_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
-            println!(
-                "2. Stack AST:            {:?} ({:.2}x vs baseline)",
-                stack_ast_avg,
-                stack_ast_avg.as_nanos() as f64 / baseline_time.as_nanos() as f64
-            );
-        } else {
-            println!("2. Stack AST:            FAILED");
-        }
-
         if bytecode_success && !bytecode_times.is_empty() {
             let bytecode_avg =
                 bytecode_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
             let compile_avg = compile_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
             println!(
-                "3. Bytecode (exec only): {:?} ({:.2}x vs baseline)",
+                "2. Bytecode (exec only): {:?} ({:.2}x vs baseline)",
                 bytecode_avg,
                 bytecode_avg.as_nanos() as f64 / baseline_time.as_nanos() as f64
             );
             println!(
-                "4. Bytecode (total):     {:?} ({:.2}x vs baseline)",
+                "3. Bytecode (total):     {:?} ({:.2}x vs baseline)",
                 compile_avg + bytecode_avg,
                 (compile_avg + bytecode_avg).as_nanos() as f64 / baseline_time.as_nanos() as f64
             );
         } else {
-            println!("3. Bytecode (exec only): FAILED");
-            println!("4. Bytecode (total):     FAILED");
+            println!("2. Bytecode (exec only): FAILED");
+            println!("3. Bytecode (total):     FAILED");
         }
 
         if super_direct_success && !super_direct_exec_times.is_empty() {
@@ -519,38 +463,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .sum::<std::time::Duration>()
                 / ITERATIONS as u32;
             println!(
-                "5. SuperVM Direct (exec): {:?} ({:.2}x vs baseline)",
+                "4. SuperVM Direct (exec): {:?} ({:.2}x vs baseline)",
                 super_direct_avg,
                 super_direct_avg.as_nanos() as f64 / baseline_time.as_nanos() as f64
             );
             println!(
-                "6. SuperVM Direct (total): {:?} ({:.2}x vs baseline)",
+                "5. SuperVM Direct (total): {:?} ({:.2}x vs baseline)",
                 processed_compile_avg + super_direct_avg,
                 (processed_compile_avg + super_direct_avg).as_nanos() as f64
                     / baseline_time.as_nanos() as f64
             );
         } else {
-            println!("5. SuperVM Direct (exec): FAILED");
-            println!("6. SuperVM Direct (total): FAILED");
+            println!("4. SuperVM Direct (exec): FAILED");
+            println!("5. SuperVM Direct (total): FAILED");
         }
 
         if super_stack_success && !super_stack_exec_times.is_empty() {
             let super_stack_avg =
                 super_stack_exec_times.iter().sum::<std::time::Duration>() / ITERATIONS as u32;
             println!(
-                "7. SuperVM Stack (exec):  {:?} ({:.2}x vs baseline)",
+                "6. SuperVM Stack (exec):  {:?} ({:.2}x vs baseline)",
                 super_stack_avg,
                 super_stack_avg.as_nanos() as f64 / baseline_time.as_nanos() as f64
             );
             println!(
-                "8. SuperVM Stack (total): {:?} ({:.2}x vs baseline)",
+                "7. SuperVM Stack (total): {:?} ({:.2}x vs baseline)",
                 processed_compile_avg + super_stack_avg,
                 (processed_compile_avg + super_stack_avg).as_nanos() as f64
                     / baseline_time.as_nanos() as f64
             );
         } else {
-            println!("7. SuperVM Stack (exec):  FAILED");
-            println!("8. SuperVM Stack (total): FAILED");
+            println!("6. SuperVM Stack (exec):  FAILED");
+            println!("7. SuperVM Stack (total): FAILED");
         }
     } else {
         println!("All interpreters failed - no performance comparison available");

@@ -611,37 +611,6 @@ impl MacroExpander {
         }
     }
 
-    /// Expand a macro with given arguments
-    fn expand_macro(
-        &mut self,
-        macro_def: &MacroDefinition,
-        args: &[Value],
-    ) -> Result<Value, MacroError> {
-        // Reconstruct the full macro call for pattern matching
-        let mut full_call = vec![Value::Symbol(macro_def.name.clone())];
-        full_call.extend_from_slice(args);
-
-        // Convert to a single List value for pattern matching
-        let call_as_list = Value::List(full_call);
-
-        // Try each rule in order until one matches
-        for rule in macro_def.rules.iter() {
-            if let Ok(bindings) = self.match_pattern(
-                &rule.pattern,
-                std::slice::from_ref(&call_as_list),
-                &macro_def.literals,
-            ) {
-                return self.instantiate_template(&rule.template, &bindings);
-            }
-        }
-
-        Err(MacroError(format!(
-            "No matching pattern for macro {} with {} arguments",
-            macro_def.name,
-            args.len()
-        )))
-    }
-
     /// Match a pattern against arguments
     fn match_pattern(
         &self,
@@ -1175,7 +1144,6 @@ impl MacroExpander {
         self.gensym_counter += 1;
         format!("{}$gen${}", base, self.gensym_counter)
     }
-
     // **SIMPLIFIED:** No complex hygiene tracking needed for R7RS RESTRICTED implementation
 
     /// **R7RS COMPLIANT:** Validate pattern variables are used consistently in templates
@@ -1268,17 +1236,19 @@ impl MacroExpander {
                 }
 
                 if let Some(&pattern_depth) = pattern_vars.get(name) {
-                    // **PHASE 2:** Allow pattern_depth > template_depth for nested ellipsis
-                    // Example: ((x ...) ...) in pattern, (x ... ...) in template is valid
-                    // This works because pattern matching wraps values in Lists at higher depths
-                    if pattern_depth < depth {
+                    // **R7RS COMPLIANT:** Template depth must be >= pattern depth
+                    // - Template depth > pattern depth is VALID (causes replication)
+                    // - Template depth < pattern depth is INVALID (cannot flatten)
+                    // Example VALID: pattern x at depth 1, template x at depth 2 (replicates)
+                    // Example INVALID: pattern x at depth 2, template x at depth 1 (cannot flatten)
+                    if depth < pattern_depth {
                         return Err(MacroError(format!(
-                            "R7RS RESTRICTED: Pattern variable '{}' used at inconsistent ellipsis depth \
-                             (pattern depth: {}, template depth: {}) - template depth cannot exceed pattern depth",
+                            "Pattern variable '{}' used at inconsistent ellipsis depth \
+                             (pattern depth: {}, template depth: {}) - template depth cannot be less than pattern depth",
                             name, pattern_depth, depth
                         )));
                     }
-                    // pattern_depth >= depth is OK (Phase 2 handles unwrapping)
+                    // depth >= pattern_depth is OK per R7RS
                 }
                 // Variables not in pattern_vars are literals from the template (OK)
                 Ok(())
@@ -1387,26 +1357,6 @@ impl MacroExpander {
         self.expand_macro_impl(macro_def, args)
     }
 
-    /// **R7RS HYGIENE (Simplified):** Generate fresh name if this is a binding form
-    /// Detects common binding forms and generates fresh names to prevent capture
-    fn maybe_generate_fresh_binding(&self, name: &str) -> Result<String, MacroError> {
-        // **R7RS HYGIENE:** Check if this identifier is in a binding position
-        // For simplified hygiene, we detect common binding forms
-        const BINDING_FORMS: &[&str] = &[
-            "lambda",
-            "let",
-            "let*",
-            "letrec",
-            "letrec*",
-            "define",
-            "define-syntax",
-            "do",
-        ];
-
-        // **SIMPLIFIED:** Just return original name - basic macro hygiene is handled by template expansion
-        Ok(name.to_string())
-    }
-
     /// **R7RS HYGIENE:** Implementation of macro expansion (called by hygienic wrapper)
     fn expand_macro_impl(
         &mut self,
@@ -1437,28 +1387,6 @@ impl MacroExpander {
             macro_def.name,
             args.len()
         )))
-    }
-
-    /// **R7RS HYGIENE (Simplified):** Check if identifier is in a binding position
-    /// Used to detect when macro-introduced identifiers need fresh names
-    fn is_binding_context(&self, expr: &Value, position: usize) -> bool {
-        match expr {
-            Value::List(items) if !items.is_empty() => {
-                match &items[0] {
-                    Value::Symbol(s) => match s.as_str() {
-                        // Forms where position 1 introduces bindings
-                        "define" | "define-syntax" => position == 1,
-                        // Forms where position 1 is a binding list
-                        "let" | "let*" | "letrec" | "letrec*" => position == 1,
-                        // Lambda parameters are in position 1
-                        "lambda" => position == 1,
-                        _ => false,
-                    },
-                    _ => false,
-                }
-            }
-            _ => false,
-        }
     }
 
     /// Get the count of known macro symbols
@@ -1619,32 +1547,87 @@ mod tests {
 
     #[test]
     fn test_pattern_variable_depth_mismatch_error() {
+        // INVALID: Pattern variable at depth 2, used at depth 1 in template
+        // This tries to flatten nested structure which violates R7RS
         let env = Rc::new(Environment::new());
         let mut expander = MacroExpander::new(env);
-
-        // Pattern variable at depth 0, used at depth 1 in template
-        let bad_macro = "(define-syntax bad (syntax-rules () ((bad x) (list x ...))))";
+        let bad_macro =
+            "(define-syntax invalid (syntax-rules () ((invalid ((x ...) ...)) (list x ...))))";
         let ast = crate::parser::parse(bad_macro).unwrap();
         let result = expander.expand(&ast);
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        println!("Error 1: {}", err_msg);
         assert!(
-            err_msg.contains("inconsistent ellipsis depth") || err_msg.contains("R7RS RESTRICTED")
+            result.is_err(),
+            "Should reject template depth < pattern depth"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        println!("Error: {}", err_msg);
+        assert!(
+            err_msg.contains("template depth cannot be less than pattern depth"),
+            "Error message should mention R7RS depth constraint"
+        );
+    }
+
+    #[test]
+    fn test_r7rs_ellipsis_depth_valid_cases() {
+        // VALID: Pattern variable at depth 0, used at depth 1 in template
+        // R7RS allows this: replicates the single value
+        // Example: (replicate 5) => (5 5 5 ...) if template repeats it
+        let env1 = Rc::new(Environment::new());
+        let mut expander1 = MacroExpander::new(env1);
+        let valid_macro1 = "(define-syntax replicate-single (syntax-rules () ((replicate-single x) (list x x x))))";
+        let ast1 = crate::parser::parse(valid_macro1).unwrap();
+        let result1 = expander1.expand(&ast1);
+        assert!(
+            result1.is_ok(),
+            "VALID case failed: pattern depth 0, template depth 0 (simple substitution)"
         );
 
-        // Pattern variable at depth 1, used at depth 0 in template
+        // VALID: Pattern variable at depth 1, used at depth 1 in template
+        // Simple case: same depth, standard ellipsis usage
         let env2 = Rc::new(Environment::new());
         let mut expander2 = MacroExpander::new(env2);
-        let bad_macro2 = "(define-syntax bad2 (syntax-rules () ((bad2 (x ...)) (list x))))";
-        let ast2 = crate::parser::parse(bad_macro2).unwrap();
+        let valid_macro2 =
+            "(define-syntax simple (syntax-rules () ((simple (x ...) body) (list x ... body))))";
+        let ast2 = crate::parser::parse(valid_macro2).unwrap();
         let result2 = expander2.expand(&ast2);
-        assert!(result2.is_err());
-        let err_msg2 = format!("{}", result2.unwrap_err());
-        println!("Error 2: {}", err_msg2);
         assert!(
-            err_msg2.contains("inconsistent ellipsis depth")
-                || err_msg2.contains("R7RS RESTRICTED")
+            result2.is_ok(),
+            "VALID case failed: pattern depth 1, template depth 1"
+        );
+
+        // VALID: Pattern variable at depth 1, used at depth 2 in template
+        // This causes replication: each x gets duplicated
+        // Example: (replicate 1 2 3) => ((1 1) (2 2) (3 3))
+        let env3 = Rc::new(Environment::new());
+        let mut expander3 = MacroExpander::new(env3);
+        let valid_macro3 =
+            "(define-syntax replicate (syntax-rules () ((replicate x ...) ((x x) ...))))";
+        let ast3 = crate::parser::parse(valid_macro3).unwrap();
+        let result3 = expander3.expand(&ast3);
+        assert!(
+            result3.is_ok(),
+            "VALID case failed: pattern depth 1, template depth 2 (replication)"
+        );
+    }
+
+    #[test]
+    fn test_r7rs_ellipsis_depth_invalid_flattening() {
+        // INVALID: Pattern variable at depth 2, used at depth 1 in template
+        // This tries to flatten nested structure which violates R7RS
+        let env = Rc::new(Environment::new());
+        let mut expander = MacroExpander::new(env);
+        let invalid_macro =
+            "(define-syntax invalid (syntax-rules () ((invalid ((x ...) ...)) (list x ...))))";
+        let ast = crate::parser::parse(invalid_macro).unwrap();
+        let result = expander.expand(&ast);
+        assert!(
+            result.is_err(),
+            "INVALID case should fail: pattern depth 2, template depth 1 (flattening)"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("template depth cannot be less than pattern depth"),
+            "Error message should mention depth constraint violation"
         );
     }
 

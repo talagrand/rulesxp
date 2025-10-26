@@ -2521,7 +2521,10 @@ mod comprehensive_evaluator_tests {
             // Test that underscore in QUOTED template is allowed
             TestEnvironment(vec![
                 scheme_macro!("(define-syntax underscore-quote (syntax-rules () ((foo _) '_)))"),
-                ("(underscore-quote ignored)", Success(ProcessedValue::OwnedSymbol("_".to_string()))),
+                (
+                    "(underscore-quote ignored)",
+                    Success(ProcessedValue::OwnedSymbol("_".to_string())),
+                ),
             ]),
         ];
         run_tests_in_environment(test_cases);
@@ -3366,4 +3369,3 @@ mod comprehensive_evaluator_tests {
         run_tests_in_environment(test_cases);
     }
 }
-

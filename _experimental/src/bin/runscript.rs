@@ -16,18 +16,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
         eprintln!("Usage: {} <mode> <file.scm>", args[0]);
+        eprintln!("   or: {} <mode> -c \"<expression>\"", args[0]);
         eprintln!("Modes: ast, bytecode, superast, superstackast");
         std::process::exit(1);
     }
 
     let mode = &args[1];
-    let filename = &args[2];
-    let source = fs::read_to_string(filename)?;
+    let (source, source_desc) = if &args[2] == "-c" {
+        if args.len() < 4 {
+            eprintln!("Usage: {} <mode> -c \"<expression>\"", args[0]);
+            std::process::exit(1);
+        }
+        (args[3].clone(), format!("command line: {}", args[3]))
+    } else {
+        let filename = &args[2];
+        (fs::read_to_string(filename)?, format!("file: {}", filename))
+    };
 
     println!("=== RUNSCRIPT ===");
     println!("Mode: {}", mode);
-    println!("File: {}", filename);
-    println!("Source: {}", source.trim());
+    println!("Source: {}", source_desc);
+    println!("Content: {}", source.trim());
     println!();
 
     // Parse the source

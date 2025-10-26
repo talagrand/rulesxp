@@ -132,20 +132,60 @@ struct ProcessedCompiler<'arena> {
     builtins: HashMap<StringSymbol, ProcessedValue<'arena>>,
 }
 
+/// Custom builtin function registration for ProcessedAST
+/// Allows clients to register their own builtin functions that will be resolved at compile time
+pub struct CustomBuiltin {
+    pub name: String,
+    pub arity: ProcessedArity,
+    pub func: for<'a> fn(
+        &SchemeStringInterner,
+        &[ProcessedValue<'a>],
+    ) -> Result<ProcessedValue<'a>, crate::vm::RuntimeError>,
+}
+
 impl ProcessedAST {
     /// Create a new ProcessedAST from a Value expression
     pub fn compile(value: &Value) -> Result<Self, ProcessedCompileError> {
         Self::compile_multiple(&[value.clone()])
     }
 
+    /// Create a new ProcessedAST with custom builtin functions
+    pub fn compile_with_builtins(
+        value: &Value,
+        custom_builtins: &[CustomBuiltin],
+    ) -> Result<Self, ProcessedCompileError> {
+        Self::compile_multiple_with_builtins(&[value.clone()], custom_builtins)
+    }
+
     /// Create a new ProcessedAST from multiple Value expressions
     pub fn compile_multiple(values: &[Value]) -> Result<Self, ProcessedCompileError> {
+        Self::compile_multiple_with_builtins(values, &[])
+    }
+
+    /// Create a new ProcessedAST from multiple Value expressions with custom builtins
+    pub fn compile_multiple_with_builtins(
+        values: &[Value],
+        custom_builtins: &[CustomBuiltin],
+    ) -> Result<Self, ProcessedCompileError> {
         let mut interner = SchemeStringInterner::new();
         let arena = Bump::new();
 
         // Create builtin function mappings directly (avoiding borrowing issues)
         let mut builtins = HashMap::new();
         Self::populate_builtins(&mut builtins, &mut interner);
+
+        // Register custom builtins
+        for custom in custom_builtins {
+            let name_sym = interner.get_or_intern(&custom.name);
+            builtins.insert(
+                name_sym,
+                ProcessedValue::ResolvedBuiltin {
+                    name: name_sym,
+                    arity: custom.arity,
+                    func: custom.func,
+                },
+            );
+        }
 
         let mut compiler = ProcessedCompiler {
             interner: &mut interner,
@@ -895,11 +935,22 @@ impl<'arena> ProcessedCompiler<'arena> {
             }
         };
 
-        // Zero bindings is an error (R7RS)
+        // **R7RS COMPLIANCE:** Empty bindings are legal - (letrec () body) → (begin body)
         if bindings_list.is_empty() {
-            return Err(ProcessedCompileError::new(
-                "letrec requires at least one binding".to_string(),
-            ));
+            // Compile body expressions with implicit begin
+            if elements.len() == 3 {
+                // Single body expression
+                return Ok(self.compile_value(&elements[2])?);
+            } else {
+                // Multiple body expressions - wrap in begin
+                let body_exprs: Result<Vec<_>, _> = elements[2..]
+                    .iter()
+                    .map(|expr| self.compile_value(expr))
+                    .collect();
+                return Ok(ProcessedValue::Begin {
+                    expressions: Cow::Borrowed(self.arena.alloc_slice_fill_iter(body_exprs?)),
+                });
+            }
         }
 
         let mut compiled_bindings = Vec::new();

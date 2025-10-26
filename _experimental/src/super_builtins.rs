@@ -16,7 +16,7 @@ pub type SchemeStringInterner = StringInterner<DefaultBackend>;
 
 /// ProcessedValue enum - arena-allocated values for SuperVM
 /// **R7RS RESTRICTED:** Numeric tower simplified to i64 integers only for implementation simplicity
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum ProcessedValue<'ast> {
     /// Boolean values (#t and #f)
     Boolean(bool),
@@ -102,6 +102,35 @@ pub enum ProcessedValue<'ast> {
 
     /// Unspecified value (returned by some procedures)
     Unspecified,
+}
+
+impl<'ast> std::fmt::Debug for ProcessedValue<'ast> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProcessedValue::Boolean(b) => write!(f, "Boolean({})", b),
+            ProcessedValue::Integer(i) => write!(f, "Integer({})", i),
+            ProcessedValue::String(s) => write!(f, "String({:?})", s),
+            ProcessedValue::OwnedString(s) => write!(f, "OwnedString({:?})", s),
+            ProcessedValue::Symbol(s) => write!(f, "Symbol({:?})", s),
+            ProcessedValue::OwnedSymbol(s) => write!(f, "OwnedSymbol({:?})", s),
+            ProcessedValue::List(_) => write!(f, "List(<items>)"),
+            ProcessedValue::ResolvedBuiltin { name, arity, .. } => {
+                write!(f, "ResolvedBuiltin(name: {:?}, arity: {:?})", name, arity)
+            }
+            ProcessedValue::Procedure { params, .. } => {
+                write!(f, "Procedure(params: {:?})", params)
+            }
+            ProcessedValue::If { .. } => write!(f, "If(<test> <then> <else>)"),
+            ProcessedValue::Define { name, .. } => write!(f, "Define(name: {:?})", name),
+            ProcessedValue::Set { name, .. } => write!(f, "Set(name: {:?})", name),
+            ProcessedValue::Lambda { params, .. } => write!(f, "Lambda(params: {:?})", params),
+            ProcessedValue::Quote { .. } => write!(f, "Quote(<value>)"),
+            ProcessedValue::Begin { .. } => write!(f, "Begin(<expressions>)"),
+            ProcessedValue::Letrec { .. } => write!(f, "Letrec(<bindings> <body>)"),
+            ProcessedValue::LetrecStar { .. } => write!(f, "LetrecStar(<bindings> <body>)"),
+            ProcessedValue::Unspecified => write!(f, "Unspecified"),
+        }
+    }
 }
 
 /// Procedure arity specification for ProcessedValue

@@ -174,13 +174,16 @@ fn number(input: &str) -> IResult<&str, Value> {
 }
 
 /// Parse string literals
-/// **R7RS DEVIATION:** Basic escape sequences only (\" and \\)
-/// Missing: \n, \t, \r, \x, \u escape sequences
+/// **R7RS RESTRICTED:** Basic escape sequences supported: \", \\, \n, \t, \r
+/// Missing: \x, \u escape sequences for arbitrary Unicode points
 fn string_literal(input: &str) -> IResult<&str, Value> {
     let (input, _) = char('"')(input)?;
     let (input, content) = many0(alt((
         map(tag("\\\""), |_| '"'),
         map(tag("\\\\"), |_| '\\'),
+        map(tag("\\n"), |_| '\n'),
+        map(tag("\\t"), |_| '\t'),
+        map(tag("\\r"), |_| '\r'),
         none_of("\""),
     )))(input)?;
     let (input, _) = char('"')(input)?;

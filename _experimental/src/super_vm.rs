@@ -52,15 +52,16 @@
 
 use crate::processed_ast::{ProcessedAST, StringSymbol};
 use crate::processed_env::ProcessedEnvironment;
-use crate::super_builtins::ProcessedValue;
+use crate::super_builtins::{ProcessedValue, SchemeStringInterner};
 use crate::vm::{RuntimeError, StackFrame};
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::rc::Rc;
 use string_interner::Symbol;
 
-/// **ENHANCED STACK TRACE CAPTURE:** Includes argument values from shared buffer
+/// **ENHANCED STACK TRACE CAPTURE:** Includes argument values and decoded symbols
+/// Format matches bytecode VM style: one frame per line with depth + operation + parameters
 fn capture_stack_trace<'ast>(
+    interner: &SchemeStringInterner,
     stack: &[SuperEvalFrame<'ast>],
     shared_args_buffer: &[ProcessedValue<'ast>],
 ) -> Vec<StackFrame> {
@@ -68,70 +69,205 @@ fn capture_stack_trace<'ast>(
         .iter()
         .enumerate()
         .map(|(depth, frame)| {
+            // Helper to resolve symbol names - returns Cow to avoid allocation when symbol exists
+            let resolve_sym = |sym: &StringSymbol| -> std::borrow::Cow<'static, str> {
+                interner
+                    .resolve(*sym)
+                    .map(|s| std::borrow::Cow::Owned(s.to_string()))
+                    .unwrap_or_else(|| {
+                        std::borrow::Cow::Owned(format!("symbol_{}", sym.to_usize()))
+                    })
+            };
+
             let function_name = match frame {
                 SuperEvalFrame::Evaluate {
                     expr,
                     in_tail_position,
                 } => {
-                    // Enhanced expression analysis with context
-                    let tail_info = if *in_tail_position { " (tail)" } else { "" };
+                    let tail = if *in_tail_position { " [TAIL]" } else { "" };
                     match expr {
-                        ProcessedValue::List(list) if !list.is_empty() => match &list[0] {
-                            ProcessedValue::ResolvedBuiltin { name, .. } => {
-                                let args_preview = if list.len() > 1 {
-                                    format!(" with {} args", list.len() - 1)
+                        ProcessedValue::List(list) if !list.is_empty() => {
+                            // Helper to format argument expressions
+                            let format_args = || {
+                                if list.len() > 1 {
+                                    let mut arg_lines = Vec::new();
+                                    for arg in list.iter().skip(1) {
+                                        let arg_str = match arg {
+                                            ProcessedValue::Integer(n) => n.to_string(),
+                                            ProcessedValue::Boolean(b) => {
+                                                format!("#{}", if *b { "t" } else { "f" })
+                                            }
+                                            ProcessedValue::Symbol(s) => resolve_sym(s).to_string(),
+                                            ProcessedValue::String(s) => {
+                                                let sv = interner.resolve(*s).unwrap_or("<string>");
+                                                format!("\"{}\"", sv)
+                                            }
+                                            ProcessedValue::List(l) if l.is_empty() => {
+                                                "'()".to_string()
+                                            }
+                                            ProcessedValue::List(l) => match &l[0] {
+                                                ProcessedValue::Symbol(s) => {
+                                                    format!("({} ...)", resolve_sym(s))
+                                                }
+                                                ProcessedValue::ResolvedBuiltin {
+                                                    name, ..
+                                                } => {
+                                                    format!(
+                                                        "({} ...)",
+                                                        interner
+                                                            .resolve(*name)
+                                                            .unwrap_or("<builtin>")
+                                                    )
+                                                }
+                                                _ => "(<expr> ...)".to_string(),
+                                            },
+                                            ProcessedValue::Lambda { params, .. } => {
+                                                format!("(λ [{}])", params.len())
+                                            }
+                                            ProcessedValue::Quote { .. } => "'<expr>".to_string(),
+                                            _ => "<expr>".to_string(),
+                                        };
+                                        arg_lines.push(format!("    • {}", arg_str));
+                                    }
+                                    if arg_lines.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!("\n{}", arg_lines.join("\n"))
+                                    }
                                 } else {
                                     String::new()
-                                };
-                                Some(format!("builtin:{:?}{}{}", name, args_preview, tail_info))
+                                }
+                            };
+
+                            match &list[0] {
+                                ProcessedValue::ResolvedBuiltin { name, arity, .. } => {
+                                    let builtin_name =
+                                        interner.resolve(*name).unwrap_or("<builtin>");
+                                    let argc = list.len() - 1;
+                                    let arity_str = match arity {
+                                        crate::super_builtins::ProcessedArity::Exact(n) => {
+                                            format!("expected={}", n)
+                                        }
+                                        crate::super_builtins::ProcessedArity::AtLeast(n) => {
+                                            format!("expected={}+", n)
+                                        }
+                                        crate::super_builtins::ProcessedArity::Range(min, max) => {
+                                            format!("expected={}-{}", min, max)
+                                        }
+                                    };
+                                    Some(format!(
+                                        "EVAL CALL {} argc={} {}{}{}",
+                                        builtin_name,
+                                        argc,
+                                        arity_str,
+                                        tail,
+                                        format_args()
+                                    ))
+                                }
+                                ProcessedValue::Symbol(sym) => {
+                                    let name = resolve_sym(sym);
+                                    let argc = list.len() - 1;
+                                    Some(format!(
+                                        "EVAL CALL {} argc={}{}{}",
+                                        name,
+                                        argc,
+                                        tail,
+                                        format_args()
+                                    ))
+                                }
+                                ProcessedValue::Procedure {
+                                    params, variadic, ..
+                                } => {
+                                    let arity = if *variadic {
+                                        format!("{}+", params.len())
+                                    } else {
+                                        params.len().to_string()
+                                    };
+                                    let argc = list.len() - 1;
+                                    Some(format!(
+                                        "EVAL CALL λ argc={} expected={}{}{}",
+                                        argc,
+                                        arity,
+                                        tail,
+                                        format_args()
+                                    ))
+                                }
+                                _ => Some(format!("EVAL EXPR{}", tail)),
                             }
-                            ProcessedValue::Symbol(sym) => {
-                                let args_preview = if list.len() > 1 {
-                                    format!(" with {} args", list.len() - 1)
-                                } else {
-                                    String::new()
-                                };
-                                Some(format!(
-                                    "call:symbol_{}{}{}",
-                                    sym.to_usize(),
-                                    args_preview,
-                                    tail_info
-                                ))
-                            }
-                            ProcessedValue::Procedure { params, .. } => {
-                                let arity_info = format!(" (arity {})", params.len());
-                                let args_preview = if list.len() > 1 {
-                                    format!(" with {} args", list.len() - 1)
-                                } else {
-                                    String::new()
-                                };
-                                Some(format!("lambda{}{}{}", arity_info, args_preview, tail_info))
-                            }
-                            _ => Some(format!("expression{}", tail_info)),
-                        },
-                        ProcessedValue::Lambda { params, .. } => {
-                            Some(format!("lambda-def (arity {}){}", params.len(), tail_info))
                         }
-                        ProcessedValue::If { .. } => Some(format!("if{}", tail_info)),
+                        ProcessedValue::Lambda {
+                            params, variadic, ..
+                        } => {
+                            let arity = if *variadic {
+                                format!("{}+", params.len())
+                            } else {
+                                params.len().to_string()
+                            };
+                            let param_names: Vec<_> =
+                                params.iter().map(|p| resolve_sym(p).to_string()).collect();
+                            Some(format!(
+                                "EVAL LAMBDA params=[{}] arity={}{}",
+                                param_names.join(" "),
+                                arity,
+                                tail
+                            ))
+                        }
+                        ProcessedValue::If {
+                            test,
+                            then_branch,
+                            else_branch,
+                        } => {
+                            let has_else = else_branch.is_some();
+                            Some(format!("EVAL IF has_else={}{}", has_else, tail))
+                        }
                         ProcessedValue::Begin { expressions } => {
-                            Some(format!("begin ({} exprs){}", expressions.len(), tail_info))
+                            Some(format!("EVAL BEGIN exprs={}{}", expressions.len(), tail))
                         }
                         ProcessedValue::Define { name, .. } => {
-                            Some(format!("define:symbol_{}{}", name.to_usize(), tail_info))
+                            let name_str = resolve_sym(name);
+                            Some(format!("EVAL DEFINE {}{}", name_str, tail))
                         }
-                        ProcessedValue::Integer(n) => Some(format!("literal:{}", n)),
-                        ProcessedValue::Boolean(b) => Some(format!("literal:{}", b)),
+                        ProcessedValue::Set { name, .. } => {
+                            let name_str = resolve_sym(name);
+                            Some(format!("EVAL SET! {}{}", name_str, tail))
+                        }
+                        ProcessedValue::Letrec { bindings, .. } => {
+                            let binding_names: Vec<_> = bindings
+                                .iter()
+                                .map(|(n, _)| resolve_sym(n).to_string())
+                                .collect();
+                            Some(format!(
+                                "EVAL LETREC bindings=[{}]{}",
+                                binding_names.join(" "),
+                                tail
+                            ))
+                        }
+                        ProcessedValue::LetrecStar { bindings, .. } => {
+                            let binding_names: Vec<_> = bindings
+                                .iter()
+                                .map(|(n, _)| resolve_sym(n).to_string())
+                                .collect();
+                            Some(format!(
+                                "EVAL LETREC* bindings=[{}]{}",
+                                binding_names.join(" "),
+                                tail
+                            ))
+                        }
+                        ProcessedValue::Integer(n) => Some(format!("EVAL LITERAL {}", n)),
+                        ProcessedValue::Boolean(b) => {
+                            Some(format!("EVAL LITERAL #{}", if *b { "t" } else { "f" }))
+                        }
+                        ProcessedValue::String(s) => {
+                            let str_val = interner.resolve(*s).unwrap_or("<string>");
+                            Some(format!("EVAL LITERAL \"{}\"", str_val))
+                        }
                         ProcessedValue::Symbol(sym) => {
-                            Some(format!("var:symbol_{}", sym.to_usize()))
+                            let name = resolve_sym(sym);
+                            Some(format!("EVAL VAR {}", name))
                         }
-                        _ => Some(format!("expression{}", tail_info)),
+                        ProcessedValue::Quote { .. } => Some(format!("EVAL QUOTE{}", tail)),
+                        _ => Some(format!("EVAL EXPR{}", tail)),
                     }
-                }
-                SuperEvalFrame::FreezeAndEvaluate {
-                    in_tail_position, ..
-                } => {
-                    let tail_info = if *in_tail_position { " (tail)" } else { "" };
-                    Some(format!("freeze-and-evaluate{}", tail_info))
                 }
                 SuperEvalFrame::Apply {
                     args_ref,
@@ -139,84 +275,275 @@ fn capture_stack_trace<'ast>(
                     is_tail_position,
                     ..
                 } => {
-                    let tail_info = if *is_tail_position { " (tail)" } else { "" };
+                    let tail = if *is_tail_position { " [TAIL]" } else { "" };
+                    let total_args = args_ref.end_index - args_ref.start_index - 1;
+                    // eval_index points to next arg to evaluate AFTER current
+                    // When we're evaluating arg N, eval_index = N+1
+                    // So completed evaluations = eval_index - 2 (one for function, one for current arg being evaluated)
+                    // But if eval_index <= 1, we're still evaluating the function itself
+                    let evaled = if *eval_index <= 1 {
+                        0
+                    } else {
+                        eval_index.saturating_sub(2)
+                    };
 
-                    // Show evaluated arguments from shared buffer
-                    let mut arg_details = Vec::new();
-                    for i in (args_ref.start_index + 1)..(args_ref.start_index + eval_index) {
-                        if let Some(arg_val) = shared_args_buffer.get(i) {
-                            let arg_preview = match arg_val {
-                                ProcessedValue::Integer(n) => format!("{}", n),
-                                ProcessedValue::Boolean(b) => format!("{}", b),
-                                ProcessedValue::ResolvedBuiltin { name, .. } => {
-                                    format!("#{:?}", name)
+                    // Get function name and arity info
+                    let (func_name, expected_arity) = if let Some(func) =
+                        shared_args_buffer.get(args_ref.start_index)
+                    {
+                        match func {
+                            ProcessedValue::ResolvedBuiltin { name, arity, .. } => {
+                                let builtin_name = interner.resolve(*name).unwrap_or("<builtin>");
+                                let arity_str = match arity {
+                                    crate::super_builtins::ProcessedArity::Exact(n) => {
+                                        format!("arity={}", n)
+                                    }
+                                    crate::super_builtins::ProcessedArity::AtLeast(n) => {
+                                        format!("arity={}+", n)
+                                    }
+                                    crate::super_builtins::ProcessedArity::Range(min, max) => {
+                                        format!("arity={}-{}", min, max)
+                                    }
+                                };
+                                (builtin_name.to_string(), Some(arity_str))
+                            }
+                            ProcessedValue::Symbol(s) => (resolve_sym(s).to_string(), None),
+                            ProcessedValue::Procedure {
+                                params, variadic, ..
+                            } => {
+                                let arity = if *variadic {
+                                    format!("{}+", params.len())
+                                } else {
+                                    params.len().to_string()
+                                };
+                                ("λ".to_string(), Some(format!("arity={}", arity)))
+                            }
+                            _ => ("?".to_string(), None),
+                        }
+                    } else {
+                        ("?".to_string(), None)
+                    };
+
+                    // Build detailed argument list - one per line when formatted
+                    let mut args_lines = Vec::new();
+
+                    // Evaluated arguments (completed) - from index 1 to eval_index - 2
+                    let completed_end = if *eval_index >= 2 {
+                        args_ref.start_index + eval_index - 1
+                    } else {
+                        args_ref.start_index + 1
+                    };
+                    for i in (args_ref.start_index + 1)..completed_end {
+                        if let Some(arg) = shared_args_buffer.get(i) {
+                            let preview = match arg {
+                                ProcessedValue::Integer(n) => n.to_string(),
+                                ProcessedValue::Boolean(b) => {
+                                    format!("#{}", if *b { "t" } else { "f" })
                                 }
-                                ProcessedValue::Procedure { .. } => "λ".to_string(),
-                                ProcessedValue::Symbol(s) => format!("${}", s.to_usize()),
-                                _ => "?".to_string(),
+                                ProcessedValue::String(s) => {
+                                    let str_val = interner.resolve(*s).unwrap_or("<string>");
+                                    format!("\"{}\"", str_val)
+                                }
+                                ProcessedValue::Symbol(s) => {
+                                    format!("'{}", resolve_sym(s))
+                                }
+                                ProcessedValue::ResolvedBuiltin { name, .. } => {
+                                    let builtin_name =
+                                        interner.resolve(*name).unwrap_or("<builtin>");
+                                    format!("#<builtin:{}>", builtin_name)
+                                }
+                                ProcessedValue::Procedure {
+                                    params, variadic, ..
+                                } => {
+                                    let arity = if *variadic {
+                                        format!("{}+", params.len())
+                                    } else {
+                                        params.len().to_string()
+                                    };
+                                    format!("#<λ arity={}>", arity)
+                                }
+                                ProcessedValue::List(l) => {
+                                    if l.is_empty() {
+                                        "'()".to_string()
+                                    } else {
+                                        format!("#<list len={}>", l.len())
+                                    }
+                                }
+                                ProcessedValue::Unspecified => "#<unspecified>".to_string(),
+                                _ => "#<value>".to_string(),
                             };
-                            arg_details.push(arg_preview);
+                            args_lines.push(format!("    ✓ {}", preview));
                         }
                     }
 
-                    let progress = if arg_details.is_empty() {
-                        format!(
-                            " ({}/{} args evaluated)",
-                            eval_index.saturating_sub(1), // -1 because index 0 is the function
-                            args_ref.end_index - args_ref.start_index - 1
-                        )
+                    // Currently evaluating argument (in progress) - at index eval_index - 1
+                    if *eval_index >= 1 && *eval_index <= args_ref.end_index - args_ref.start_index
+                    {
+                        let current_index = args_ref.start_index + eval_index - 1;
+                        if let Some(arg_expr) = shared_args_buffer.get(current_index) {
+                            let expr_preview = match arg_expr {
+                                ProcessedValue::Integer(n) => n.to_string(),
+                                ProcessedValue::Boolean(b) => {
+                                    format!("#{}", if *b { "t" } else { "f" })
+                                }
+                                ProcessedValue::String(s) => {
+                                    let str_val = interner.resolve(*s).unwrap_or("<string>");
+                                    format!("\"{}\"", str_val)
+                                }
+                                ProcessedValue::Symbol(s) => resolve_sym(s).to_string(),
+                                ProcessedValue::List(l) if !l.is_empty() => match &l[0] {
+                                    ProcessedValue::Symbol(s) => {
+                                        let fname = resolve_sym(s);
+                                        if l.len() == 1 {
+                                            format!("({})", fname)
+                                        } else {
+                                            format!("({} ...)", fname)
+                                        }
+                                    }
+                                    ProcessedValue::ResolvedBuiltin { name, .. } => {
+                                        let fname = interner.resolve(*name).unwrap_or("<builtin>");
+                                        if l.len() == 1 {
+                                            format!("({})", fname)
+                                        } else {
+                                            format!("({} ...)", fname)
+                                        }
+                                    }
+                                    _ => format!("(<expr> ... len={})", l.len() - 1),
+                                },
+                                ProcessedValue::List(_) => "'()".to_string(),
+                                ProcessedValue::Lambda { params, .. } => {
+                                    format!("(lambda [{}] ...)", params.len())
+                                }
+                                ProcessedValue::If { .. } => "(if ...)".to_string(),
+                                ProcessedValue::Begin { expressions } => {
+                                    format!("(begin {} exprs)", expressions.len())
+                                }
+                                ProcessedValue::Quote { .. } => "(quote ...)".to_string(),
+                                _ => "<expr>".to_string(),
+                            };
+                            args_lines.push(format!("    ⟳ {}", expr_preview));
+                        }
+                    }
+
+                    // Unevaluated arguments (not yet started) - from index eval_index onwards
+                    for i in (args_ref.start_index + eval_index)..(args_ref.end_index) {
+                        if let Some(arg_expr) = shared_args_buffer.get(i) {
+                            let expr_preview = match arg_expr {
+                                ProcessedValue::Integer(n) => n.to_string(),
+                                ProcessedValue::Boolean(b) => {
+                                    format!("#{}", if *b { "t" } else { "f" })
+                                }
+                                ProcessedValue::String(s) => {
+                                    let str_val = interner.resolve(*s).unwrap_or("<string>");
+                                    format!("\"{}\"", str_val)
+                                }
+                                ProcessedValue::Symbol(s) => resolve_sym(s).to_string(),
+                                ProcessedValue::List(l) if !l.is_empty() => {
+                                    // Show the operation for function calls
+                                    match &l[0] {
+                                        ProcessedValue::Symbol(s) => {
+                                            let fname = resolve_sym(s);
+                                            if l.len() == 1 {
+                                                format!("({})", fname)
+                                            } else {
+                                                format!("({} ...)", fname)
+                                            }
+                                        }
+                                        ProcessedValue::ResolvedBuiltin { name, .. } => {
+                                            let fname =
+                                                interner.resolve(*name).unwrap_or("<builtin>");
+                                            if l.len() == 1 {
+                                                format!("({})", fname)
+                                            } else {
+                                                format!("({} ...)", fname)
+                                            }
+                                        }
+                                        _ => format!("(<expr> ... len={})", l.len() - 1),
+                                    }
+                                }
+                                ProcessedValue::List(_) => "'()".to_string(),
+                                ProcessedValue::Lambda { params, .. } => {
+                                    format!("(lambda [{}] ...)", params.len())
+                                }
+                                ProcessedValue::If { .. } => "(if ...)".to_string(),
+                                ProcessedValue::Begin { expressions } => {
+                                    format!("(begin {} exprs)", expressions.len())
+                                }
+                                ProcessedValue::Quote { .. } => "(quote ...)".to_string(),
+                                _ => "<expr>".to_string(),
+                            };
+                            args_lines.push(format!("    ⧗ {}", expr_preview));
+                        }
+                    }
+
+                    // Format: APPLY func (evaled/total) [arity_info] [TAIL]
+                    let arity_info = expected_arity
+                        .map(|a| format!(" {}", a))
+                        .unwrap_or_default();
+                    let args_summary = if args_lines.is_empty() {
+                        String::new()
                     } else {
-                        format!(
-                            " ({}/{} args: [{}])",
-                            eval_index.saturating_sub(1),
-                            args_ref.end_index - args_ref.start_index - 1,
-                            arg_details.join(", ")
-                        )
+                        format!("\n{}", args_lines.join("\n"))
                     };
 
-                    Some(format!("apply{}{}", progress, tail_info))
+                    Some(format!(
+                        "APPLY {} ({}/{}){}{}\n{}",
+                        func_name, evaled, total_args, arity_info, tail, args_summary
+                    ))
                 }
                 SuperEvalFrame::IfContinue {
                     in_tail_position, ..
                 } => {
-                    let tail_info = if *in_tail_position { " (tail)" } else { "" };
-                    Some(format!("if-continue{}", tail_info))
+                    let tail = if *in_tail_position { " [TAIL]" } else { "" };
+                    Some(format!("IF-CONT{}", tail))
                 }
                 SuperEvalFrame::BeginContinue {
                     expressions,
                     current_index,
                     in_tail_position,
                 } => {
-                    let tail_info = if *in_tail_position { " (tail)" } else { "" };
-                    let progress = format!(" ({}/{} exprs)", current_index, expressions.len());
-                    Some(format!("begin-continue{}{}", progress, tail_info))
+                    let tail = if *in_tail_position { " [TAIL]" } else { "" };
+                    Some(format!(
+                        "BEGIN-CONT {}/{}{}",
+                        current_index,
+                        expressions.len(),
+                        tail
+                    ))
                 }
                 SuperEvalFrame::DefineStore { name, .. } => {
-                    Some(format!("define-store:symbol_{}", name.to_usize()))
+                    let name_str = resolve_sym(name);
+                    Some(format!("DEFINE-STORE {}", name_str))
                 }
                 SuperEvalFrame::DefineRedefineStore { name, .. } => {
-                    Some(format!("define-redefine-store:symbol_{}", name.to_usize()))
+                    let name_str = resolve_sym(name);
+                    Some(format!("DEFINE-REDEFINE {}", name_str))
                 }
                 SuperEvalFrame::SetStore { name, .. } => {
-                    Some(format!("set-store:symbol_{}", name.to_usize()))
+                    let name_str = resolve_sym(name);
+                    Some(format!("SET-STORE {}", name_str))
                 }
                 SuperEvalFrame::LetrecDefineStore { name, .. } => {
-                    Some(format!("letrec-define-store:symbol_{}", name.to_usize()))
+                    let name_str = resolve_sym(name);
+                    Some(format!("LETREC-STORE {}", name_str))
                 }
                 SuperEvalFrame::ProcedureCall { is_tail_call, .. } => {
-                    let tail_info = if *is_tail_call { " (tail)" } else { "" };
-                    Some(format!("procedure-call{}", tail_info))
+                    let tail = if *is_tail_call { " [TAIL]" } else { "" };
+                    Some(format!("PROC-CALL{}", tail))
                 }
-                SuperEvalFrame::RestoreEnv { .. } => Some("restore-env".to_string()),
+                SuperEvalFrame::RestoreEnv { .. } => Some("RESTORE-ENV".to_string()),
                 SuperEvalFrame::LetrecContinue {
                     bindings,
                     current_index,
                     in_tail_position,
                     ..
                 } => {
-                    let tail_info = if *in_tail_position { " (tail)" } else { "" };
-                    let progress = format!(" ({}/{} bindings)", current_index, bindings.len());
-                    Some(format!("letrec-continue{}{}", progress, tail_info))
+                    let tail = if *in_tail_position { " [TAIL]" } else { "" };
+                    Some(format!(
+                        "LETREC-CONT {}/{}{}",
+                        current_index,
+                        bindings.len(),
+                        tail
+                    ))
                 }
                 SuperEvalFrame::LetrecStarContinue {
                     bindings,
@@ -224,16 +551,26 @@ fn capture_stack_trace<'ast>(
                     in_tail_position,
                     ..
                 } => {
-                    let tail_info = if *in_tail_position { " (tail)" } else { "" };
-                    let progress = format!(" ({}/{} bindings)", current_index, bindings.len());
-                    Some(format!("letrec*-continue{}{}", progress, tail_info))
+                    let tail = if *in_tail_position { " [TAIL]" } else { "" };
+                    Some(format!(
+                        "LETREC*-CONT {}/{}{}",
+                        current_index,
+                        bindings.len(),
+                        tail
+                    ))
+                }
+                SuperEvalFrame::FreezeAndEvaluate {
+                    in_tail_position, ..
+                } => {
+                    let tail = if *in_tail_position { " [TAIL]" } else { "" };
+                    Some(format!("FREEZE-EVAL{}", tail))
                 }
             };
 
             StackFrame {
                 function_name,
                 instruction_pointer: depth,
-                source_location: None, // Could be enhanced with actual source locations
+                source_location: None,
             }
         })
         .collect()
@@ -241,26 +578,124 @@ fn capture_stack_trace<'ast>(
 
 /// **ERROR AUGMENTATION:** Add stack trace to RuntimeError from SuperEvalFrame stack
 fn augment_error_with_stack_trace<'ast>(
+    interner: &SchemeStringInterner,
     mut error: RuntimeError,
     stack: &[SuperEvalFrame<'ast>],
     shared_args_buffer: &[ProcessedValue<'ast>],
+    env: &ProcessedEnvironment<'ast>,
 ) -> RuntimeError {
     if error.stack_trace.is_empty() {
-        error.stack_trace = capture_stack_trace(stack, shared_args_buffer);
+        error.stack_trace = capture_stack_trace(interner, stack, shared_args_buffer);
+    }
+    if error.environment_snapshot.is_none() {
+        error.environment_snapshot = Some(format_environment_snapshot(interner, env, 5));
     }
     error
 }
 
 /// **DIRECT ERROR CREATION:** Create RuntimeError with stack trace in one call
+/// **ENVIRONMENT SNAPSHOT:** Format environment bindings for error context
+fn format_environment_snapshot<'ast>(
+    interner: &SchemeStringInterner,
+    env: &ProcessedEnvironment<'ast>,
+    max_depth: usize,
+) -> String {
+    let mut output = String::new();
+    let mut current_env = Some(env);
+    let mut depth = 0;
+
+    while let Some(env_ref) = current_env {
+        if depth >= max_depth {
+            output.push_str(&format!("  ... ({} more levels)\n", depth));
+            break;
+        }
+
+        let bindings_ref = env_ref.bindings();
+        if !bindings_ref.is_empty() {
+            output.push_str(&format!(
+                "  Level {} ({} bindings):\n",
+                depth,
+                bindings_ref.len()
+            ));
+
+            // Sort bindings by name for consistent output
+            let mut sorted_bindings: Vec<_> = bindings_ref.iter().collect();
+            sorted_bindings.sort_by_key(|(sym, _)| interner.resolve(**sym).unwrap_or(""));
+
+            for &(symbol, binding_value) in sorted_bindings.iter().take(20) {
+                let name = interner.resolve(*symbol).unwrap_or("<unknown>");
+                let value_str = match binding_value.borrow().value() {
+                    Ok(value) => match value {
+                        ProcessedValue::Integer(n) => format!("{}", n),
+                        ProcessedValue::Boolean(b) => format!("#{}", if b { "t" } else { "f" }),
+                        ProcessedValue::String(s) => {
+                            let str_val = interner.resolve(s).unwrap_or("<string>");
+                            format!("\"{}\"", str_val)
+                        }
+                        ProcessedValue::Symbol(s) => {
+                            let sym_name = interner.resolve(s).unwrap_or("<symbol>");
+                            format!("'{}", sym_name)
+                        }
+                        ProcessedValue::Procedure {
+                            params, variadic, ..
+                        } => {
+                            let arity = if variadic {
+                                format!("{}+", params.len())
+                            } else {
+                                params.len().to_string()
+                            };
+                            format!("#<λ arity={}>", arity)
+                        }
+                        ProcessedValue::ResolvedBuiltin { name, .. } => {
+                            let builtin_name = interner.resolve(name).unwrap_or("<builtin>");
+                            format!("#<builtin:{}>", builtin_name)
+                        }
+                        ProcessedValue::List(l) => {
+                            if l.is_empty() {
+                                "'()".to_string()
+                            } else {
+                                format!("#<list len={}>", l.len())
+                            }
+                        }
+                        ProcessedValue::Unspecified => "#<unspecified>".to_string(),
+                        _ => "#<value>".to_string(),
+                    },
+                    Err(_) => "#<uninitialized>".to_string(),
+                };
+                output.push_str(&format!("    {} = {}\n", name, value_str));
+            }
+
+            if bindings_ref.len() > 20 {
+                output.push_str(&format!(
+                    "    ... ({} more bindings)\n",
+                    bindings_ref.len() - 20
+                ));
+            }
+        }
+
+        current_env = env_ref.parent().map(|rc| rc.as_ref());
+        depth += 1;
+    }
+
+    if output.is_empty() {
+        output.push_str("  <empty environment>\n");
+    }
+
+    output
+}
+
 fn create_runtime_error_with_stack_trace<'ast, S: Into<String>>(
+    interner: &SchemeStringInterner,
     message: S,
     stack: &[SuperEvalFrame<'ast>],
     shared_args_buffer: &[ProcessedValue<'ast>],
+    env: &ProcessedEnvironment<'ast>,
 ) -> RuntimeError {
     RuntimeError {
         message: message.into(),
-        stack_trace: capture_stack_trace(stack, shared_args_buffer),
+        stack_trace: capture_stack_trace(interner, stack, shared_args_buffer),
         source_location: None,
+        environment_snapshot: Some(format_environment_snapshot(interner, env, 5)),
     }
 }
 
@@ -282,7 +717,7 @@ struct ApplyArgsRef {
 }
 
 /// Stack frame for stack-based evaluation
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum SuperEvalFrame<'ast> {
     /// Evaluate an expression and push result
     Evaluate {
@@ -577,11 +1012,7 @@ impl SuperDirectVM {
                 // Direct symbol lookup - no string conversion needed
                 match env.lookup(*sym) {
                     Ok(Some(value)) => Ok(value.clone()),
-                    Ok(None) => Err(RuntimeError::new(format!(
-                        "Unbound variable: {} (symbol_{})",
-                        sym_name,
-                        sym.to_usize()
-                    ))),
+                    Ok(None) => Err(RuntimeError::new(format!("Unbound variable: {}", sym_name))),
                     Err(e) => Err(RuntimeError::new(format!(
                         "{} for variable: {}",
                         e, sym_name
@@ -683,6 +1114,11 @@ impl SuperDirectVM {
                         message: format!("Error in set!: {}", e),
                         stack_trace: vec![],
                         source_location: None,
+                        environment_snapshot: Some(format_environment_snapshot(
+                            &self.ast.interner,
+                            &env,
+                            5,
+                        )),
                     }),
                 }
             }
@@ -717,7 +1153,7 @@ impl SuperDirectVM {
                     let mut first_non_define = None;
                     for (i, expr) in expressions.iter().enumerate() {
                         if let ProcessedValue::Define { name, value } = expr {
-                            define_tuples.push((*name, value));
+                            define_tuples.push((*name, (*value).clone()));
                         } else {
                             first_non_define = Some(i);
                             break;
@@ -745,8 +1181,8 @@ impl SuperDirectVM {
 
                         // Create environment with all bindings uninitialized
                         let letrec_env_rc = ProcessedEnvironment::create_with_bindings(
+                            symbols,
                             Some(Rc::clone(&env)),
-                            &symbols,
                         );
 
                         // **LETREC* SEMANTICS:** Initialize bindings left-to-right
@@ -754,6 +1190,7 @@ impl SuperDirectVM {
                         for (name, value_expr) in define_tuples.iter() {
                             let init_value =
                                 self.evaluate_direct(value_expr, Rc::clone(&letrec_env_rc))?;
+
                             // Initialize this binding before evaluating next init expression
                             letrec_env_rc
                                 .initialize_binding(*name, init_value)
@@ -793,17 +1230,12 @@ impl SuperDirectVM {
             }
             ProcessedValue::Letrec { bindings, body } => {
                 // **NEW IMMUTABLE ARCHITECTURE:** Letrec uses uninitialized bindings for TDZ enforcement
-                // Create HashMap with all bindings uninitialized
-                use crate::processed_env::BindingValue;
-                let mut letrec_bindings = HashMap::new();
-
-                for (name, _) in bindings.iter() {
-                    letrec_bindings.insert(*name, BindingValue::new_uninitialized());
-                }
+                // Collect all binding names
+                let symbols: Vec<StringSymbol> = bindings.iter().map(|(name, _)| *name).collect();
 
                 // Create letrec environment with all uninitialized bindings
                 let letrec_env_rc =
-                    ProcessedEnvironment::with_bindings(Some(Rc::clone(&env)), letrec_bindings);
+                    ProcessedEnvironment::create_with_bindings(symbols, Some(Rc::clone(&env)));
 
                 // Evaluate all init expressions and initialize the bindings
                 for (name, init_expr) in bindings.iter() {
@@ -835,7 +1267,7 @@ impl SuperDirectVM {
 
                 // Create environment with all bindings uninitialized
                 let letrec_env_rc =
-                    ProcessedEnvironment::create_with_bindings(Some(Rc::clone(&env)), &symbols);
+                    ProcessedEnvironment::create_with_bindings(symbols, Some(Rc::clone(&env)));
 
                 // Initialize bindings sequentially left-to-right
                 // Each init can reference previously initialized bindings
@@ -1100,17 +1532,27 @@ impl SuperStackVM {
                                     result = value.clone();
                                 }
                                 Ok(None) => {
+                                    let sym_name = self
+                                        .ast
+                                        .interner
+                                        .resolve(sym)
+                                        .map(|s| s.to_string())
+                                        .unwrap_or_else(|| format!("symbol_{}", sym.to_usize()));
                                     return Err(create_runtime_error_with_stack_trace(
-                                        format!("Unbound variable: symbol_{}", sym.to_usize()),
+                                        &self.ast.interner,
+                                        format!("Unbound variable: {}", sym_name),
                                         &stack,
                                         &shared_args_buffer,
+                                        &current_env,
                                     ));
                                 }
                                 Err(e) => {
                                     return Err(create_runtime_error_with_stack_trace(
+                                        &self.ast.interner,
                                         e,
                                         &stack,
                                         &shared_args_buffer,
+                                        &current_env,
                                     ));
                                 }
                             }
@@ -1209,11 +1651,7 @@ impl SuperStackVM {
                                 continue;
                             } else {
                                 // Internal define outside Begin/Lambda body - should be caught by body processing
-                                return Err(create_runtime_error_with_stack_trace(
-                                    "Define outside of body start - should be caught by begin/lambda processing",
-                                    &stack,
-                                    &shared_args_buffer,
-                                ));
+                                return Err(create_runtime_error_with_stack_trace(&self.ast.interner, "Define outside of body start - should be caught by begin/lambda processing", &stack, &shared_args_buffer, &current_env));
                             }
                         }
 
@@ -1265,7 +1703,7 @@ impl SuperStackVM {
                                 let mut first_non_define = None;
                                 for (i, expr) in expressions.iter().enumerate() {
                                     if let ProcessedValue::Define { name, value } = expr {
-                                        define_tuples.push((*name, value.clone()));
+                                        define_tuples.push((*name, (*value).clone()));
                                     } else {
                                         first_non_define = Some(i);
                                         break;
@@ -1285,6 +1723,7 @@ impl SuperStackVM {
                                     for symbol in &symbols {
                                         if !seen_symbols.insert(*symbol) {
                                             return Err(create_runtime_error_with_stack_trace(
+                                                &self.ast.interner,
                                                 format!(
                                                     "Duplicate definition in body: {}",
                                                     self.ast
@@ -1294,14 +1733,13 @@ impl SuperStackVM {
                                                 ),
                                                 &stack,
                                                 &shared_args_buffer,
+                                                &current_env,
                                             ));
                                         }
-                                    }
-
-                                    // Create environment with all bindings uninitialized
+                                    } // Create environment with all bindings uninitialized
                                     let letrec_env_rc = ProcessedEnvironment::create_with_bindings(
+                                        symbols,
                                         Some(Rc::clone(&current_env)),
-                                        &symbols,
                                     );
 
                                     // Push body evaluation first (bottom of stack, evaluated last)
@@ -1358,16 +1796,13 @@ impl SuperStackVM {
                         }
                         ProcessedValue::Letrec { bindings, body } => {
                             // **NEW ARCHITECTURE:** Letrec with uninitialized bindings
-                            use crate::processed_env::BindingValue;
+                            // Collect all binding names
+                            let symbols: Vec<StringSymbol> =
+                                bindings.iter().map(|(name, _)| *name).collect();
 
-                            let mut letrec_bindings = HashMap::new();
-                            for (name, _) in bindings.iter() {
-                                letrec_bindings.insert(*name, BindingValue::new_uninitialized());
-                            }
-
-                            let letrec_env_rc = ProcessedEnvironment::with_bindings(
+                            let letrec_env_rc = ProcessedEnvironment::create_with_bindings(
+                                symbols,
                                 Some(Rc::clone(&current_env)),
-                                letrec_bindings,
                             );
 
                             // Push evaluation continuation for letrec
@@ -1392,17 +1827,19 @@ impl SuperStackVM {
                             for symbol in &symbols {
                                 if !seen.insert(symbol) {
                                     return Err(create_runtime_error_with_stack_trace(
+                                        &self.ast.interner,
                                         format!("Duplicate binding in letrec*: {:?}", symbol),
                                         &stack,
                                         &shared_args_buffer,
+                                        &current_env,
                                     ));
                                 }
                             }
 
                             // Create environment with all bindings uninitialized
                             let letrec_env_rc = ProcessedEnvironment::create_with_bindings(
+                                symbols,
                                 Some(Rc::clone(&current_env)),
-                                &symbols,
                             );
 
                             // Push evaluation continuation for letrec*
@@ -1469,15 +1906,16 @@ impl SuperStackVM {
                         // **R7RS COMPLIANCE:** Check for illegal defines mixed with expressions
                         if matches!(expressions[current_index], ProcessedValue::Define { .. }) {
                             return Err(create_runtime_error_with_stack_trace(
+                                &self.ast.interner,
                                 format!(
                                     "Definitions must come before expressions in body: {}",
                                     expressions[current_index].display(&self.ast.interner)
                                 ),
                                 &stack,
                                 &shared_args_buffer,
+                                &current_env,
                             ));
                         }
-
                         if current_index == expressions.len() - 1 {
                             // Last expression - evaluate in appropriate position
                             let last_expr = expressions[current_index].clone();
@@ -1522,12 +1960,13 @@ impl SuperStackVM {
                         shared_args_buffer[result_index] = result.clone();
                     } else {
                         return Err(create_runtime_error_with_stack_trace(
+                            &self.ast.interner,
                             "Apply: Invalid eval_index state",
                             &stack,
                             &shared_args_buffer,
+                            &current_env,
                         ));
                     }
-
                     if eval_index >= args_len {
                         // All arguments evaluated - now apply the function
                         let func_value = &shared_args_buffer[args_ref.start_index];
@@ -1549,9 +1988,11 @@ impl SuperStackVM {
                                     }
                                     Err(e) => {
                                         return Err(augment_error_with_stack_trace(
+                                            &self.ast.interner,
                                             e,
                                             &stack,
                                             &shared_args_buffer,
+                                            &current_env,
                                         ))
                                     }
                                 }
@@ -1568,32 +2009,30 @@ impl SuperStackVM {
                                 // Check argument count (exact match for non-variadic functions)
                                 if !*variadic && evaluated_args.len() != params.len() {
                                     return Err(augment_error_with_stack_trace(
-                                        RuntimeError::new(format!(
-                                            "Arity mismatch: expected {} arguments, got {} for procedure {}",
-                                            params.len(),
-                                            evaluated_args.len(),
-                                            func_value.display(&self.ast.interner)
-                                        )),
-                                        &stack,
-                                        &shared_args_buffer,
-                                    ));
+                                    &self.ast.interner,
+                                    RuntimeError::new(format!(
+                                        "Arity mismatch: expected {} arguments, got {} for procedure {}",
+                                        params.len(),
+                                        evaluated_args.len(),
+                                        func_value.display(&self.ast.interner)
+                                    )),
+                                    &stack,
+                                    &shared_args_buffer, &current_env));
                                 }
 
                                 if *variadic && evaluated_args.len() < params.len() - 1 {
                                     return Err(augment_error_with_stack_trace(
-                                        RuntimeError::new(format!(
-                                            "Arity mismatch: expected at least {} arguments, got {} for procedure {}",
-                                            params.len() - 1,
-                                            evaluated_args.len(),
-                                            func_value.display(&self.ast.interner)
-                                        )),
-                                        &stack,
-                                        &shared_args_buffer,
-                                    ));
-                                }
-
-                                // Create environment extending closure's captured environment
-                                // **NEW IMMUTABLE ARCHITECTURE:** Use extend() for each parameter
+                                    &self.ast.interner,
+                                    RuntimeError::new(format!(
+                                        "Arity mismatch: expected at least {} arguments, got {} for procedure {}",
+                                        params.len() - 1,
+                                        evaluated_args.len(),
+                                        func_value.display(&self.ast.interner)
+                                    )),
+                                    &stack,
+                                    &shared_args_buffer, &current_env));
+                                } // Create environment extending closure's captured environment
+                                  // **NEW IMMUTABLE ARCHITECTURE:** Use extend() for each parameter
                                 let mut call_env_rc = Rc::clone(closure_env);
 
                                 // Bind parameters to arguments using extend()
@@ -1601,13 +2040,11 @@ impl SuperStackVM {
                                     // **R7RS RESTRICTED:** Only fully variadic functions supported (lambda args body)
                                     // **R7RS RESTRICTED:** Dot notation (lambda (a b . rest) body) not supported
                                     if params.len() != 1 {
-                                        return Err(augment_error_with_stack_trace(
-                                            RuntimeError::new(
+                                        return Err(augment_error_with_stack_trace(&self.ast.interner, RuntimeError::new(
                                                 "Dot notation (mixed variadic) not supported - use fully variadic form".to_string(),
                                             ),
                                             &stack,
-                                            &shared_args_buffer,
-                                        ));
+                                            &shared_args_buffer, &current_env));
                                     }
                                     // Fully variadic: (lambda args body) - all args go into a list
                                     let args_list =
@@ -1624,6 +2061,14 @@ impl SuperStackVM {
                                 // **TAIL CALL DETECTION:** Use the is_tail_position flag from Apply frame
                                 let is_tail_call = is_tail_position;
 
+                                // **ENVIRONMENT RESTORATION:** For non-tail calls, restore environment after procedure returns
+                                // Tail calls don't need restoration as they never return to this point
+                                if !is_tail_call {
+                                    stack.push(SuperEvalFrame::RestoreEnv {
+                                        env: Rc::clone(&current_env),
+                                    });
+                                }
+
                                 stack.push(SuperEvalFrame::ProcedureCall {
                                     body: (*body).clone(),
                                     call_env: call_env_rc,
@@ -1635,12 +2080,14 @@ impl SuperStackVM {
                             }
                             _ => {
                                 return Err(augment_error_with_stack_trace(
+                                    &self.ast.interner,
                                     RuntimeError::new(format!(
                                         "Type error: not a procedure: {}",
                                         func_value.display(&self.ast.interner)
                                     )),
                                     &stack,
                                     &shared_args_buffer,
+                                    &current_env,
                                 ))
                             }
                         }
@@ -1709,9 +2156,11 @@ impl SuperStackVM {
                         }
                         Err(e) => {
                             return Err(create_runtime_error_with_stack_trace(
+                                &self.ast.interner,
                                 e,
                                 &stack,
                                 &shared_args_buffer,
+                                &current_env,
                             ));
                         }
                     }
@@ -1727,9 +2176,11 @@ impl SuperStackVM {
                         }
                         Err(e) => {
                             return Err(create_runtime_error_with_stack_trace(
+                                &self.ast.interner,
                                 format!("Error in set!: {}", e),
                                 &stack,
                                 &shared_args_buffer,
+                                &current_env,
                             ));
                         }
                     }
@@ -1741,9 +2192,11 @@ impl SuperStackVM {
                     // Initialize the binding
                     if let Err(e) = letrec_env.initialize_binding(name, eval_value) {
                         return Err(create_runtime_error_with_stack_trace(
+                            &self.ast.interner,
                             e,
                             &stack,
                             &shared_args_buffer,
+                            &current_env,
                         ));
                     }
 
@@ -1768,7 +2221,13 @@ impl SuperStackVM {
 
                         // Initialize binding (transition from Uninitialized to Initialized)
                         env.initialize_binding(*name, result.clone()).map_err(|e| {
-                            create_runtime_error_with_stack_trace(e, &stack, &shared_args_buffer)
+                            create_runtime_error_with_stack_trace(
+                                &self.ast.interner,
+                                e,
+                                &stack,
+                                &shared_args_buffer,
+                                &current_env,
+                            )
                         })?;
                     }
 
@@ -1787,11 +2246,11 @@ impl SuperStackVM {
 
                         // Evaluate the init expression in the LETREC environment (not parent)
                         // This enables true parallel binding and mutual recursion
+                        current_env = Rc::clone(&env);
                         stack.push(SuperEvalFrame::Evaluate {
                             expr: init_expr.clone(),
                             in_tail_position: false,
                         });
-                        current_env = Rc::clone(&env);
                         continue;
                     } else {
                         // All bindings evaluated - cells have been updated, ready to evaluate body
@@ -1818,7 +2277,13 @@ impl SuperStackVM {
 
                         // Initialize binding (transition from Uninitialized to Initialized)
                         env.initialize_binding(*name, result.clone()).map_err(|e| {
-                            create_runtime_error_with_stack_trace(e, &stack, &shared_args_buffer)
+                            create_runtime_error_with_stack_trace(
+                                &self.ast.interner,
+                                e,
+                                &stack,
+                                &shared_args_buffer,
+                                &current_env,
+                            )
                         })?;
                     }
 

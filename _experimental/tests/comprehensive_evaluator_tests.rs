@@ -1427,6 +1427,28 @@ mod comprehensive_evaluator_tests {
                 ("(multiply-add 7 6 5)", success(47)), // 7*6 + 5 = 47
                 ("(complex-calc 3 4 5)", success(50)), // 9 + 16 + 25 = 50
             ]),
+
+            // From debug_stack_ast.scm - complex nested arithmetic expression
+            TestEnvironment(vec![
+                test_setup!("(define square (lambda (x) (* x x)))"),
+                test_setup!("(define multiply-add (lambda (a b c) (+ (* a b) c)))"),
+                test_setup!(r#"(define complex-calc (lambda (x y z) (+ (* x x) (* y y) (* z z))))"#),
+                (
+                    r#"
+                    (+ (square 10)
+                       (multiply-add 7 6 5)
+                       (* 42 42 42)
+                       (square 15)
+                       (complex-calc 3 4 5)
+                       (* (+ 10 20) (- 50 25))
+                       (if (< 10 20) 1000 500)
+                       (if (> (square 5) 20) 2000 1000)
+                       (multiply-add 100 200 300))
+                "#,
+                    success(98560i64),
+                ), // 100+47+74088+225+50+750+1000+2000+20300 = 98560
+            ]),
+
             // === MACRO DEFINITION TESTS ===
             // From test_simple_macros.scm - basic macro definition and usage
             TestEnvironment(vec![
@@ -1468,6 +1490,21 @@ mod comprehensive_evaluator_tests {
                         ((hello) "Hello World!")))
                 "#),
                 ("(hello)", success("Hello World!")),
+            ]),
+
+            // From test_nested_macro.scm - nested pattern matching in macros
+            // **R7RS DEVIATION:** Original test uses equal? as literal keyword, which breaks function resolution
+            // Modified to use = for comparison instead
+            TestEnvironment(vec![
+                scheme_macro!(r#"
+                    (define-syntax test-nested-pattern
+                      (syntax-rules (not)
+                        ((test-nested-pattern (not (= a b)))
+                         (not (= a b)))))
+                "#),
+                test_setup!("(define x 10)"),
+                test_setup!("(define y 20)"),
+                ("(test-nested-pattern (not (= x y)))", success(true)),
             ]),
 
             // From test_hygienic_macros.scm - hygienic macro expansion and variable capture prevention
@@ -1618,10 +1655,10 @@ mod comprehensive_evaluator_tests {
     fn test_letrec_comprehensive() {
         let test_cases = vec![
             // ...existing test environments...
-            // === R7RS 5.2.2: letrec with zero bindings (should error) ===
+            // === R7RS 5.2.2: letrec with zero bindings (valid per R7RS) ===
             TestEnvironment(vec![(
                 "(letrec () 42)",
-                SpecificError("letrec requires at least one binding"),
+                success(42), // Empty binding list is valid, just evaluates body
             )]),
             // === R7RS 5.2.2: letrec with duplicate variable names (should error) ===
             TestEnvironment(vec![(
@@ -1789,6 +1826,48 @@ mod comprehensive_evaluator_tests {
                                         (if (= n 0) #f (is-even? (- n 1)))))
                              (check-even (lambda (n) (is-even? n))))
                          (check-even 8))"#,
+                success(true),
+            )]),
+            // === LETREC ENVIRONMENT RESTORATION TESTS ===
+            // These tests specifically verify the environment restoration bug fix
+            // Bug was: After nested procedure calls, current_env was not restored
+            // From test_letrec_simple.scm - Basic non-recursive call chain
+            TestEnvironment(vec![(
+                r#"(letrec ((foo (lambda () 42))
+                             (bar (lambda () (foo))))
+                         (bar))"#,
+                success(42),
+            )]),
+            // From test_letrec_if.scm - Letrec with conditional
+            // Tests that parameter bindings are preserved across if evaluation
+            TestEnvironment(vec![(
+                r#"(letrec ((foo (lambda (n) 42))
+                             (bar (lambda (n) 
+                                    (if (= n 0)
+                                        0
+                                        (foo n)))))
+                         (bar 10))"#,
+                success(42),
+            )]),
+            // From test_letrec_nontail.scm - Non-tail call position
+            // Critical test: verifies environment is restored after (foo n) returns
+            TestEnvironment(vec![(
+                r#"(letrec ((foo (lambda (n) 42))
+                             (bar (lambda (n) (+ 1 (foo n)))))
+                         (bar 10))"#,
+                success(43),
+            )]),
+            // Environment restoration with nested procedure calls
+            // This was the actual bug: (newline) call inside is-even? body would
+            // leave current_env at newline's environment instead of restoring
+            TestEnvironment(vec![(
+                r#"(letrec ((helper (lambda (n)
+                                           (if (= n 0)
+                                               #t
+                                               (helper (- n 1)))))
+                             (test-fn (lambda (x)
+                                        (helper x))))
+                         (test-fn 5))"#,
                 success(true),
             )]),
         ];

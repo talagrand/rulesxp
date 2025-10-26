@@ -5,8 +5,8 @@ Runtime error: Runtime error: Undefined variable: undefined-function
   | ;; Test cases for errors and edge cases
   | ^
 
-Stack trace:
-  0: at IP 1 (line 1, col 1)
+Stack trace (depth → operation):
+    1 │ <unknown>
 
 Runtime error: Runtime error: + expects integers, got string
 

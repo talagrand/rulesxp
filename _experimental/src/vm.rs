@@ -8,6 +8,7 @@ pub struct RuntimeError {
     pub message: String,
     pub stack_trace: Vec<StackFrame>,
     pub source_location: Option<SourceLocation>,
+    pub environment_snapshot: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +57,7 @@ impl RuntimeError {
             message: message.into(),
             stack_trace: Vec::new(),
             source_location: None,
+            environment_snapshot: None,
         }
     }
 
@@ -87,18 +89,20 @@ impl std::fmt::Display for RuntimeError {
         }
 
         if !self.stack_trace.is_empty() {
-            writeln!(f, "\nStack trace:")?;
-            for (i, frame) in self.stack_trace.iter().enumerate() {
-                write!(f, "  {}: ", i)?;
+            writeln!(f, "\nStack trace (depth → operation):")?;
+            for frame in self.stack_trace.iter() {
+                write!(f, "  {:3} │ ", frame.instruction_pointer)?;
                 if let Some(name) = &frame.function_name {
-                    write!(f, "in function '{}' ", name)?;
+                    writeln!(f, "{}", name)?;
+                } else {
+                    writeln!(f, "<unknown>")?;
                 }
-                write!(f, "at IP {}", frame.instruction_pointer)?;
-                if let Some(loc) = &frame.source_location {
-                    write!(f, " (line {}, col {})", loc.line, loc.column)?;
-                }
-                writeln!(f)?;
             }
+        }
+
+        if let Some(env) = &self.environment_snapshot {
+            writeln!(f, "\nEnvironment at error:")?;
+            writeln!(f, "{}", env)?;
         }
 
         Ok(())
@@ -903,6 +907,7 @@ impl VM {
                     message: format!("Compile error: {:?}", e),
                     stack_trace: Vec::new(), // No VM stack available during compilation
                     source_location: None,   // No source location available during compilation
+                    environment_snapshot: None,
                 });
             }
         };

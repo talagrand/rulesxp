@@ -88,8 +88,9 @@
 (define (abs x) (if (< x 0) (- x) x))
 (define (max x y) (if (> x y) x y))
 (define (min x y) (if (< x y) x y))
-(define (even? n) (= (modulo n 2) 0))
-(define (odd? n) (not (even? n)))
+;; **R7RS RESTRICTED:** even? and odd? not implemented because modulo is not supported
+;; (define (even? n) (= (modulo n 2) 0))
+;; (define (odd? n) (not (even? n)))
 (define (zero? n) (= n 0))
 (define (positive? n) (> n 0))
 (define (negative? n) (< n 0))

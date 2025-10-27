@@ -210,5 +210,72 @@
 (newline)
 (newline)
 
+
+;; -----------------------------------------------------------------------------
+;; Bug 9: Quoting Permutations
+;;
+;;  - Bug: The expander might confuse a pattern variable with a literal symbol
+;;    of the same name when various forms of quoting are used in the template.
+;;  - Expected Behavior: The macro should correctly distinguish between the
+;;    pattern variable `x` and the literal symbol `x` in all contexts.
+;;    When calling `(test-quoting-a 123)`, `x` is bound to `123`. The template
+;;    should expand `x` to `123`, `'x` to `'x`, and `(quote x)` to `(quote x)`.
+;; -----------------------------------------------------------------------------
+
+(define-syntax test-quoting-a
+  (syntax-rules ()
+    ((_ x)
+     (list 'x x (quote x)))))
+
+(define-syntax test-quoting-b
+  (syntax-rules (y) ;; y is a literal
+    ((_ x y)
+     (list 'x x (quote x) 'y y (quote y)))))
+
+(display "Bug 9: Quoting Permutations")
+(newline)
+(display "  Input: (test-quoting-a 123)")
+(newline)
+(display "  Expected: (x 123 (quote x))")
+(newline)
+(display "  Actual: ")
+(display (test-quoting-a 123))
+(newline)
+
+(display "  Input: (test-quoting-b 456 y)")
+(newline)
+(display "  Expected: (x 456 (quote x) y y (quote y))")
+(newline)
+(display "  Actual: ")
+(display (test-quoting-b 456 y))
+(newline)
+(newline)
+
+
+;; -----------------------------------------------------------------------------
+;; Bug 10: Nested Ellipsis with Quoting
+;;
+;; - Bug: The expander may fail to correctly expand nested ellipses when quoting
+;;   is involved in the template.
+;; - Expected Behavior: The template should correctly expand the nested lists,
+;;   preserving the quoting of the inner elements.
+;; -----------------------------------------------------------------------------
+
+(define-syntax test-nested-ellipsis-quote
+  (syntax-rules ()
+    ((_ ((a b) ...))
+     (list (list (quote a) b) ...))))
+
+(display "Bug 10: Nested Ellipsis with Quoting")
+(newline)
+(display "  Input: (test-nested-ellipsis-quote ((foo 1) (bar 2)))")
+(newline)
+(display "  Expected: ((quote foo) 1) ((quote bar) 2))")
+(newline)
+(display "  Actual: ")
+(display (test-nested-ellipsis-quote ((foo 1) (bar 2))))
+(newline)
+(newline)
+
 (display "--- Test Suite Complete ---")
 (newline)

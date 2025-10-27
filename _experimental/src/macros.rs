@@ -880,6 +880,8 @@ impl MacroExpander {
                     if values.len() == 1 {
                         let value = &values[0];
                         self.track_emitted_macro_symbols(value);
+                        // R7RS: When a pattern variable appears inside a quote,
+                        // it is replaced by the value it's bound to.
                         Ok(value.clone())
                     } else if values.is_empty() {
                         Err(MacroError(format!(
@@ -893,6 +895,7 @@ impl MacroExpander {
                         )))
                     }
                 } else {
+                    // This is a literal symbol from the template
                     if self.known_macro_symbols.contains(name) {
                         self.emitted_macro_symbols.insert(name.clone());
                     }
@@ -904,6 +907,7 @@ impl MacroExpander {
                 Ok(value.clone())
             }
             MacroTemplate::List(sub_templates) => {
+                // Handle `(quote ...)` forms by setting in_quote for recursive call
                 if !in_quote {
                     if let Some(MacroTemplate::Literal(Value::Symbol(s))) = sub_templates.first() {
                         if s == "quote" && sub_templates.len() == 2 {
@@ -916,14 +920,16 @@ impl MacroExpander {
                         }
                     }
                 }
-
                 let mut result = Vec::new();
-                for sub_template in sub_templates {
-                    if !in_quote {
-                        if let MacroTemplate::Ellipsis(ellipsis_sub_template) = sub_template {
-                            let expanded_values =
-                                self.expand_ellipsis(ellipsis_sub_template, bindings)?;
-                            result.extend(expanded_values);
+                let mut i = 0;
+                while i < sub_templates.len() {
+                    let sub_template = &sub_templates[i];
+                    if i + 1 < sub_templates.len() {
+                        if let MacroTemplate::Ellipsis(_) = &sub_templates[i + 1] {
+                            let expanded =
+                                self.expand_ellipsis(sub_template, bindings, in_quote)?;
+                            result.extend(expanded);
+                            i += 2; // Skip template and ellipsis
                             continue;
                         }
                     }
@@ -932,12 +938,16 @@ impl MacroExpander {
                         bindings,
                         in_quote,
                     )?);
+                    i += 1;
                 }
                 Ok(Value::List(result))
             }
             MacroTemplate::Ellipsis(sub_template) => {
+                // This case handles an ellipsis that is not inside a list, which is an error
+                // unless it's a quoted ellipsis like `'(...)`.
                 if in_quote {
-                    let expanded_values = self.expand_ellipsis(sub_template, bindings)?;
+                    // If quoted, expand the ellipsis into a list of values.
+                    let expanded_values = self.expand_ellipsis(sub_template, bindings, true)?;
                     Ok(Value::List(expanded_values))
                 } else {
                     Err(MacroError(
@@ -953,6 +963,7 @@ impl MacroExpander {
         &mut self,
         template: &MacroTemplate,
         bindings: &PatternBindings,
+        in_quote: bool,
     ) -> Result<Vec<Value>, MacroError> {
         let mut vars = HashSet::new();
         Self::collect_template_vars(template, &mut vars);
@@ -960,11 +971,11 @@ impl MacroExpander {
         if vars.is_empty() {
             // No variables, but it could be a literal inside an ellipsis.
             // R7RS says this is a syntax error, but let's be lenient for now.
-            // Let's find the max length of any binding to decide how many times to repeat.
+            // Repeat the literal expansion for the max length of any binding.
             let max_len = bindings.values().map(|v| v.len()).max().unwrap_or(0);
             let mut expanded_values = Vec::new();
             for _ in 0..max_len {
-                expanded_values.push(self.instantiate_template(template, bindings)?);
+                expanded_values.push(self.instantiate_template_impl(template, bindings, in_quote)?);
             }
             return Ok(expanded_values);
         }
@@ -979,7 +990,7 @@ impl MacroExpander {
         }
 
         if max_len == 0 {
-            // Zero-match case
+            // Zero-match case for ellipsis
             return Ok(Vec::new());
         }
 
@@ -1003,8 +1014,22 @@ impl MacroExpander {
                 }
             }
 
-            let expanded = self.instantiate_template(template, &instance_bindings)?;
+            let expanded =
+                self.instantiate_template_impl(template, &instance_bindings, in_quote)?;
+
+            if !in_quote {
+                // Outside a quote, if the expansion is a list, splice its contents.
+                // This handles cases like `((a b) ...)` expanding to `(1 2 3 4)`
+                if let Value::List(items) = expanded {
+                    expanded_values.extend(items);
+                } else {
             expanded_values.push(expanded);
+        }
+            } else {
+                // Inside a quote, do not splice. The expanded item is a single element.
+                // This handles `'(a ...)` becoming `(1 2 3)`.
+                expanded_values.push(expanded);
+            }
         }
 
         Ok(expanded_values)

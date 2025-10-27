@@ -277,5 +277,23 @@
 (newline)
 (newline)
 
+;; Bug 11: Simple Quoted Ellipsis
+(define-syntax test-simple-quoted-ellipsis
+  (syntax-rules ()
+    ((_ (name ...))
+     '(name ...))))
+
+(display "Bug 11: Simple Quoted Ellipsis")
+(newline)
+(display "  Input: (test-simple-quoted-ellipsis (a b c))")
+(newline)
+(display "  Expected: (quote (a b c))")
+(newline)
+(display "  Actual: ")
+(display (test-simple-quoted-ellipsis (a b c)))
+(newline)
+(newline)
+
+
 (display "--- Test Suite Complete ---")
 (newline)

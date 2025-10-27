@@ -529,22 +529,39 @@ impl MacroExpander {
     }
 
     /// Parse a template from a rule
-    fn parse_template(&self, template: &Value) -> Result<MacroTemplate, MacroError> {
+    fn parse_template(
+        &self,
+        template: &Value,
+    ) -> Result<MacroTemplate, MacroError> {
         match template {
             Value::Symbol(s) => Ok(MacroTemplate::Variable(s.clone())),
             Value::List(items) => {
-                // **R7RS:** Check for quote/quasiquote - these are literals
+                // **R7RS:** Check for quote/quasiquote - handle specially
                 if let Some(Value::Symbol(s)) = items.first() {
-                    if s == "quote" || s == "quasiquote" {
-                        // **R7RS RESTRICTED:** Check for macro expansion in quote contexts
+                    if s == "quote" && items.len() == 2 {
+                        // **R7RS COMPLIANT:** Quote with pattern variable
+                        // Parse the quoted content as a template, then wrap in quote during instantiation
+                        // Template: 'a where a is pattern var → expands to 'x where x is bound value
+                        // **NOTE:** This means 'x where x is both a literal and pattern var will substitute
+                        // To avoid this, use different names for pattern vars and desired literal symbols
+                        let quoted_template =
+                            self.parse_template(&items[1])?;
+                        return Ok(MacroTemplate::List(vec![
+                            MacroTemplate::Literal(Value::Symbol("quote".to_string())),
+                            quoted_template,
+                        ]));
+                    }
+
+                    if s == "quasiquote" {
+                        // **R7RS RESTRICTED:** Check for macro expansion in quasiquote contexts
                         if items.len() > 1 && self.contains_macro_call(&items[1]) {
                             return Err(MacroError(
-                                "R7RS RESTRICTED: Macro expansion inside quote/quasiquote contexts \
+                                "R7RS RESTRICTED: Macro expansion inside quasiquote contexts \
                                  is not supported - macros must be expanded before quoting"
                                     .to_string(),
                             ));
                         }
-                        // Quoted forms are literals - no pattern variable substitution
+                        // Quasiquoted forms are literals for now
                         return Ok(MacroTemplate::Literal(template.clone()));
                     }
                 }
@@ -568,7 +585,8 @@ impl MacroExpander {
                         if let Value::Symbol(s) = &items[i + 1] {
                             if s == "..." {
                                 // This is an ellipsis template
-                                let sub_template = self.parse_template(&items[i])?;
+                                let sub_template = self
+                                    .parse_template(&items[i])?;
                                 let mut ellipsis_template =
                                     MacroTemplate::Ellipsis(Box::new(sub_template));
                                 i += 2; // Skip the item and first ...
@@ -594,7 +612,8 @@ impl MacroExpander {
                             }
                         }
                     }
-                    templates.push(self.parse_template(&items[i])?);
+                    templates
+                        .push(self.parse_template(&items[i])?);
                     i += 1;
                 }
                 Ok(MacroTemplate::List(templates))
@@ -619,6 +638,7 @@ impl MacroExpander {
     }
 
     /// Match a list pattern against list items, handling ellipsis patterns
+    /// **R7RS COMPLIANT:** Ellipsis matches all remaining items after fixed patterns
     fn match_list_pattern(
         &self,
         patterns: &[MacroPattern],
@@ -629,117 +649,115 @@ impl MacroExpander {
         let mut pattern_idx = 0;
         let mut item_idx = 0;
 
-        while pattern_idx < patterns.len() && item_idx < items.len() {
+        while pattern_idx < patterns.len() {
             match &patterns[pattern_idx] {
                 MacroPattern::Ellipsis(sub_pattern) => {
-                    // Handle ellipsis pattern - match zero or more
-                    // **R7RS COMPLIANT:** Support ellipsis-followed-by-more patterns like (x ... y z)
+                    // **R7RS:** Ellipsis consumes all remaining items after accounting for
+                    // any fixed patterns that follow. No backtracking needed!
 
-                    // Count how many non-ellipsis patterns follow this ellipsis
-                    let trailing_pattern_count = patterns[pattern_idx + 1..]
+                    // Count how many fixed (non-ellipsis) patterns follow this ellipsis
+                    let trailing_fixed = patterns[pattern_idx + 1..]
                         .iter()
                         .take_while(|p| !matches!(p, MacroPattern::Ellipsis(_)))
                         .count();
 
-                    // Reserve items for trailing patterns
-                    let items_available_for_ellipsis =
-                        if items.len() >= item_idx + trailing_pattern_count {
-                            items.len() - item_idx - trailing_pattern_count
-                        } else {
-                            0 // Not enough items - ellipsis will match zero
-                        };
+                    // Calculate how many items this ellipsis should match
+                    let remaining_items = items.len() - item_idx;
+                    if remaining_items < trailing_fixed {
+                        return Err(MacroError(
+                            "Not enough items for trailing patterns after ellipsis".to_string(),
+                        ));
+                    }
+                    let ellipsis_count = remaining_items - trailing_fixed;
 
-                    let ellipsis_end = item_idx + items_available_for_ellipsis;
-                    let remaining_items = ellipsis_end - item_idx;
-                    let mut ellipsis_matches = Vec::with_capacity(remaining_items); // **PERFORMANCE:** Pre-allocate
+                    // Match the ellipsis sub-pattern against each item
+                    let mut temp_ellipsis_bindings: HashMap<String, Vec<Value>> =
+                        HashMap::with_capacity(4);
 
-                    // Try to match as many items as possible with the sub-pattern (up to ellipsis_end)
-                    while item_idx < ellipsis_end {
-                        let mut sub_bindings = HashMap::with_capacity(4); // **PERFORMANCE:** Pre-allocate small binding map
+                    for i in 0..ellipsis_count {
+                        let mut sub_bindings = HashMap::with_capacity(4);
 
-                        match self.match_pattern_recursive(
+                        self.match_pattern_recursive(
                             sub_pattern,
-                            std::slice::from_ref(&items[item_idx]),
+                            std::slice::from_ref(&items[item_idx + i]),
                             literals,
                             &mut sub_bindings,
-                        ) {
-                            Ok(()) => {
-                                // For simple variable patterns, collect the matched item directly
-                                if let MacroPattern::Variable(_) = sub_pattern.as_ref() {
-                                    ellipsis_matches.push(items[item_idx].clone());
+                        )?;
+
+                        // Collect bindings from this match
+                        if let MacroPattern::Variable(var_name) = sub_pattern.as_ref() {
+                            if !literals.contains(var_name) {
+                                temp_ellipsis_bindings
+                                    .entry(var_name.clone())
+                                    .or_default()
+                                    .push(items[item_idx + i].clone());
+                            }
+                        } else {
+                            // Complex sub-pattern with nested ellipsis - need List wrapping
+                            let sub_depth = self.get_ellipsis_depth(sub_pattern);
+                            for (var, values) in sub_bindings {
+                                if sub_depth > 0 {
+                                    // Nested ellipsis: wrap values in List for next depth level
+                                    temp_ellipsis_bindings
+                                        .entry(var)
+                                        .or_default()
+                                        .push(Value::List(values));
                                 } else {
-                                    // **PHASE 2:** Depth-aware wrapping for nested ellipsis
-                                    // Check sub-pattern depth: if depth > 0, wrap this iteration's bindings
-                                    // This enables patterns like ((x ...) ...) where x at depth 2 needs wrapping
-                                    let sub_depth = self.get_ellipsis_depth(sub_pattern);
-
-                                    for (var, values) in sub_bindings {
-                                        if sub_depth > 0 {
-                                            // Sub-pattern contains ellipsis: wrap to preserve iteration boundaries
-                                            // Example: ((x ...) ...) matching ((1 2) (3 4))
-                                            // First iteration: x=[1,2] wrapped as List([1,2])
-                                            // Second iteration: x=[3,4] wrapped as List([3,4])
-                                            bindings
-                                                .entry(var)
-                                                .or_default()
-                                                .push(Value::List(values));
-                                        } else {
-                                            // Sub-pattern has no ellipsis: direct binding (Phase 1 simple case)
-                                            bindings.entry(var).or_default().extend(values);
-                                        }
-                                    }
+                                    // No nesting: just collect values
+                                    temp_ellipsis_bindings
+                                        .entry(var)
+                                        .or_default()
+                                        .extend(values);
                                 }
-
-                                item_idx += 1;
-                            }
-                            Err(_) => {
-                                // Stop ellipsis matching when pattern no longer matches
-                                break;
                             }
                         }
                     }
 
-                    // For simple variable ellipsis patterns, bind the list of matches
-                    if let MacroPattern::Variable(var_name) = sub_pattern.as_ref() {
-                        if !literals.contains(var_name) {
-                            bindings
-                                .entry(var_name.clone())
-                                .or_default()
-                                .extend(ellipsis_matches);
+                    // **R7RS COMPLIANT:** If ellipsis matched zero items, ensure all variables
+                    // in the sub-pattern still get bindings (empty lists)
+                    if ellipsis_count == 0 {
+                        let mut ellipsis_vars = HashMap::new();
+                        Self::collect_pattern_vars(sub_pattern, 0, &mut ellipsis_vars);
+
+                        for (var, _depth) in ellipsis_vars {
+                            if !literals.contains(&var)
+                                && !temp_ellipsis_bindings.contains_key(&var)
+                            {
+                                // With zero iterations, all variables get empty bindings []
+                                // regardless of their depth in the pattern
+                                bindings.entry(var).or_default();
+                            }
                         }
                     }
 
+                    // Merge collected bindings
+                    for (var, values) in temp_ellipsis_bindings {
+                        bindings.entry(var).or_default().extend(values);
+                    }
+
+                    item_idx += ellipsis_count;
                     pattern_idx += 1;
                 }
                 _ => {
                     // Regular pattern - must match exactly one item
+                    if item_idx >= items.len() {
+                        return Err(MacroError("Not enough items for pattern".to_string()));
+                    }
+
                     self.match_pattern_recursive(
                         &patterns[pattern_idx],
                         std::slice::from_ref(&items[item_idx]),
                         literals,
                         bindings,
                     )?;
-                    pattern_idx += 1;
+
                     item_idx += 1;
+                    pattern_idx += 1;
                 }
             }
         }
 
-        // Check if we've consumed all patterns and items appropriately
-        if pattern_idx < patterns.len() {
-            // We have remaining patterns - check if they can all be satisfied with zero matches
-            for remaining_pattern in &patterns[pattern_idx..] {
-                if let MacroPattern::Ellipsis(_) = remaining_pattern {
-                    // Ellipsis can match zero items, so this is OK
-                    continue;
-                } else {
-                    return Err(MacroError(
-                        "Not enough items to match remaining patterns".to_string(),
-                    ));
-                }
-            }
-        }
-
+        // Check all items were consumed
         if item_idx < items.len() {
             return Err(MacroError("Too many items for pattern".to_string()));
         }
@@ -874,6 +892,29 @@ impl MacroExpander {
         }
     }
 
+    /// Find the maximum length of any pattern variable bindings in a template
+    /// Used for determining iteration count in complex ellipsis templates
+    fn find_max_binding_length(
+        &self,
+        template: &MacroTemplate,
+        bindings: &PatternBindings,
+    ) -> usize {
+        match template {
+            MacroTemplate::Variable(var_name) => {
+                bindings.get(var_name).map(|v| v.len()).unwrap_or(0)
+            }
+            MacroTemplate::List(sub_templates) => sub_templates
+                .iter()
+                .map(|t| self.find_max_binding_length(t, bindings))
+                .max()
+                .unwrap_or(0),
+            MacroTemplate::Ellipsis(sub_template) => {
+                self.find_max_binding_length(sub_template, bindings)
+            }
+            MacroTemplate::Literal(_) => 0,
+        }
+    }
+
     /// **R7RS HYGIENE (Simplified):** Instantiate a template with pattern bindings
     /// Applies hygiene by generating fresh names for macro-introduced bindings
     fn instantiate_template(
@@ -889,6 +930,13 @@ impl MacroExpander {
                         // Track emitted symbols from pattern variables
                         self.track_emitted_macro_symbols(value);
                         Ok(value.clone())
+                    } else if values.len() == 0 {
+                        // **R7RS COMPLIANT:** Variable with no bindings in ellipsis iteration
+                        // This can happen when outer ellipsis has more iterations than inner pattern provides
+                        Err(MacroError(format!(
+                            "Pattern variable {} used outside its ellipsis scope",
+                            name
+                        )))
                     } else {
                         Err(MacroError(format!(
                             "Pattern variable {} bound to multiple values",
@@ -959,15 +1007,12 @@ impl MacroExpander {
                                     }
                                 }
                                 MacroTemplate::List(ellipsis_sub_templates) => {
-                                    // Complex ellipsis - find max repetition length
-                                    let mut max_len = 0;
-                                    for template in ellipsis_sub_templates {
-                                        if let MacroTemplate::Variable(var_name) = template {
-                                            if let Some(values) = bindings.get(var_name) {
-                                                max_len = max_len.max(values.len());
-                                            }
-                                        }
-                                    }
+                                    // Complex ellipsis - find max repetition length across all variables
+                                    // **FIX:** Use recursive search to find variables in nested structures like (quote a)
+                                    let max_len = self.find_max_binding_length(
+                                        &MacroTemplate::List(ellipsis_sub_templates.clone()),
+                                        bindings,
+                                    );
 
                                     // Expand the sub-template for each repetition
                                     for i in 0..max_len {
@@ -1066,10 +1111,18 @@ impl MacroExpander {
                         // Expand the list template for each repetition
                         for i in 0..max_len {
                             let mut instance_bindings = bindings.clone();
-                            // Modify bindings to contain single values for this instance
-                            for values in instance_bindings.values_mut() {
+
+                            // **R7RS:** Unwrap List-wrapped bindings from nested ellipsis
+                            // For each variable, select the i-th value and unwrap if it's List-wrapped
+                            for (_var_name, values) in instance_bindings.iter_mut() {
                                 if i < values.len() {
-                                    *values = vec![values[i].clone()]; // Keep (Value, depth) tuple
+                                    let value = values[i].clone();
+                                    // If this is a nested ellipsis binding (wrapped in List), unwrap it
+                                    if let Value::List(nested_values) = value {
+                                        *values = nested_values;
+                                    } else {
+                                        *values = vec![value];
+                                    }
                                 } else {
                                     values.clear();
                                 }

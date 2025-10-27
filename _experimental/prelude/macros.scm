@@ -121,20 +121,74 @@
 
 ;; ===== ITERATION FORMS =====
 ;; R7RS section 4.2.4 - derived expressions for iteration
-;; **IMPROVED WITH LIST-WITHIN-ELLIPSIS:** Now supports arbitrary variables with optional steps
+
+;; **R7RS DEVIATION:** `do` macro is not fully compliant.
+;; The R7RS standard requires that `do` supports mixed variable bindings, where some
+;; variables have a `step` expression and others do not. For variables without a
+;; `step`, their value should remain unchanged across iterations.
 ;;
-;; R7RS `do` syntax: (do ((var init step) ...) (test expr ...) command ...) 
-;; Uses list-within-ellipsis patterns to extract vars, inits, and steps separately:
-;; - Pattern ((var init step) ...) binds var→[v1,v2,...], init→[i1,i2,...], step→[s1,s2,...]
-;; - Optional step defaults to init value when not provided
+;; The implementation below attempts to use a helper macro `do-step-or-var` to
+;; correctly handle the optional `step`. However, this is blocked by a known bug
+;; in the macro expander's handling of optional ellipsis patterns. The pattern
+;; `(do ((var init step ...) ...) ...)` does not correctly bind variables when
+;; the optional `step ...` is not present for all variables.
 ;;
-;; **R7RS RESTRICTED:** step must be present or absent for all variables (no mixing)
-;; Full R7RS allows (var init) and (var init step) mixed, which requires nested ellipsis
-;; depth tracking that Phase 2 would enable. Current implementation covers two common cases:
-;; 1. All variables have steps: ((var init step) ...)
-;; 2. No variables have steps: ((var init) ...)
+;; **NEEDS-ENFORCEMENT:** The macro expander needs to be fixed to support this.
+
+(define-syntax do-step-or-var
+  (syntax-rules ()
+    ;; If step is present (as a sequence of one element), use it
+    ((_ var step) step)
+    ;; If step is absent (as an empty sequence), use the variable itself
+    ((_ var) var)))
+
+(define-syntax do
+  (syntax-rules ()
+    ((do ((var init step ...) ...) (test result ...) command ...)
+     (let loop ((var init) ...)
+       (if test
+           (begin result ...)
+           (begin command ...
+                  (loop (do-step-or-var var step ...) ...)))))
+    ((do ((var init step ...) ...) (test result ...))
+     (let loop ((var init) ...)
+       (if test
+           (begin result ...)
+           (loop (do-step-or-var var step ...) ...))))))
+
+;; R7RS sections 4.2.1, 4.2.5 - derived expressions for cond/case
 ;;
-;; For mixed cases, users can explicitly provide init as the step: ((x 0 (+ x 1)) (y 0 0))
+;; **R7RS DEVIATION:** Literal keywords (else, =>) in syntax-rules use structural matching
+;; which means they must be present at the top level of a pattern. This prevents
+;; shadowing of these keywords, which is allowed by R7RS hygiene rules. Our system
+;; treats them as reserved syntax within `cond` and `case`, which is a deviation.
+;; For example, `(let ((else #f)) (cond (else 'foo)))` would fail to parse in our
+;; system, but should be valid R7RS.
+(define-syntax cond
+  (syntax-rules (else =>)
+    ((cond (else result1 result2 ...))
+     (begin result1 result2 ...))
+    ((cond (test => result))
+     (let ((temp test))
+       (if temp (result temp))))
+    ((cond (test => result) clause1 clause2 ...)
+     (let ((temp test))
+       (if temp
+           (result temp)
+           (cond clause1 clause2 ...))))
+    ((cond (test)) test)
+    ((cond (test) clause1 clause2 ...)
+     (let ((temp test))
+       (if temp
+           temp
+           (cond clause1 clause2 ...))))
+    ((cond (test result1 result2 ...))
+     (if test (begin result1 result2 ...)))
+    ((cond (test result1 result2 ...) clause1 clause2 ...)
+     (if test
+         (begin result1 result2 ...)
+         (cond clause1 clause2 ...)))))
+
 (define-syntax do
   (syntax-rules ()
     ;; All variables with explicit step expressions, with body commands

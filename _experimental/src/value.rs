@@ -186,14 +186,12 @@ impl fmt::Display for Value {
             Value::String(s) => write!(f, "\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
             Value::Symbol(s) => write!(f, "{}", s),
             Value::List(elements) => {
-                write!(f, "(")?;
-                for (i, elem) in elements.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{}", elem)?;
-                }
-                write!(f, ")")
+                let content = elements
+                    .iter()
+                    .map(|elem| format!("{}", elem))
+                    .collect::<Vec<String>>()
+                    .join(" ");
+                write!(f, "({})", content)
             }
             Value::Builtin { name, .. } => write!(f, "#<builtin:{}>", name),
             Value::Procedure { .. } => write!(f, "#<procedure>"),

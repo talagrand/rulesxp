@@ -1,305 +1,163 @@
-// Macro expansion system - implements R7RS syntax-rules macros
+// Macro expansion system - implements a subset of R7RS syntax-rules.
 //
-// ## Architecture:
-// This module implements a complete R7RS-compliant macro system with:
-// 1. **Prelude Loading**: Standard derived expressions loaded from prelude/macros.scm
-// 2. **Stabilization-based Expansion**: Expands until pre-expansion == post-expansion
-// 3. **Ellipsis Support**: Pattern matching with (...) for variable arguments
-// 4. **User-defined Macros**: Full define-syntax and syntax-rules support
+// This module serves as the integration layer for the macro system, coordinating:
+// - `macro_compiler`: Definition-time compilation and validation.
+// - `macro_matcher`: Runtime pattern matching with hierarchical bindings.
+// - `macro_expander`: Template expansion using matched bindings.
 //
-// The macro prelude (prelude/macros.scm) contains all R7RS derived expressions:
-// and, or, when, unless, cond, case, let, let*, do - these are essential for
-// R7RS compliance and are automatically loaded at startup.
+// The `MacroExpander` struct drives the overall expansion process through the AST,
+// handling `define-syntax` forms and iterating expansion until stable.
 //
-// ## R7RS RESTRICTED Implementation:
+// **R7RS COMPLIANCE STATUS:**
 //
-// **Deliberate Restrictions (to cap complexity):**
-// - `let-syntax` and `letrec-syntax` (local macro bindings) - **R7RS RESTRICTED** with error enforcement
-// - Vector patterns `#(pattern ...)` - vectors not supported in core language
-// - Improper list patterns (dotted pairs) - core language uses proper lists only
+// **CRITICAL GAPS:**
+// 1.  **No Nested Ellipsis Support**: The system can parse and match nested ellipsis patterns
+//     but fails during template expansion. This is a major functional limitation.
+// 2.  **No Hygiene**: The macro system is not hygienic, meaning it is susceptible to
+//     variable capture issues. This is a significant deviation from R7RS.
 //
-// **R7RS RESTRICTED (with active error enforcement):**
-// - 7 unsupported macro forms: `let-syntax`, `letrec-syntax`, `syntax-case`, `syntax`,
-//   `quasisyntax`, `identifier-syntax`, `make-variable-transformer` - all blocked with errors
-// - Ellipsis nesting depth limited to 10 for recursion protection (stack safety)
-// - Macro expansion in quote/quasiquote contexts - error emitted during template parsing
-// - Pattern variable ellipsis depth consistency - error emitted during template validation
-//
-// **R7RS DEVIATIONS (without enforcement):**
-// - Literal matching uses string equality instead of proper identifier comparison (very rare edge case)
-//
-// **Ellipsis Variable Scoping with Depth Tracking:**
-// Variables at different ellipsis depths are properly tracked through depth metadata.
-// Nested ellipsis patterns like ((x ...) ...) are now supported with depth-aware expansion.
-// Pattern variables are tagged with their ellipsis nesting level (0 = no ellipsis, 1 = one level, etc.)
-// Template expansion groups values by depth and expands outer levels first, then inner levels recursively.
-// Depth tracking also provides recursion protection by limiting maximum nesting depth to 10.
-//
-// **R7RS Compliant Features:**
-// - **Hygienic macros**: Basic hygiene through template expansion
-// - **Variable capture prevention**: Simplified approach good for most cases
-// - **Top-level define-syntax**: Full syntax-rules support with pattern matching
-// - **Nested ellipsis**: Multi-level ellipsis patterns with depth-aware expansion (up to depth 10)
-// - **Error validation**: All unsupported features emit clear error messages
-// - **Pattern matching**: Complete support for syntax-rules patterns including nested ellipsis
-// - **Template expansion**: Hygienic template instantiation with multi-level ellipsis support
-//
-// **Hygiene Implementation:**
-// Without local macro bindings, hygiene is greatly simplified:
-// 1. Track macro expansion contexts with unique identifiers
-// 2. Distinguish macro-introduced vs user-provided identifiers
-// 3. Generate fresh names for macro-introduced bindings to prevent capture
-// 4. Preserve lexical scoping for user-provided identifiers
+// See `MACRO_SYSTEM_RESTRICTIONS.md` for a detailed analysis.
 
 use crate::value::{Environment, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::rc::Rc;
 
-/// R7RS derived expressions implemented as macros in prelude/macros.scm
-/// These forms are handled by the macro system, not the compiler
 pub const STANDARD_DERIVED_EXPRESSIONS: &[&str] = &[
-    "and", "or", // Logical operators (R7RS 4.2.1)
-    "when", "unless", // Simple conditionals (R7RS 4.2.6)
-    "cond", "case", // Multi-way conditionals (R7RS 4.2.1, 4.2.5)
-    "let", "let*", // Local binding forms (R7RS 4.2.2)
-    "do",   // Iteration form (R7RS 4.2.4)
+    "and", "or", "when", "unless", "cond", "case", "let", "let*", "do",
 ];
 
-#[derive(Debug, Clone)]
-pub struct MacroError(pub String);
+// Re-export types from the new modular macro system
+pub use crate::macro_compiler::{
+    CompiledPattern, CompiledRule, CompiledTemplate, MacroDefinition, MacroError, MacroPattern,
+    MacroTemplate, SyntaxRule,
+};
+pub use crate::macro_expander::expand_template;
+pub use crate::macro_matcher::{match_pattern, MatchContext, MatchResult};
 
-impl std::fmt::Display for MacroError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Macro error: {}", self.0)
+// Global debug flag - set via environment variable MACRO_DEBUG=1
+static DEBUG: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("MACRO_DEBUG").is_ok());
+
+macro_rules! debug_trace {
+    ($($arg:tt)*) => {
+        if *DEBUG {
+            eprintln!("[MACROS DEBUG] {}", format!($($arg)*));
+        }
+    };
+}
+
+// Helper for compact value display in debug output
+fn value_compact(v: &Value) -> String {
+    match v {
+        Value::Symbol(s) => s.clone(),
+        Value::Integer(n) => n.to_string(),
+        Value::Boolean(b) => {
+            if *b {
+                "#t".to_string()
+            } else {
+                "#f".to_string()
+            }
+        }
+        Value::String(s) => format!("\"{}\"", s),
+        Value::List(items) => {
+            let item_strs: Vec<_> = items.iter().map(value_compact).collect();
+            format!("({})", item_strs.join(" "))
+        }
+        _ => format!("{:?}", v),
     }
 }
 
-impl std::error::Error for MacroError {}
-
-/// A pattern in a syntax-rules macro
-///
-/// **R7RS Deviations:** Missing support for:
-/// - Underscore wildcard patterns (`_`)
-/// - Vector patterns (`#(pattern ...)`)
-/// - Improper list patterns (dotted pairs)
-/// - Nested ellipsis with different binding depths
-#[derive(Debug, Clone, PartialEq)]
-pub enum MacroPattern {
-    /// Literal identifier that must match exactly
-    Literal(String),
-    /// Pattern variable that binds to any expression
-    Variable(String),
-    /// Wildcard pattern `_` that matches anything without binding
-    Wildcard,
-    /// List pattern containing sub-patterns
-    List(Vec<MacroPattern>),
-    /// Ellipsis pattern for zero or more repetitions
-    Ellipsis(Box<MacroPattern>),
-    // TODO: Add support for R7RS features:
-    // Vector(Vec<MacroPattern>),  // Vector patterns #(...)
-    // DottedList(Vec<MacroPattern>, Box<MacroPattern>),  // Improper lists
-}
-
-/// A template for macro expansion
-///
-/// **R7RS Deviations:** Missing support for:
-/// - Vector templates (`#(template ...)`)
-/// - Improper list templates (dotted pairs)
-/// - Proper hygiene (identifier renaming)
-#[derive(Debug, Clone, PartialEq)]
-pub enum MacroTemplate {
-    /// Literal value to insert
-    Literal(Value),
-    /// Pattern variable to substitute
-    Variable(String),
-    /// List template containing sub-templates
-    List(Vec<MacroTemplate>),
-    /// Ellipsis template for expanding repeated patterns
-    Ellipsis(Box<MacroTemplate>),
-    // TODO: Add support for R7RS features:
-    // Vector(Vec<MacroTemplate>),  // Vector templates #(...)
-    // DottedList(Vec<MacroTemplate>, Box<MacroTemplate>),  // Improper lists
-}
-
-/// A single syntax rule (pattern -> template)
-#[derive(Debug, Clone)]
-pub struct SyntaxRule {
-    pub pattern: MacroPattern,
-    pub template: MacroTemplate,
-}
-
-/// A macro definition
-#[derive(Debug, Clone)]
-pub struct MacroDefinition {
-    pub name: String,
-    pub literals: Vec<String>,
-    pub rules: Vec<SyntaxRule>,
-}
-
-/// Pattern variable bindings during macro expansion
-/// Each binding maps a variable name to a list of values.
-///
-/// **NESTED ELLIPSIS STRUCTURE:**
-/// For nested ellipsis, we use Value::List to preserve iteration grouping:
-/// - Simple ellipsis `(x ...)` matching `(1 2 3)`: x -> vec![1, 2, 3]
-/// - Nested ellipsis `((x ...) ...)` matching `((1 2) (3 4))`: x -> vec![List([1, 2]), List([3, 4])]
-/// - Each List value represents one outer ellipsis iteration containing inner ellipsis matches
-///
-/// This structure naturally preserves multi-dimensional grouping without explicit depth tracking.
-pub type PatternBindings = HashMap<String, Vec<Value>>;
-
-// **SIMPLIFIED HYGIENE:** For R7RS RESTRICTED implementation, we don't need
-// complex hygiene tracking since we only support top-level macros.
-// The key insight: without local macro bindings, most hygiene issues disappear.
-// Just track a simple gensym counter for the rare cases where fresh names are needed.
-
-/// **R7RS MACRO EXPANDER (Simplified):** Basic syntax-rules macro system
-///
-/// **R7RS RESTRICTED:** Only supports top-level `define-syntax` to cap complexity.
-/// Local macro bindings (`let-syntax`/`letrec-syntax`) are not supported.
-///
-/// This simplified implementation focuses on correctness over complex hygiene:
-/// - Standard syntax-rules pattern matching and template expansion
-/// - Basic fresh name generation when needed
-/// - Stabilization-based expansion until fixpoint
 pub struct MacroExpander {
-    macros: HashMap<String, MacroDefinition>,
-    /// Simple counter for generating unique names when needed
-    gensym_counter: usize,
-    /// Symbols that are known to be macros
-    known_macro_symbols: std::collections::HashSet<String>,
-    /// Track macro symbols emitted during current expansion for short-circuit optimization
-    emitted_macro_symbols: std::collections::HashSet<String>,
-    /// **PERFORMANCE:** Dirty flag to avoid unnecessary AST comparisons
+    macros: std::collections::HashMap<String, MacroDefinition>,
+    known_macro_symbols: HashSet<String>,
     expansion_dirty: bool,
 }
 
 impl MacroExpander {
     pub fn new(_environment: Rc<Environment>) -> Self {
         MacroExpander {
-            macros: HashMap::new(),
-            gensym_counter: 0,
+            macros: std::collections::HashMap::new(),
             known_macro_symbols: HashSet::new(),
-            emitted_macro_symbols: HashSet::new(),
             expansion_dirty: false,
         }
     }
 
-    /// Expand macros in the given AST using per-expression stabilization
     pub fn expand(&mut self, ast: &Value) -> Result<Value, MacroError> {
         self.expand_until_stable(ast)
     }
 
-    /// Expand an expression until it stabilizes (pre-expansion == post-expansion)
+    /// Get a macro definition by name (for debugging/introspection)
+    pub fn get_macro_definition(&self, name: &str) -> Option<&MacroDefinition> {
+        self.macros.get(name)
+    }
+
+    /// Get all macro names (for debugging/introspection)
+    pub fn get_macro_names(&self) -> Vec<String> {
+        self.macros.keys().cloned().collect()
+    }
+
     fn expand_until_stable(&mut self, ast: &Value) -> Result<Value, MacroError> {
         use std::borrow::Cow;
-        const MAX_EXPANSIONS: usize = 100; // Safety limit for infinite expansion
+        const MAX_EXPANSIONS: usize = 100;
         let mut current = Cow::Borrowed(ast);
         let mut expansion_count = 0;
 
         loop {
-            // Clear emitted macro symbols and reset dirty flag for this expansion
-            self.emitted_macro_symbols.clear();
             self.expansion_dirty = false;
-
-            let before_expansion = current.clone();
             let expanded = self.expand_once(&current)?;
 
-            // If expansion results in an empty value (e.g. only a macro definition), it's stable.
-            if matches!(expanded, Value::Unspecified) {
-                return Ok(expanded);
-            }
-
-            // **PERFORMANCE:** Only clone if expansion actually changed something
             if !self.expansion_dirty {
                 return Ok(current.into_owned());
             }
 
             current = Cow::Owned(expanded);
             expansion_count += 1;
+
             if expansion_count > MAX_EXPANSIONS {
                 return Err(MacroError(format!(
                     "Expression expansion exceeded {} iterations. This suggests infinite macro expansion.",
                     MAX_EXPANSIONS
                 )));
             }
-
-            // Short-circuit: if no macro symbols were emitted, we're definitely done
-            if self.emitted_macro_symbols.is_empty() {
-                return Ok(current.into_owned());
-            }
-
-            // **PERFORMANCE:** Only do expensive AST comparison if we still might need expansion
-            if *current == *before_expansion {
-                return Ok(current.into_owned());
-            }
         }
     }
 
-    /// Perform one expansion pass on an expression
     fn expand_once(&mut self, ast: &Value) -> Result<Value, MacroError> {
         match ast {
             Value::List(items) if !items.is_empty() => {
-                // Check if this is a define-syntax form
                 if let Value::Symbol(name) = &items[0] {
                     if name == "define-syntax" {
                         return self.handle_define_syntax(items);
                     }
-
-                    // **R7RS RESTRICTED:** Only core syntax-rules macro forms are supported
-                    match name.as_str() {
-                        "let-syntax"
-                        | "letrec-syntax"
-                        | "syntax-case"
-                        | "syntax"
-                        | "quasisyntax"
-                        | "identifier-syntax"
-                        | "make-variable-transformer" => {
-                            return Err(MacroError(format!(
-                                "R7RS RESTRICTED: {} is not supported - \
-                                 only core syntax-rules macro forms are supported (define-syntax with syntax-rules)",
-                                name
-                            )));
-                        }
-                        _ => {}
-                    }
-
-                    // Check if this is a macro invocation
                     if let Some(macro_def) = self.get_macro(name) {
-                        // **R7RS HYGIENE:** Use hygienic macro expansion
-                        self.expansion_dirty = true; // Mark that we're doing expansion
-                        return self.expand_macro_simple(&macro_def, &items[1..]);
+                        self.expansion_dirty = true;
+                        return self.expand_macro_rule(&macro_def, items);
                     }
                 }
 
-                // Not a macro - recursively expand subexpressions, filtering out Unspecified values. This is safe without depth tracking because the parser does depth tracking.
-                // This is crucial for removing `define-syntax` forms from the AST after they are processed.
-                let expanded_items: Result<Vec<_>, _> = items
-                    .iter()
-                    .map(|item| self.expand_once(item))
-                    .filter(|res| !matches!(res, Ok(Value::Unspecified)))
+                let expanded_items: Result<Vec<_>, _> =
+                    items.iter().map(|item| self.expand_once(item)).collect();
+
+                let final_items: Vec<_> = expanded_items?
+                    .into_iter()
+                    .filter(|v| !matches!(v, Value::Unspecified))
                     .collect();
 
-                let final_items = expanded_items?;
                 if final_items != *items {
                     self.expansion_dirty = true;
                 }
-
                 Ok(Value::List(final_items))
             }
-            // Other value types don't contain macros
             _ => Ok(ast.clone()),
         }
     }
 
-    /// Handle define-syntax forms
     fn handle_define_syntax(&mut self, items: &[Value]) -> Result<Value, MacroError> {
         if items.len() != 3 {
             return Err(MacroError(
                 "define-syntax requires exactly 2 arguments".to_string(),
             ));
         }
-
         let name = match &items[1] {
             Value::Symbol(s) => s.clone(),
             _ => {
@@ -308,878 +166,52 @@ impl MacroExpander {
                 ))
             }
         };
-
-        let syntax_rules = &items[2];
-        let macro_def = self.parse_syntax_rules(&name, syntax_rules)?;
-
-        // Store the macro in the environment
+        let macro_def = crate::macro_compiler::parse_syntax_rules(&name, &items[2])?;
         self.store_macro(macro_def)?;
-
-        // Return unspecified value (define-syntax doesn't produce a value)
         Ok(Value::Unspecified)
     }
 
-    /// Parse a syntax-rules form into a MacroDefinition
-    fn parse_syntax_rules(
-        &self,
-        name: &str,
-        syntax_rules: &Value,
-    ) -> Result<MacroDefinition, MacroError> {
-        match syntax_rules {
-            Value::List(items) if items.len() >= 2 => {
-                if !matches!(items[0], Value::Symbol(ref s) if s == "syntax-rules") {
-                    return Err(MacroError("Expected syntax-rules".to_string()));
-                }
-
-                let (literals, rules_start_idx) = if let Value::Symbol(s) = &items[1] {
-                    // Form: (syntax-rules <ellipsis-id> (<literals>...) <rules>...)
-                    if s != "..." {
-                        return Err(MacroError(
-                            "R7RS RESTRICTED: Custom ellipsis identifiers are not supported. Only '...' is allowed.".to_string()
-                        ));
-                    }
-                    if items.len() < 3 {
-                        return Err(MacroError("Invalid syntax-rules: missing literals list after ellipsis identifier.".to_string()));
-                    }
-                    (self.parse_literals(&items[2])?, 3)
-                } else {
-                    // Form: (syntax-rules (<literals>...) <rules>...)
-                    (self.parse_literals(&items[1])?, 2)
-                };
-
-                if rules_start_idx > items.len() {
-                    return Err(MacroError(
-                        "syntax-rules must have at least one rule".to_string(),
-                    ));
-                }
-                let mut rules = Vec::with_capacity(items.len() - rules_start_idx);
-                for rule_item in &items[rules_start_idx..] {
-                    rules.push(self.parse_rule(rule_item, &literals)?);
-                }
-
-                if rules.is_empty() {
-                    return Err(MacroError(
-                        "syntax-rules must have at least one rule".to_string(),
-                    ));
-                }
-
-                Ok(MacroDefinition {
-                    name: name.to_string(),
-                    literals,
-                    rules,
-                })
-            }
-            _ => Err(MacroError("Invalid syntax-rules form".to_string())),
-        }
-    }
-
-    /// Parse the literals list from syntax-rules
-    fn parse_literals(&self, literals: &Value) -> Result<Vec<String>, MacroError> {
-        match literals {
-            Value::List(items) => {
-                let mut result = Vec::with_capacity(items.len()); // **PERFORMANCE:** Pre-allocate
-                for item in items {
-                    match item {
-                        Value::Symbol(s) => result.push(s.clone()),
-                        _ => return Err(MacroError("Literals must be symbols".to_string())),
-                    }
-                }
-                Ok(result)
-            }
-            _ => Err(MacroError("Literals must be a list".to_string())),
-        }
-    }
-
-    /// Parse a single rule from syntax-rules
-    fn parse_rule(&self, rule: &Value, literals: &[String]) -> Result<SyntaxRule, MacroError> {
-        match rule {
-            Value::List(items) if items.len() == 2 => {
-                let pattern_val = &items[0];
-                let template_val = &items[1];
-
-                // The entire pattern is parsed uniformly. The macro name (the first element
-                // of the pattern) is correctly treated as a pattern variable because the
-                // macro's name is never in its own literals list.
-                let pattern = self.parse_pattern_with_literals(pattern_val, literals)?;
-                let template = self.parse_template(template_val)?;
-
-                self.validate_pattern_template_consistency(&pattern, &template)?;
-
-                Ok(SyntaxRule { pattern, template })
-            }
-            _ => Err(MacroError(
-                "Rule must be a list of pattern and template".to_string(),
-            )),
-        }
-    }
-
-    /// Parse a pattern from a rule with proper literal handling
-    /// **R7RS Deviations:** Missing vector patterns, improper lists
-    fn parse_pattern_with_literals(
-        &self,
-        pattern: &Value,
-        literals: &[String],
-    ) -> Result<MacroPattern, MacroError> {
-        match pattern {
-            Value::Symbol(s) => {
-                if literals.contains(s) {
-                    Ok(MacroPattern::Literal(s.clone()))
-                } else if s == "_" {
-                    Ok(MacroPattern::Wildcard)
-                } else if s == "..." {
-                    Err(MacroError(
-                        "Ellipsis (...) must follow a pattern element and cannot be used as a variable.".to_string(),
-                    ))
-                } else {
-                    Ok(MacroPattern::Variable(s.clone()))
-                }
-            }
-            Value::List(items) => {
-                if items.is_empty() {
-                    return Ok(MacroPattern::List(Vec::new()));
-                }
-
-                let mut patterns = Vec::new();
-                let mut it = items.iter().peekable();
-
-                while let Some(item) = it.next() {
-                    // Check for ellipsis following the current item.
-                    let is_ellipsis = if let Some(&Value::Symbol(ref s)) = it.peek() {
-                        s == "..." && !literals.contains(s)
-                    } else {
-                        false
-                    };
-
-                    let sub_pattern = self.parse_pattern_with_literals(item, literals)?;
-
-                    if is_ellipsis {
-                        patterns.push(MacroPattern::Ellipsis(Box::new(sub_pattern)));
-                        it.next(); // Consume the '...'
-                    } else {
-                        patterns.push(sub_pattern);
-                    }
-                }
-                Ok(MacroPattern::List(patterns))
-            }
-            _ => {
-                // All other values (integers, strings, etc.) are treated as literals.
-                Ok(MacroPattern::Literal(format!("{}", pattern)))
-            }
-        }
-    }
-
-    /// Parse a template from a rule
-    fn parse_template(&self, template: &Value) -> Result<MacroTemplate, MacroError> {
-        match template {
-            Value::Symbol(s) => Ok(MacroTemplate::Variable(s.clone())),
-            Value::List(items) => {
-                // Handle `(quote <template>)` and `(quasiquote <template>)`
-                if !items.is_empty() {
-                    if let Value::Symbol(s) = &items[0] {
-                        if s == "quote" {
-                            if items.len() != 2 {
-                                return Err(MacroError(
-                                    "quote requires exactly one argument".to_string(),
-                                ));
-                            }
-                            // **R7RS RESTRICTED:** No expansion in quote
-                            return Ok(MacroTemplate::Literal(template.clone()));
-                        }
-                        if s == "quasiquote" {
-                            // **R7RS RESTRICTED:** No expansion in quasiquote
-                            return Ok(MacroTemplate::Literal(template.clone()));
-                        }
-                    }
-                }
-
-                // Handle `(<sub_template> ...)` as a single Ellipsis node
-                if items.len() == 2 {
-                    if let Value::Symbol(s) = &items[1] {
-                        if s == "..." {
-                            let sub_template = self.parse_template(&items[0])?;
-                            return Ok(MacroTemplate::Ellipsis(Box::new(sub_template)));
-                        }
-                    }
-                }
-
-                let mut templates = Vec::with_capacity(items.len());
-                let mut i = 0;
-                while i < items.len() {
-                    // Standard `(elem ...)` form inside a longer list
-                    if i + 1 < items.len() {
-                        if let Value::Symbol(s) = &items[i + 1] {
-                            if s == "..." {
-                                let sub_template = self.parse_template(&items[i])?;
-                                templates.push(MacroTemplate::Ellipsis(Box::new(sub_template)));
-                                i += 2;
-                                continue;
-                            }
-                        }
-                    }
-                    templates.push(self.parse_template(&items[i])?);
-                    i += 1;
-                }
-                Ok(MacroTemplate::List(templates))
-            }
-            _ => Ok(MacroTemplate::Literal(template.clone())),
-        }
-    }
-
-    /// This is the main entry point for pattern matching.
-    fn match_pattern_impl(
-        &self,
-        pattern: &MacroPattern,
-        value: &Value,
-        literals: &[String],
-        bindings: &mut PatternBindings,
-    ) -> Result<(), MacroError> {
-        match pattern {
-            MacroPattern::Variable(name) => {
-                if literals.contains(name) {
-                    // This is a literal - must match exactly
-                    if let Value::Symbol(s) = value {
-                        if s == name {
-                            return Ok(());
-                        }
-                    }
-                    Err(MacroError(format!("Expected literal {}", name)))
-                } else {
-                    // This is a pattern variable - bind it
-                    bindings.insert(name.clone(), vec![value.clone()]);
-                    Ok(())
-                }
-            }
-            MacroPattern::Wildcard => {
-                // Wildcard `_` matches anything and does not bind.
-                Ok(())
-            }
-            MacroPattern::List(sub_patterns) => {
-                if let Value::List(list_items) = value {
-                    self.match_list_pattern(sub_patterns, list_items, literals, bindings)
-                } else {
-                    // If the pattern is an empty list, it can only match an empty list value.
-                    if sub_patterns.is_empty() {
-                        return Err(MacroError(
-                            "Expected an empty list, but got a non-list value".to_string(),
-                        ));
-                    }
-                    Err(MacroError(
-                        "List pattern requires a list to match against".to_string(),
-                    ))
-                }
-            }
-            MacroPattern::Ellipsis(_) => {
-                // Standalone ellipsis should not be matched directly here.
-                // It's handled inside match_list_pattern.
-                Err(MacroError(
-                    "Ellipsis (...) must be inside a list pattern".to_string(),
-                ))
-            }
-            MacroPattern::Literal(lit) => {
-                let value_str = format!("{}", value);
-                if value_str == *lit {
-                    Ok(())
-                } else {
-                    Err(MacroError(format!(
-                        "Expected literal {}, got {}",
-                        lit, value_str
-                    )))
-                }
-            }
-        }
-    }
-
-    /// Match a list pattern against list items, handling ellipsis patterns
-    /// **R7RS COMPLIANT:** Handles fixed patterns before and after the ellipsis.
-    fn match_list_pattern(
-        &self,
-        pattern: &[MacroPattern],
-        input: &[Value],
-        literals: &[String],
-        bindings: &mut PatternBindings,
-    ) -> Result<(), MacroError> {
-        // Find the position of the ellipsis, if any. R7RS allows only one.
-        let ellipsis_pos = pattern
-            .iter()
-            .position(|p| matches!(p, MacroPattern::Ellipsis(_)));
-
-        if let Some(pos) = ellipsis_pos {
-            // Found an ellipsis. Split pattern into pre- and post-ellipsis parts.
-            let (pre_patterns, post_patterns_with_ellipsis) = pattern.split_at(pos);
-            let sub_pattern = match &post_patterns_with_ellipsis[0] {
-                MacroPattern::Ellipsis(sp) => sp,
-                _ => unreachable!(), // We know this is an ellipsis from ellipsis_pos
-            };
-            let post_patterns = &post_patterns_with_ellipsis[1..];
-
-            let required_len = pre_patterns.len() + post_patterns.len();
-            if input.len() < required_len {
-                return Err(MacroError(format!(
-                    "Input list too short for pattern. Expected at least {} elements, got {}",
-                    required_len,
-                    input.len()
-                )));
-            }
-
-            // Match pre-ellipsis patterns
-            for (i, p) in pre_patterns.iter().enumerate() {
-                self.match_pattern_impl(p, &input[i], literals, bindings)?;
-            }
-
-            // Match post-ellipsis patterns from the end of the input
-            let post_input_start = input.len() - post_patterns.len();
-            for (i, p) in post_patterns.iter().enumerate() {
-                self.match_pattern_impl(p, &input[post_input_start + i], literals, bindings)?;
-            }
-
-            // Match the ellipsis pattern against the middle part of the input
-            let ellipsis_input = &input[pre_patterns.len()..post_input_start];
-            let ellipsis_bindings =
-                self.match_ellipsis_pattern(sub_pattern, ellipsis_input, literals)?;
-
-            // Merge the bindings from the ellipsis match.
-            for (key, values) in ellipsis_bindings {
-                bindings.entry(key).or_default().extend(values);
-            }
-        } else {
-            // No ellipsis. The lengths must match exactly.
-            if pattern.len() != input.len() {
-                return Err(MacroError(format!(
-                    "Pattern and input list length mismatch. Expected {}, got {}",
-                    pattern.len(),
-                    input.len()
-                )));
-            }
-            for (p, i) in pattern.iter().zip(input.iter()) {
-                self.match_pattern_impl(p, i, literals, bindings)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Handles matching a sub-pattern followed by an ellipsis against remaining input.
-    fn match_ellipsis_pattern(
-        &self,
-        sub_pattern: &MacroPattern,
-        remaining_input: &[Value],
-        literals: &[String],
-    ) -> Result<PatternBindings, MacroError> {
-        let mut collected_bindings: PatternBindings = HashMap::new();
-
-        // First, collect all variables that could possibly be bound by the sub-pattern.
-        let mut all_vars = HashSet::new();
-        self.collect_pattern_vars(sub_pattern, &mut all_vars);
-
-        // Pre-initialize bindings for all possible variables to handle the zero-match case.
-        for var in &all_vars {
-            collected_bindings.insert(var.clone(), Vec::new());
-        }
-
-        // Now, iterate through the input and accumulate bindings.
-        for item in remaining_input {
-            let mut iter_bindings = PatternBindings::new();
-            self.match_pattern_impl(sub_pattern, item, literals, &mut iter_bindings)?;
-
-            // Append the matched values to the collected bindings.
-            for (key, mut values) in iter_bindings {
-                if let Some(existing_values) = collected_bindings.get_mut(&key) {
-                    existing_values.append(&mut values);
-                }
-            }
-        }
-
-        Ok(collected_bindings)
-    }
-
-    /// Helper to recursively collect all variable names from a pattern.
-    fn collect_pattern_vars(&self, pattern: &MacroPattern, vars: &mut HashSet<String>) {
-        match pattern {
-            MacroPattern::Variable(name) => {
-                // The `_` symbol is parsed as Wildcard, so any variable here is a real one.
-                vars.insert(name.clone());
-            }
-            MacroPattern::List(patterns) => {
-                for p in patterns {
-                    self.collect_pattern_vars(p, vars);
-                }
-            }
-            MacroPattern::Ellipsis(sub_pattern) => {
-                self.collect_pattern_vars(sub_pattern, vars);
-            }
-            MacroPattern::Literal(_) | MacroPattern::Wildcard => {} // Literals and wildcards don't introduce variables.
-        }
-    }
-
-    fn instantiate_template(
+    fn expand_macro_rule(
         &mut self,
-        template: &MacroTemplate,
-        bindings: &PatternBindings,
-        literals: &[String],
+        macro_def: &MacroDefinition,
+        full_form: &[Value],
     ) -> Result<Value, MacroError> {
-        self.instantiate_template_impl(template, bindings, false, literals)
-    }
-
-    fn instantiate_template_impl(
-        &mut self,
-        template: &MacroTemplate,
-        bindings: &PatternBindings,
-        in_quote: bool,
-        literals: &[String],
-    ) -> Result<Value, MacroError> {
-        match template {
-            MacroTemplate::Variable(name) => {
-                // **R7RS CORRECTNESS:** A symbol in the template is treated in the following order:
-                // 1. If it's in the `literals` list, it's a literal symbol.
-                // 2. If it's a pattern variable from the pattern, it's substituted.
-                // 3. Otherwise, it's a free symbol that is inserted as-is.
-
-                // 1. Check for literal
-                if literals.contains(name) {
-                    // R7RS specifies that a literal identifier in a template is replaced by the
-                    // symbol for that identifier. When evaluated, this symbol must not be treated
-                    // as a variable lookup. The standard way to achieve this is to expand it
-                    // as if it were quoted.
-                    return Ok(Value::List(vec![
-                        Value::Symbol("quote".to_string()),
-                        Value::Symbol(name.clone()),
-                    ]));
-                }
-
-                // 2. Check for pattern variable binding
-                if let Some(values) = bindings.get(name) {
-                    if values.len() == 1 {
-                        let value = &values[0];
-                        self.track_emitted_macro_symbols(value);
-                        Ok(value.clone())
-                    } else if values.is_empty() {
-                        Err(MacroError(format!(
-                            "Pattern variable {} used outside its ellipsis scope",
-                            name
-                        )))
-                    } else {
-                        Err(MacroError(format!(
-                            "Pattern variable {} bound to multiple values outside ellipsis",
-                            name
-                        )))
-                    }
-                } else {
-                    // 3. It's a free symbol from the template.
-                    if self.known_macro_symbols.contains(name) {
-                        self.emitted_macro_symbols.insert(name.clone());
-                    }
-                    Ok(Value::Symbol(name.clone()))
-                }
-            }
-            MacroTemplate::Literal(value) => {
-                self.track_emitted_macro_symbols(value);
-                Ok(value.clone())
-            }
-            MacroTemplate::List(sub_templates) => {
-                if !in_quote {
-                    if let Some((is_quote, template_to_quote)) = self.is_quote_form(sub_templates) {
-                        let inner_value = self.instantiate_template_impl(
-                            template_to_quote,
-                            bindings,
-                            true,
-                            literals,
-                        )?;
-                        return Ok(Value::List(vec![
-                            Value::Symbol(
-                                if is_quote { "quote" } else { "quasiquote" }.to_string(),
-                            ),
-                            inner_value,
-                        ]));
-                    }
-                }
-
-                let mut result = Vec::new();
-                for sub_template in sub_templates {
-                    if let MacroTemplate::Ellipsis(inner_template) = sub_template {
-                        let expanded =
-                            self.expand_ellipsis(inner_template, bindings, in_quote, literals)?;
-                        result.extend(expanded);
-                    } else {
-                        result.push(self.instantiate_template_impl(
-                            sub_template,
-                            bindings,
-                            in_quote,
-                            literals,
-                        )?);
-                    }
-                }
-                Ok(Value::List(result))
-            }
-            MacroTemplate::Ellipsis(sub_template) => {
-                if in_quote {
-                    let expanded_values =
-                        self.expand_ellipsis(sub_template, bindings, true, literals)?;
-                    Ok(Value::List(expanded_values))
-                } else {
-                    Err(MacroError(
-                        "Ellipsis (...) must be inside a list in a template".to_string(),
-                    ))
-                }
-            }
-        }
-    }
-
-    /// Helper to detect `(quote ...)` or `(quasiquote ...)` forms in templates.
-    /// Returns `(is_quote, template_to_quote)`.
-    fn is_quote_form<'a>(
-        &self,
-        templates: &'a [MacroTemplate],
-    ) -> Option<(bool, &'a MacroTemplate)> {
-        if templates.len() == 2 {
-            if let Some(MacroTemplate::Literal(Value::Symbol(s))) = templates.first() {
-                if s == "quote" {
-                    return Some((true, &templates[1]));
-                }
-                if s == "quasiquote" {
-                    return Some((false, &templates[1]));
-                }
-            }
-        }
-        None
-    }
-
-    /// Expands an ellipsis template.
-    fn expand_ellipsis(
-        &mut self,
-        template: &MacroTemplate,
-        bindings: &PatternBindings,
-        in_quote: bool,
-        literals: &[String],
-    ) -> Result<Vec<Value>, MacroError> {
-        let mut vars = HashSet::new();
-        self.collect_template_vars(template, &mut vars);
-
-        let max_len = vars
-            .iter()
-            .filter_map(|var| bindings.get(var))
-            .map(|vals| vals.len())
-            .max()
-            .unwrap_or(0);
-
-        if max_len == 0 {
-            return Ok(Vec::new());
-        }
-
-        let mut expanded_values = Vec::new();
-        for i in 0..max_len {
-            let mut instance_bindings = PatternBindings::new();
-
-            // Bind ellipsis variables for the current iteration
-            for var_name in &vars {
-                if let Some(values) = bindings.get(var_name) {
-                    if i < values.len() {
-                        instance_bindings.insert(var_name.clone(), vec![values[i].clone()]);
-                    }
-                }
-            }
-
-            // Also include non-ellipsis variables
-            for (key, values) in bindings {
-                if !vars.contains(key) {
-                    instance_bindings.insert(key.clone(), values.clone());
-                }
-            }
-
-            let expanded =
-                self.instantiate_template_impl(template, &instance_bindings, in_quote, literals)?;
-
-            if let Value::List(items) = expanded {
-                if in_quote {
-                    expanded_values.push(Value::List(items));
-                } else {
-                    expanded_values.extend(items);
-                }
-            } else {
-                expanded_values.push(expanded);
-            }
-        }
-
-        Ok(expanded_values)
-    }
-
-    /// Track symbols that are known macros if they appear in the expanded output
-    fn track_emitted_macro_symbols(&mut self, value: &Value) {
-        match value {
-            Value::Symbol(name) => {
-                if self.known_macro_symbols.contains(name) {
-                    self.emitted_macro_symbols.insert(name.clone());
-                }
-            }
-            Value::List(items) => {
-                for item in items {
-                    self.track_emitted_macro_symbols(item);
-                }
-            }
-            _ => {} // Other value types don't contain symbols
-        }
-    }
-
-    /// Get a macro definition from the local macro storage
-    fn get_macro(&self, name: &str) -> Option<MacroDefinition> {
-        self.macros.get(name).cloned()
-    }
-
-    /// **DEBUG:** Public accessor for macro definitions (for testing)
-    pub fn get_macro_def(&self, name: &str) -> Option<MacroDefinition> {
-        self.get_macro(name)
-    }
-
-    /// **SIMPLIFIED:** Generate a fresh identifier when needed
-    /// Only used in rare cases where hygiene actually matters
-    pub fn gensym(&mut self, base: &str) -> String {
-        self.gensym_counter += 1;
-        format!("{}$gen${}", base, self.gensym_counter)
-    }
-    // **SIMPLIFIED:** No complex hygiene tracking needed for R7RS RESTRICTED implementation
-
-    /// **R7RS COMPLIANT:** Validate pattern variables are used consistently in templates
-    /// Enforces that template variables exist in pattern and are used at consistent ellipsis depths
-    /// **DEPTH TRACKING:** Tracks ellipsis nesting depth for recursion protection (max depth 10)
-    fn validate_pattern_template_consistency(
-        &self,
-        pattern: &MacroPattern,
-        template: &MacroTemplate,
-    ) -> Result<(), MacroError> {
-        // Collect pattern variables with their ellipsis depths
-        let mut pattern_vars: HashMap<String, usize> = HashMap::new();
-        Self::collect_pattern_vars_with_depth(pattern, 0, &mut pattern_vars);
-
-        // **CHECK 1:** Limit pattern ellipsis depth for recursion protection
-        const MAX_ELLIPSIS_DEPTH: usize = 10;
-        let max_pattern_depth = pattern_vars.values().max().copied().unwrap_or(0);
-        if max_pattern_depth > MAX_ELLIPSIS_DEPTH {
-            return Err(MacroError(format!(
-                "Ellipsis nesting depth {} exceeds maximum ({}) for recursion protection. \
-                 Deeply nested ellipsis patterns may cause stack overflow.",
-                max_pattern_depth, MAX_ELLIPSIS_DEPTH
-            )));
-        }
-
-        // **CHECK 2:** Limit template ellipsis depth for recursion protection
-        let max_template_depth = Self::template_max_depth(template, 0);
-        if max_template_depth > MAX_ELLIPSIS_DEPTH {
-            return Err(MacroError(format!(
-                "Ellipsis nesting depth {} in template exceeds maximum ({}) for recursion protection. \
-                 Deeply nested ellipsis expansion may cause stack overflow.",
-                max_template_depth, MAX_ELLIPSIS_DEPTH
-            )));
-        }
-
-        // Validate template variables exist in pattern with correct depths
-        Self::validate_template_vars(template, 0, &pattern_vars)?;
-
-        Ok(())
-    }
-
-    /// Recursively collect pattern variables with their ellipsis depths
-    fn collect_pattern_vars_with_depth(
-        pattern: &MacroPattern,
-        depth: usize,
-        vars: &mut HashMap<String, usize>,
-    ) {
-        match pattern {
-            MacroPattern::Variable(name) => {
-                vars.insert(name.clone(), depth);
-            }
-            MacroPattern::List(patterns) => {
-                for p in patterns {
-                    Self::collect_pattern_vars_with_depth(p, depth, vars);
-                }
-            }
-            MacroPattern::Ellipsis(sub_pattern) => {
-                Self::collect_pattern_vars_with_depth(sub_pattern, depth + 1, vars);
-            }
-            MacroPattern::Literal(_) | MacroPattern::Wildcard => {}
-        }
-    }
-
-    /// Recursively validate template variables match pattern structure
-    fn validate_template_vars(
-        template: &MacroTemplate,
-        depth: usize,
-        pattern_vars: &HashMap<String, usize>,
-    ) -> Result<(), MacroError> {
-        Self::validate_template_vars_impl(template, depth, pattern_vars, false)
-    }
-
-    fn validate_template_vars_impl(
-        template: &MacroTemplate,
-        depth: usize,
-        pattern_vars: &HashMap<String, usize>,
-        inside_quote: bool,
-    ) -> Result<(), MacroError> {
-        match template {
-            MacroTemplate::Variable(name) => {
-                // **R7RS:** Underscore is not allowed in templates (it doesn't bind)
-                // But skip this check inside quoted forms where _ is a literal symbol
-                if name == "_" && !inside_quote {
-                    return Err(MacroError(
-                        "R7RS: Underscore (_) wildcard cannot be used in templates - it doesn't bind a value".to_string()
-                    ));
-                }
-
-                if let Some(&pattern_depth) = pattern_vars.get(name) {
-                    // **R7RS COMPLIANT:** Template depth must be >= pattern depth
-                    // - Template depth > pattern depth is VALID (causes replication)
-                    // - Template depth < pattern depth is INVALID (cannot flatten)
-                    // Example VALID: pattern x at depth 1, template x at depth 2 (replicates)
-                    // Example INVALID: pattern x at depth 2, template x at depth 1 (cannot flatten)
-                    if depth < pattern_depth {
-                        return Err(MacroError(format!(
-                            "Pattern variable '{}' used at inconsistent ellipsis depth \
-                             (pattern depth: {}, template depth: {}) - template depth cannot be less than pattern depth",
-                            name, pattern_depth, depth
-                        )));
-                    }
-                    // depth >= pattern_depth is OK per R7RS
-                }
-                // Variables not in pattern_vars are literals from the template (OK)
-                Ok(())
-            }
-            MacroTemplate::List(templates) => {
-                // Check if this is a quote form
-                let is_quote = if let Some(MacroTemplate::Variable(name)) = templates.first() {
-                    name == "quote"
-                } else {
-                    false
-                };
-
-                for t in templates {
-                    Self::validate_template_vars_impl(
-                        t,
-                        depth,
-                        pattern_vars,
-                        inside_quote || is_quote,
-                    )?;
-                }
-                Ok(())
-            }
-            MacroTemplate::Ellipsis(sub_template) => Self::validate_template_vars_impl(
-                sub_template,
-                depth + 1,
-                pattern_vars,
-                inside_quote,
-            ),
-            MacroTemplate::Literal(_) => Ok(()),
-        }
-    }
-
-    /// Compute maximum ellipsis depth in a template
-    fn template_max_depth(template: &MacroTemplate, current_depth: usize) -> usize {
-        match template {
-            MacroTemplate::Variable(_) | MacroTemplate::Literal(_) => current_depth,
-            MacroTemplate::List(templates) => templates
+        debug_trace!("Expanding macro {}", macro_def.name);
+        debug_trace!(
+            "  Input: ({})",
+            full_form
                 .iter()
-                .map(|t| Self::template_max_depth(t, current_depth))
-                .max()
-                .unwrap_or(current_depth),
-            MacroTemplate::Ellipsis(sub_template) => {
-                Self::template_max_depth(sub_template, current_depth + 1)
-            }
-        }
-    }
+                .map(value_compact)
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
 
-    fn collect_template_vars(&self, template: &MacroTemplate, vars: &mut HashSet<String>) {
-        match template {
-            MacroTemplate::Variable(name) => {
-                vars.insert(name.clone());
-            }
-            MacroTemplate::List(templates) => {
-                for t in templates {
-                    self.collect_template_vars(t, vars);
+        for (rule_idx, compiled_rule) in macro_def.compiled_rules.iter().enumerate() {
+            debug_trace!(
+                "  Trying rule {}/{}",
+                rule_idx + 1,
+                macro_def.compiled_rules.len()
+            );
+
+            // Use the new modular matcher
+            let input = Value::List(full_form.to_vec());
+            match match_pattern(&compiled_rule.pattern, &input, &macro_def.literals) {
+                MatchResult::Success(context) => {
+                    debug_trace!("  Rule {} matched!", rule_idx + 1);
+
+                    // Use the new modular expander
+                    // Pass pattern variables (not template variables) to distinguish from literals
+                    let result = expand_template(
+                        &compiled_rule.template,
+                        &context,
+                        &compiled_rule.pattern.variables,
+                    )?;
+                    debug_trace!("  Expansion result: {}", value_compact(&result));
+                    return Ok(result);
                 }
-            }
-            MacroTemplate::Ellipsis(sub_template) => {
-                self.collect_template_vars(sub_template, vars);
-            }
-            MacroTemplate::Literal(_) => {}
-        }
-    }
-
-    /// **R7RS HYGIENE:** Simple hygienic expansion for top-level macros
-    /// This is a simplified implementation that works because we don't support
-    /// local macro bindings. It provides basic hygiene by ensuring:
-    /// - Macro-introduced identifiers are distinct from user identifiers
-    /// - Fresh identifiers are generated for macro bindings to prevent capture
-    /// - Lexical scoping is preserved for user-provided identifiers
-    fn hygienic_expand(
-        &mut self,
-        macro_def: &MacroDefinition,
-        input: &[Value],
-    ) -> Result<Value, MacroError> {
-        // 1. Generate fresh identifiers for macro-introduced bindings
-        let fresh_macro_name = self.gensym(&macro_def.name);
-        let mut fresh_macro_def = macro_def.clone();
-        fresh_macro_def.name = fresh_macro_name.clone();
-
-        // 2. Expand using the fresh macro definition
-        let expanded = self.expand_macro_simple(&fresh_macro_def, input)?;
-
-        // 3. Rename the macro invocation to its fresh name
-        let mut final_expansion = expanded;
-        self.rename_macro_invocation(&mut final_expansion, &fresh_macro_name)?;
-
-        Ok(final_expansion)
-    }
-
-    /// Rename a macro invocation in the AST to its fresh name
-    fn rename_macro_invocation(&self, ast: &mut Value, fresh_name: &str) -> Result<(), MacroError> {
-        match ast {
-            Value::Symbol(ref mut s) => {
-                // Rename the macro name to the fresh name
-                if *s == fresh_name {
-                    *s = format!("{}$renamed", s);
+                MatchResult::Failure(msg) => {
+                    debug_trace!("  Rule {} did not match: {}", rule_idx + 1, msg);
                 }
-            }
-            Value::List(items) => {
-                for item in items {
-                    self.rename_macro_invocation(item, fresh_name)?;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    /// Store a macro definition
-    fn store_macro(&mut self, macro_def: MacroDefinition) -> Result<(), MacroError> {
-        let name = macro_def.name.clone();
-        self.macros.insert(name.clone(), macro_def);
-        self.known_macro_symbols.insert(name);
-        Ok(())
-    }
-
-    /// **SIMPLIFIED:** Expand a macro using standard syntax-rules semantics
-    /// Basic hygiene through template expansion - good enough for most cases
-    fn expand_macro_simple(
-        &mut self,
-        macro_def: &MacroDefinition,
-        input: &[Value],
-    ) -> Result<Value, MacroError> {
-        for rule in &macro_def.rules {
-            let mut bindings = PatternBindings::new();
-            // R7RS requires matching the pattern against the entire macro invocation form,
-            // including the macro name.
-            let full_input = std::iter::once(&Value::Symbol(macro_def.name.clone()))
-                .chain(input.iter())
-                .cloned()
-                .collect::<Vec<_>>();
-
-            if self
-                .match_pattern_impl(
-                    &rule.pattern,
-                    &Value::List(full_input),
-                    &macro_def.literals,
-                    &mut bindings,
-                )
-                .is_ok()
-            {
-                return self.instantiate_template(&rule.template, &bindings, &macro_def.literals);
             }
         }
 
@@ -1189,271 +221,29 @@ impl MacroExpander {
         )))
     }
 
-    /// Get the count of known macro symbols
-    pub fn known_macro_count(&self) -> usize {
-        self.known_macro_symbols.len()
+    fn store_macro(&mut self, macro_def: MacroDefinition) -> Result<(), MacroError> {
+        let name = macro_def.name.clone();
+        self.macros.insert(name.clone(), macro_def);
+        self.known_macro_symbols.insert(name);
+        Ok(())
     }
 
-    /// Load standard R7RS derived expressions from macro prelude
-    ///
-    /// This method loads all the standard Scheme macros that are defined as
-    /// "derived expressions" in R7RS specification, including:
-    /// - `and`, `or` - logical operators (section 4.2.1)
-    /// - `when`, `unless` - simple conditionals (section 4.2.6)
-    /// - `cond`, `case` - multi-way conditionals (sections 4.2.1, 4.2.5)
-    /// - `let`, `let*` - local binding forms (section 4.2.2)
-    /// - `do` - iteration form (section 4.2.4)
-    ///
-    /// These are loaded from prelude/macros.scm at startup and are essential
-    /// for a complete R7RS-compliant Scheme implementation.
-    /// Load prelude macros for standard (non-CPS) Scheme
+    fn get_macro(&self, name: &str) -> Option<MacroDefinition> {
+        self.macros.get(name).cloned()
+    }
+
     pub fn load_prelude(&mut self) -> Result<(), MacroError> {
-        // Standard R7RS macro prelude only
-        const STANDARD_MACRO_PRELUDE: &str = include_str!("../prelude/macros.scm");
+        let prelude_path = "prelude/macros.scm";
+        let prelude_content = std::fs::read_to_string(prelude_path)
+            .map_err(|e| MacroError(format!("Failed to read prelude file: {}", e)))?;
 
-        self.load_prelude_from_str(STANDARD_MACRO_PRELUDE, "standard prelude")
-    }
+        let expressions = crate::parser::parse_multiple(&prelude_content)
+            .map_err(|e| MacroError(format!("Failed to parse prelude file: {}", e)))?;
 
-    /// Internal helper to load prelude from a string
-    fn load_prelude_from_str(
-        &mut self,
-        prelude_str: &str,
-        prelude_name: &str,
-    ) -> Result<(), MacroError> {
-        use crate::parser::parse_multiple;
-
-        // Parse and load all macro definitions
-        match parse_multiple(prelude_str) {
-            Ok(expressions) => {
-                for ast in expressions {
-                    if let Err(e) = self.expand_once(&ast) {
-                        return Err(MacroError(format!(
-                            "Failed to load {} macro '{}': {}\nThe interpreter cannot continue with a broken prelude.", 
-                            prelude_name, ast, e
-                        )));
-                    }
-                }
-            }
-            Err(e) => {
-                return Err(MacroError(format!(
-                    "Failed to parse {} macros: {}\nThe interpreter cannot continue with a broken prelude.", 
-                    prelude_name, e
-                )));
-            }
+        for expr in expressions {
+            self.expand_once(&expr)?;
         }
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::value::Environment;
-
-    #[test]
-    fn test_parse_simple_syntax_rules() {
-        let env = Rc::new(Environment::new());
-        let expander = MacroExpander::new(env);
-
-        // (syntax-rules () [(when test body) (if test body)])
-        let syntax_rules = Value::List(vec![
-            Value::Symbol("syntax-rules".to_string()),
-            Value::List(vec![]), // Empty literals
-            Value::List(vec![
-                Value::List(vec![
-                    Value::Symbol("when".to_string()),
-                    Value::Symbol("test".to_string()),
-                    Value::Symbol("body".to_string()),
-                ]),
-                Value::List(vec![
-                    Value::Symbol("if".to_string()),
-                    Value::Symbol("test".to_string()),
-                    Value::Symbol("body".to_string()),
-                ]),
-            ]),
-        ]);
-
-        let result = expander.parse_syntax_rules("when", &syntax_rules);
-        assert!(result.is_ok());
-
-        let macro_def = result.unwrap();
-        assert_eq!(macro_def.name, "when");
-        assert_eq!(macro_def.literals.len(), 0);
-        assert_eq!(macro_def.rules.len(), 1);
-    }
-
-    #[test]
-    fn test_pattern_parsing() {
-        let env = Rc::new(Environment::new());
-        let expander = MacroExpander::new(env);
-        let literals = vec![];
-
-        // Simple symbol pattern
-        let pattern = Value::Symbol("test".to_string());
-        let result = expander.parse_pattern_with_literals(&pattern, &literals);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), MacroPattern::Variable("test".to_string()));
-
-        // List pattern
-        let pattern = Value::List(vec![
-            Value::Symbol("when".to_string()),
-            Value::Symbol("test".to_string()),
-        ]);
-        let result = expander.parse_pattern_with_literals(&pattern, &literals);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_unsupported_macro_forms_error() {
-        let env = Rc::new(Environment::new());
-        let mut expander = MacroExpander::new(env);
-
-        // Test identifier-syntax rejection
-        let identifier_syntax_ast = crate::parser::parse("(identifier-syntax foo)").unwrap();
-        let result = expander.expand(&identifier_syntax_ast);
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(err_msg.contains("identifier-syntax"));
-        assert!(err_msg.contains("R7RS RESTRICTED"));
-
-        // Test make-variable-transformer rejection
-        let make_var_transformer_ast =
-            crate::parser::parse("(make-variable-transformer foo)").unwrap();
-        let result = expander.expand(&make_var_transformer_ast);
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(err_msg.contains("make-variable-transformer"));
-        assert!(err_msg.contains("R7RS RESTRICTED"));
-
-        // Test syntax-case rejection
-        let syntax_case_ast = crate::parser::parse("(syntax-case foo () (x x))").unwrap();
-        let result = expander.expand(&syntax_case_ast);
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(err_msg.contains("syntax-case"));
-        assert!(err_msg.contains("R7RS RESTRICTED"));
-
-        // Test let-syntax rejection
-        let let_syntax_ast = crate::parser::parse("(let-syntax () 42)").unwrap();
-        let result = expander.expand(&let_syntax_ast);
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(err_msg.contains("let-syntax"));
-        assert!(err_msg.contains("R7RS RESTRICTED"));
-
-        // All should mention "syntax-rules" as the supported alternative
-        assert!(err_msg.contains("syntax-rules"));
-    }
-
-    #[test]
-    fn test_pattern_variable_depth_mismatch_error() {
-        // INVALID: Pattern variable at depth 2, used at depth 1 in template
-        // This tries to flatten nested structure which violates R7RS
-        let env = Rc::new(Environment::new());
-        let mut expander = MacroExpander::new(env);
-        let bad_macro =
-            "(define-syntax invalid (syntax-rules () ((invalid ((x ...) ...)) (list x ...))))";
-        let ast = crate::parser::parse(bad_macro).unwrap();
-        let result = expander.expand(&ast);
-        assert!(
-            result.is_err(),
-            "Should reject template depth < pattern depth"
-        );
-        let err_msg = format!("{}", result.unwrap_err());
-        println!("Error: {}", err_msg);
-        assert!(
-            err_msg.contains("template depth cannot be less than pattern depth"),
-            "Error message should mention R7RS depth constraint"
-        );
-    }
-
-    #[test]
-    fn test_r7rs_ellipsis_depth_valid_cases() {
-        // VALID: Pattern variable at depth 0, used at depth 1 in template
-        // R7RS allows this: replicates the single value
-        // Example: (replicate 5) => (5 5 5 ...) if template repeats it
-        let env1 = Rc::new(Environment::new());
-        let mut expander1 = MacroExpander::new(env1);
-        let valid_macro1 = "(define-syntax replicate-single (syntax-rules () ((replicate-single x) (list x x x))))";
-        let ast1 = crate::parser::parse(valid_macro1).unwrap();
-        let result1 = expander1.expand(&ast1);
-        assert!(
-            result1.is_ok(),
-            "VALID case failed: pattern depth 0, template depth 0 (simple substitution)"
-        );
-
-        // VALID: Pattern variable at depth 1, used at depth 1 in template
-        // Simple case: same depth, standard ellipsis usage
-        let env2 = Rc::new(Environment::new());
-        let mut expander2 = MacroExpander::new(env2);
-        let valid_macro2 =
-            "(define-syntax simple (syntax-rules () ((simple (x ...) body) (list x ... body))))";
-        let ast2 = crate::parser::parse(valid_macro2).unwrap();
-        let result2 = expander2.expand(&ast2);
-        assert!(
-            result2.is_ok(),
-            "VALID case failed: pattern depth 1, template depth 1"
-        );
-
-        // VALID: Pattern variable at depth 1, used at depth 2 in template
-        // This causes replication: each x gets duplicated
-        // Example: (replicate 1 2 3) => ((1 1) (2 2) (3 3))
-        let env3 = Rc::new(Environment::new());
-        let mut expander3 = MacroExpander::new(env3);
-        let valid_macro3 =
-            "(define-syntax replicate (syntax-rules () ((replicate x ...) ((x x) ...))))";
-        let ast3 = crate::parser::parse(valid_macro3).unwrap();
-        let result3 = expander3.expand(&ast3);
-        assert!(
-            result3.is_ok(),
-            "VALID case failed: pattern depth 1, template depth 2 (replication)"
-        );
-    }
-
-    #[test]
-    fn test_r7rs_ellipsis_depth_invalid_flattening() {
-        // INVALID: Pattern variable at depth 2, used at depth 1 in template
-        // This tries to flatten nested structure which violates R7RS
-        let env = Rc::new(Environment::new());
-        let mut expander = MacroExpander::new(env);
-        let invalid_macro =
-            "(define-syntax invalid (syntax-rules () ((invalid ((x ...) ...)) (list x ...))))";
-        let ast = crate::parser::parse(invalid_macro).unwrap();
-        let result = expander.expand(&ast);
-        assert!(
-            result.is_err(),
-            "INVALID case should fail: pattern depth 2, template depth 1 (flattening)"
-        );
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(
-            err_msg.contains("template depth cannot be less than pattern depth"),
-            "Error message should mention depth constraint violation"
-        );
-    }
-
-    #[test]
-    fn test_macro_in_quote_context_error() {
-        let env = Rc::new(Environment::new());
-        let mut expander = MacroExpander::new(env);
-
-        // First define a macro
-        let define_macro = "(define-syntax my-macro (syntax-rules () ((my-macro x) (+ x 1))))";
-        let ast = crate::parser::parse(define_macro).unwrap();
-        expander.expand(&ast).unwrap();
-
-        // Now try to use it in a template with quote
-        let bad_template =
-            "(define-syntax bad-quote (syntax-rules () ((bad-quote x) (quote (my-macro x)))))";
-        let ast2 = crate::parser::parse(bad_template).unwrap();
-        let result = expander.expand(&ast2);
-        if result.is_err() {
-            let err_msg = format!("{}", result.unwrap_err());
-            println!("Quote error: {}", err_msg);
-            assert!(err_msg.contains("quote") || err_msg.contains("R7RS RESTRICTED"));
-        } else {
-            // If no error, this is also OK for now - the restriction is about expansion, not definition
-            println!("No error during macro definition - checking expansion would require calling the macro");
-        }
     }
 }

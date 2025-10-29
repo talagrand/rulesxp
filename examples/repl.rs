@@ -2,7 +2,7 @@ use rulesxp::Error;
 use rulesxp::ast::Value;
 use rulesxp::evaluator;
 use rulesxp::jsonlogic::{ast_to_jsonlogic, parse_jsonlogic};
-use rulesxp::scheme::parse_scheme;
+use rulesxp::scheme::{ParseConfig, parse_scheme_with_config};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use std::panic;
@@ -101,8 +101,11 @@ fn run_repl() {
                             Err(e) => Err(e),
                         }
                     } else {
-                        // Try Scheme parsing
-                        match parse_scheme(line) {
+                        // Try Scheme parsing with comments enabled
+                        let config = ParseConfig {
+                            handle_comments: true,
+                        };
+                        match parse_scheme_with_config(line, config) {
                             Ok(expr) => {
                                 // If in JSONLogic mode, show the parsed expression as JSONLogic
                                 if jsonlogic_mode && let Ok(json_str) = ast_to_jsonlogic(&expr) {

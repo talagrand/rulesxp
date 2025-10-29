@@ -37,6 +37,9 @@
 
 pub mod builtins;
 pub mod compiler;
+pub mod macro_compiler;
+pub mod macro_expander;
+pub mod macro_matcher;
 pub mod macros;
 pub mod parser;
 pub mod processed_ast;
@@ -49,6 +52,9 @@ pub mod value;
 pub mod vm;
 
 pub use compiler::{compile, CompileError};
+pub use macro_compiler::MacroDefinition;
+pub use macro_expander::expand_template;
+pub use macro_matcher::{Binding, MatchContext, MatchResult};
 pub use macros::MacroExpander;
 pub use parser::{parse, ParseError};
 pub use processed_ast::{CustomBuiltin, ProcessedAST, ProcessedCompileError};

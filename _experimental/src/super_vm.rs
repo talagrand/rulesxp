@@ -1744,9 +1744,7 @@ impl SuperStackVM {
                                     }
 
                                     // Push LetrecDefineStore frames in REVERSE order (so they execute first-to-last)
-                                    for (_i, (name, value_expr)) in
-                                        define_tuples.iter().rev().enumerate()
-                                    {
+                                    for (name, value_expr) in define_tuples.iter().rev() {
                                         stack.push(SuperEvalFrame::LetrecDefineStore {
                                             name: *name,
                                             letrec_env: Rc::clone(&letrec_env_rc),

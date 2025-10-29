@@ -12,24 +12,43 @@
       (not (null? x))
       #f))
 
-;; ===== LIST UTILITIES =====
-;; Standard list length function
-(define (length lst)
-  (if (null? lst)
-      0
-      (+ 1 (length (cdr lst)))))
-      
-
 ;; ===== LIST ACCESSOR COMBINATORS =====
+;; R7RS specifies all 30 combinations of car/cdr up to 4 levels.
+;; These are implemented compositionally for clarity.
+
+;; Level 2
+(define (caar x) (car (car x)))
 (define (cadr x) (car (cdr x)))
 (define (cdar x) (cdr (car x)))
 (define (cddr x) (cdr (cdr x)))
-(define (caar x) (car (car x)))
-(define (caddr x) (car (cdr (cdr x))))
-(define (cadar x) (car (cdr (car x))))
-(define (cdddr x) (cdr (cdr (cdr x))))
-(define (cdaar x) (cdr (car (car x))))
-(define (cadadr x) (car (cdr (car (cdr x)))))
+
+;; Level 3
+(define (caaar x) (car (caar x)))
+(define (caadr x) (car (cadr x)))
+(define (cadar x) (car (cdar x)))
+(define (caddr x) (car (cddr x)))
+(define (cdaar x) (cdr (caar x)))
+(define (cdadr x) (cdr (cadr x)))
+(define (cddar x) (cdr (cdar x)))
+(define (cdddr x) (cdr (cddr x)))
+
+;; Level 4
+(define (caaaar x) (car (caaar x)))
+(define (caaadr x) (car (caadr x)))
+(define (caadar x) (car (cadar x)))
+(define (caaddr x) (car (caddr x)))
+(define (cadaar x) (car (cdaar x)))
+(define (cadadr x) (car (cdadr x)))
+(define (caddar x) (car (cddar x)))
+(define (cadddr x) (car (cdddr x)))
+(define (cdaaar x) (cdr (caaar x)))
+(define (cdaadr x) (cdr (caadr x)))
+(define (cdadar x) (cdr (cadar x)))
+(define (cdaddr x) (cdr (caddr x)))
+(define (cddaar x) (cdr (cdaar x)))
+(define (cddadr x) (cdr (cdadr x)))
+(define (cdddar x) (cdr (cddar x)))
+(define (cddddr x) (cdr (cdddr x)))
 
 ;; ===== LIST UTILITIES =====
 (define (length lst)
@@ -60,6 +79,11 @@
   (if (= n 0)
       lst
       (list-tail (cdr lst) (- n 1))))
+
+(define (list-copy lst)
+  (if (null? lst)
+      '()
+      (cons (car lst) (list-copy (cdr lst)))))
 
 ;; ===== HIGHER-ORDER FUNCTIONS =====
 ;; R7RS variadic map: (map proc list1 list2 ...) applies proc to corresponding elements
@@ -123,9 +147,12 @@
 (define (abs x) (if (< x 0) (- x) x))
 (define (max x y) (if (> x y) x y))
 (define (min x y) (if (< x y) x y))
-;; **R7RS RESTRICTED:** even? and odd? not implemented because modulo is not supported
+
+;; **R7RS RESTRICTED:** `even?` and `odd?` require the `modulo` or `remainder`
+;; primitive, which is not implemented.
 ;; (define (even? n) (= (modulo n 2) 0))
 ;; (define (odd? n) (not (even? n)))
+
 (define (zero? n) (= n 0))
 (define (positive? n) (> n 0))
 (define (negative? n) (< n 0))
@@ -160,17 +187,6 @@
 
 (define (newline)
   (display "\n"))
-
-;; ===== CASE-LAMBDA SUPPORT =====
-;; Helper function for case-lambda: efficiently compute list length
-;; Used by runtime dispatcher to determine which clause to invoke
-(define ($length* lst)
-  (if (pair? lst)
-      (let loop ((lst lst) (n 0))
-        (if (pair? lst)
-            (loop (cdr lst) (+ n 1))
-            n))
-      0))
 
 ;; ===== APPLY =====
 ;; R7RS apply: (apply proc arg1 ... args)

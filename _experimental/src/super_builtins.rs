@@ -191,6 +191,19 @@ impl<'ast> ProcessedValue<'ast> {
         ProcessedValueDisplay {
             value: self,
             interner,
+            scheme_display: false,
+        }
+    }
+
+    /// Returns a Display adapter for scheme's `display` function
+    pub fn display_for_scheme<'b>(
+        &'b self,
+        interner: &'b SchemeStringInterner,
+    ) -> ProcessedValueDisplay<'b, 'ast> {
+        ProcessedValueDisplay {
+            value: self,
+            interner,
+            scheme_display: true,
         }
     }
 }
@@ -199,10 +212,12 @@ impl<'ast> ProcessedValue<'ast> {
 pub struct ProcessedValueDisplay<'a, 'ast> {
     value: &'a ProcessedValue<'ast>,
     interner: &'a SchemeStringInterner,
+    scheme_display: bool,
 }
 
 impl<'a, 'ast> std::fmt::Display for ProcessedValueDisplay<'a, 'ast> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // This is the default, non-scheme-display formatting
         match self.value {
             ProcessedValue::Boolean(b) => write!(f, "#{}", if *b { "t" } else { "f" }),
             ProcessedValue::Integer(n) => write!(f, "{}", n),
@@ -226,30 +241,11 @@ impl<'a, 'ast> std::fmt::Display for ProcessedValueDisplay<'a, 'ast> {
                 }
                 write!(f, ")")
             }
-            ProcessedValue::ResolvedBuiltin { name, arity, .. } => {
+            ProcessedValue::ResolvedBuiltin { name, .. } => {
                 let name_str = self.interner.resolve(*name).unwrap_or("<unresolved>");
-                write!(f, "#<builtin:{}:{:?}>", name_str, arity)
+                write!(f, "#<builtin:{}>", name_str)
             }
-            ProcessedValue::Procedure {
-                params, variadic, ..
-            } => {
-                write!(f, "#<procedure")?;
-                if *variadic {
-                    write!(f, ":variadic")?;
-                }
-                write!(f, " (")?;
-                for (i, p) in params.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    let param_str = self.interner.resolve(*p).unwrap_or("<unresolved>");
-                    write!(f, "{}", param_str)?;
-                }
-                if *variadic {
-                    write!(f, "...")?;
-                }
-                write!(f, ")>")
-            }
+            ProcessedValue::Procedure { .. } => write!(f, "#<procedure:user>"),
             ProcessedValue::If {
                 test,
                 then_branch,
@@ -275,7 +271,9 @@ impl<'a, 'ast> std::fmt::Display for ProcessedValueDisplay<'a, 'ast> {
                 write!(f, "(set! {} {})", name_str, value.display(self.interner))
             }
             ProcessedValue::Lambda {
-                params, variadic, ..
+                params,
+                body,
+                variadic,
             } => {
                 write!(f, "(lambda (")?;
                 for (i, p) in params.iter().enumerate() {
@@ -288,7 +286,7 @@ impl<'a, 'ast> std::fmt::Display for ProcessedValueDisplay<'a, 'ast> {
                 if *variadic {
                     write!(f, "...")?;
                 }
-                write!(f, ") <body>)")
+                write!(f, " {})", body.display(self.interner))
             }
             ProcessedValue::Quote { value } => {
                 write!(f, "'{}", value.display(self.interner))
@@ -300,7 +298,7 @@ impl<'a, 'ast> std::fmt::Display for ProcessedValueDisplay<'a, 'ast> {
                 }
                 write!(f, ")")
             }
-            ProcessedValue::Letrec { bindings, .. } => {
+            ProcessedValue::Letrec { bindings, body } => {
                 write!(f, "(letrec (")?;
                 for (i, (name, val)) in bindings.iter().enumerate() {
                     if i > 0 {
@@ -309,9 +307,9 @@ impl<'a, 'ast> std::fmt::Display for ProcessedValueDisplay<'a, 'ast> {
                     let name_str = self.interner.resolve(*name).unwrap_or("<unresolved>");
                     write!(f, "[{} {}]", name_str, val.display(self.interner))?;
                 }
-                write!(f, ") <body>)")
+                write!(f, ") {})", body.display(self.interner))
             }
-            ProcessedValue::LetrecStar { bindings, .. } => {
+            ProcessedValue::LetrecStar { bindings, body } => {
                 write!(f, "(letrec* (")?;
                 for (i, (name, val)) in bindings.iter().enumerate() {
                     if i > 0 {
@@ -320,7 +318,7 @@ impl<'a, 'ast> std::fmt::Display for ProcessedValueDisplay<'a, 'ast> {
                     let name_str = self.interner.resolve(*name).unwrap_or("<unresolved>");
                     write!(f, "[{} {}]", name_str, val.display(self.interner))?;
                 }
-                write!(f, ") <body>)")
+                write!(f, ") {})", body.display(self.interner))
             }
             ProcessedValue::Unspecified => write!(f, "#<unspecified>"),
         }
@@ -737,24 +735,52 @@ pub mod builtin_functions {
             )));
         }
 
-        match &args[0] {
+        display_value(&args[0], interner);
+
+        Ok(ProcessedValue::Unspecified)
+    }
+
+    fn display_value(value: &ProcessedValue, interner: &SchemeStringInterner) {
+        match value {
             ProcessedValue::String(s) => {
                 if let Some(val) = interner.resolve(*s) {
                     print!("{}", val);
-                } else {
-                    return Err(RuntimeError::new(
-                        "display: failed to resolve interned string".to_string(),
-                    ));
                 }
             }
             ProcessedValue::OwnedString(s) => print!("{}", s),
             ProcessedValue::Integer(i) => print!("{}", i),
             ProcessedValue::Boolean(b) => print!("{}", if *b { "#t" } else { "#f" }),
-            // **R7RS DEVIATION:** Display for procedures, lists, etc., is not specified and shows a debug-like format.
-            other => print!("{:?}", other),
+            ProcessedValue::Symbol(s) => {
+                if let Some(val) = interner.resolve(*s) {
+                    print!("{}", val);
+                }
+            }
+            ProcessedValue::OwnedSymbol(s) => print!("{}", s),
+            ProcessedValue::List(items) => {
+                print!("(");
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        print!(" ");
+                    }
+                    display_value(item, interner);
+                }
+                print!(")");
+            }
+            ProcessedValue::ResolvedBuiltin { name, .. } => {
+                let name_str = interner.resolve(*name).unwrap_or("<unresolved>");
+                print!("#<procedure:{}>", name_str);
+            }
+            ProcessedValue::Procedure { .. } => {
+                print!("#<procedure>");
+            }
+            ProcessedValue::Unspecified => {
+                // R7RS does not specify display for unspecified.
+                // This is a reasonable representation.
+                print!("#<unspecified>");
+            }
+            // For special forms, print their structure using the default display
+            other => print!("{}", other.display(interner)),
         }
-
-        Ok(ProcessedValue::Unspecified)
     }
 
     /// Null predicate for ProcessedValue (check if value is empty list)

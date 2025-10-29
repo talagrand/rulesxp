@@ -10,14 +10,6 @@ The work is divided into two phases: first, we will refactor and simplify the ex
 
 **Goal:** Simplify the codebase to make it easier to understand, maintain, and debug before tackling major functional bugs.
 
-### 1.1. Simplify Template Parsing Logic
-
--   **Issue:** The function `parse_template_with_pattern_vars` accepts a `_pattern_vars` map that is never used. This adds unnecessary complexity to the function signature and its call site in `parse_rule`. The current implementation correctly defers pattern variable resolution to the instantiation phase, which aligns with R7RS semantics for quoted forms.
--   **Task:**
-    -   Remove the `_pattern_vars` parameter from `parse_template_with_pattern_vars`.
-    -   Rename the function to `parse_template` to reflect its simplified purpose.
-    -   Update the call site in `parse_rule` accordingly.
-
 ### 1.2. Consolidate Pattern Matching Functions
 
 -   **Issue:** The existence of both `match_pattern` and `match_pattern_recursive` creates an unnecessary layer of indirection. `match_pattern` simply creates a `HashMap` and then calls `match_pattern_recursive`.

@@ -54,10 +54,59 @@ pub const MAX_PARSE_DEPTH: usize = 32;
 /// Set higher than parse depth to allow for nested function applications
 pub const MAX_EVAL_DEPTH: usize = 64;
 
+/// Represents a position (line and column) in the source input.
+#[derive(Debug, PartialEq, Clone, Copy, Default)]
+pub struct Position {
+    pub line: usize,
+    pub column: usize,
+}
+
+/// Categorizes the different kinds of parsing errors.
+#[derive(Debug, PartialEq, Clone)]
+pub enum ParseErrorKind {
+    InvalidToken,          // An unexpected character or token was found.
+    UnexpectedEndOfInput,  // The input ended prematurely.
+    NumericOverflow,       // A number literal was too large or small.
+    InvalidHexLiteral,     // A hexadecimal literal was malformed.
+    InvalidEscapeSequence, // An unrecognized escape sequence in a string.
+    UnterminatedString,    // A string literal was not closed.
+    MismatchedParentheses, // Unbalanced parentheses in a list.
+    TooDeeplyNested,       // The expression exceeded the maximum parse depth.
+    EmptyInput,            // The input string was empty.
+    TrailingInput,         // Extra characters were found after a valid expression.
+    TrailingContent,       // The parser encountered content after a complete expression was parsed.
+    Incomplete,            // The input is a valid prefix but is not a complete expression.
+    Unsupported, // The input uses valid R7RS syntax that is not supported by this interpreter.
+}
+
+/// A structured error providing detailed information about a parsing failure.
+#[derive(Debug, PartialEq, Clone)]
+pub struct ParseError {
+    pub position: Position,
+    pub kind: ParseErrorKind,
+    pub message: String,
+}
+
+impl ParseError {
+    /// Create a simple ParseError with no position information (for JSONLogic and CEL parsers)
+    pub fn simple(kind: ParseErrorKind, message: impl Into<String>) -> Self {
+        ParseError {
+            position: Position::default(),
+            kind,
+            message: message.into(),
+        }
+    }
+
+    /// Create a ParseError from just a message (defaults to InvalidToken kind, no position)
+    pub fn from_message(message: impl Into<String>) -> Self {
+        Self::simple(ParseErrorKind::InvalidToken, message)
+    }
+}
+
 /// Error types for the interpreter
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
-    ParseError(String),
+    ParseError(ParseError),
     EvalError(String),
     TypeError(String),
     UnboundVariable(String),
@@ -91,7 +140,11 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Error::ParseError(msg) => write!(f, "Parse error: {msg}"),
+            Error::ParseError(e) => write!(
+                f,
+                "Parse error at line {} col {}: {}",
+                e.position.line, e.position.column, e.message
+            ),
             Error::EvalError(msg) => write!(f, "Evaluation error: {msg}"),
             Error::TypeError(msg) => write!(f, "Type error: {msg}"),
             Error::UnboundVariable(var) => write!(f, "Unbound variable: {var}"),
@@ -104,7 +157,10 @@ impl fmt::Display for Error {
                     f,
                     "Arity error in expression {expr}: expected {expected} arguments, got {got}"
                 ),
-                None => write!(f, "Arity error: expected {expected} arguments, got {got}"),
+                None => write!(
+                    f,
+                    "Arity error: function expected {expected} arguments but got {got}"
+                ),
             },
         }
     }

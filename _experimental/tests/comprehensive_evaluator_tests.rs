@@ -2466,14 +2466,6 @@ mod comprehensive_evaluator_tests {
                 ("(cons 1 '())", success(vec![1i64])),
                 ("(cons 1 '(2 3))", success(vec![1i64, 2, 3])),
             ]),
-            // Test 4: Mixed step/no-step in do (not supported - requires Phase 2)
-            // **R7RS RESTRICTED:** Current do macro requires ALL variables to have steps
-            // or ALL variables to have no steps. Mixing is not supported without Phase 2
-            // nested ellipsis depth tracking: ((var init step ...) ...)
-            TestEnvironment(vec![(
-                "(do ((i 0 (+ i 1)) (j 10)) ((> i 3) i))",
-                TestResult::SpecificError("No matching pattern for macro do"),
-            )]),
         ];
         run_tests_in_environment(test_cases);
     }
@@ -2506,7 +2498,7 @@ mod comprehensive_evaluator_tests {
         let test_cases = vec![
             TestEnvironment(vec![(
                 "(define-syntax bad-macro (syntax-rules () ((bad _ ) _)))",
-                SpecificError("Underscore (_) wildcard cannot be used in templates"),
+                SpecificError("Underscore '_' cannot be used as a variable in a template"),
             )]),
             // Test that underscore in QUOTED template is allowed
             TestEnvironment(vec![
@@ -2515,6 +2507,167 @@ mod comprehensive_evaluator_tests {
                     "(underscore-quote ignored)",
                     Success(ProcessedValue::OwnedSymbol("_".to_string())),
                 ),
+            ]),
+        ];
+        run_tests_in_environment(test_cases);
+    }
+
+    #[test]
+    fn test_comprehensive_quote_contexts() {
+        // Comprehensive test suite for quote context behavior in macros
+        // Tests R7RS semantics: pattern variables are substituted BEFORE quote is applied
+        let test_cases = vec![
+            TestEnvironment(vec![
+                // ===== Basic Quote Substitution =====
+                // Test 1: Pattern variable in quoted context - the key test from the issue
+                ("(define-syntax test (syntax-rules () ((_ x) 'x)))", Macro),
+                ("(test 123)", Success(ProcessedValue::Integer(123))),  // Returns 123, NOT symbol 'x'
+                
+                // Test 2: Multiple pattern variables in quote
+                ("(define-syntax quote-two (syntax-rules () ((_ a b) '(a b))))", Macro),
+                ("(quote-two foo bar)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("foo".to_string()),
+                    ProcessedValue::OwnedSymbol("bar".to_string())
+                ])))),
+                
+                // Test 3: Pattern variable substitution with numbers
+                ("(define-syntax quote-num (syntax-rules () ((_ n) 'n)))", Macro),
+                ("(quote-num 42)", Success(ProcessedValue::Integer(42))),
+                
+                // Test 4: Pattern variable substitution with strings
+                ("(define-syntax quote-str (syntax-rules () ((_ s) 's)))", Macro),
+                ("(quote-str \"hello\")", Success(ProcessedValue::OwnedString("hello".to_string()))),
+                
+                // ===== Nested Quote Contexts =====
+                // Test 5: Double quote - substitutes then wraps in quote
+                ("(define-syntax double-q (syntax-rules () ((_ x) ''x)))", Macro),
+                ("(double-q alpha)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("quote".to_string()),
+                    ProcessedValue::OwnedSymbol("alpha".to_string())
+                ])))),
+                
+                // Test 6: Triple quote
+                ("(define-syntax triple-q (syntax-rules () ((_ x) '''x)))", Macro),
+                ("(triple-q beta)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("quote".to_string()),
+                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("quote".to_string()),
+                        ProcessedValue::OwnedSymbol("beta".to_string())
+                    ]))
+                ])))),
+                
+                // ===== Quote with Lists =====
+                // Test 7: Quoted list with pattern variable at start
+                ("(define-syntax q-list-start (syntax-rules () ((_ x) '(x 1 2))))", Macro),
+                ("(q-list-start replaced)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("replaced".to_string()),
+                    ProcessedValue::Integer(1),
+                    ProcessedValue::Integer(2)
+                ])))),
+                
+                // Test 8: Quoted list with pattern variable in middle
+                ("(define-syntax q-list-mid (syntax-rules () ((_ x) '(a x b))))", Macro),
+                ("(q-list-mid mid)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("a".to_string()),
+                    ProcessedValue::OwnedSymbol("mid".to_string()),
+                    ProcessedValue::OwnedSymbol("b".to_string())
+                ])))),
+                
+                // Test 9: Quoted list with pattern variable at end
+                ("(define-syntax q-list-end (syntax-rules () ((_ x) '(1 2 x))))", Macro),
+                ("(q-list-end end)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(1),
+                    ProcessedValue::Integer(2),
+                    ProcessedValue::OwnedSymbol("end".to_string())
+                ])))),
+                
+                // ===== Quote with Ellipsis =====
+                // Test 10: Quoted list with ellipsis - all vars substituted
+                ("(define-syntax q-ellipsis (syntax-rules () ((_ x ...) '(x ...))))", Macro),
+                ("(q-ellipsis a b c)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("a".to_string()),
+                    ProcessedValue::OwnedSymbol("b".to_string()),
+                    ProcessedValue::OwnedSymbol("c".to_string())
+                ])))),
+                
+                // Test 11: Quoted list with ellipsis and literals
+                ("(define-syntax q-ellipsis-lit (syntax-rules () ((_ x ...) '(start x ... end))))", Macro),
+                ("(q-ellipsis-lit 1 2 3)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("start".to_string()),
+                    ProcessedValue::Integer(1),
+                    ProcessedValue::Integer(2),
+                    ProcessedValue::Integer(3),
+                    ProcessedValue::OwnedSymbol("end".to_string())
+                ])))),
+                
+                // ===== Mixed Quote/Unquote Patterns =====
+                // Test 12: Some vars quoted, some not
+                ("(define-syntax mixed-q (syntax-rules () ((_ a b) (list 'a b))))", Macro),
+                ("(mixed-q foo 42)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("foo".to_string()),
+                    ProcessedValue::Integer(42)
+                ])))),
+                
+                // Test 13: Quote around some ellipsis elements
+                ("(define-syntax partial-q-ellip (syntax-rules () ((_ x ...) (list 'x ...))))", Macro),
+                ("(partial-q-ellip p q r)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("p".to_string()),
+                    ProcessedValue::OwnedSymbol("q".to_string()),
+                    ProcessedValue::OwnedSymbol("r".to_string())
+                ])))),
+                
+                // ===== Underscore in Quotes =====
+                // Test 14: Quoted underscore is a literal symbol
+                ("(define-syntax q-underscore (syntax-rules () ((_ x) '(x _))))", Macro),
+                ("(q-underscore val)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("val".to_string()),
+                    ProcessedValue::OwnedSymbol("_".to_string())
+                ])))),
+                
+                // Test 15: Underscore pattern with quoted output
+                ("(define-syntax ignore-quote (syntax-rules () ((_ _ x) 'x)))", Macro),
+                ("(ignore-quote ignored 99)", Success(ProcessedValue::Integer(99))),
+                
+                // ===== Complex Nested Structures =====
+                // Test 16: Quoted nested list with pattern vars
+                ("(define-syntax q-nested (syntax-rules () ((_ a b) '((a) (b)))))", Macro),
+                ("(q-nested x y)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("x".to_string())
+                    ])),
+                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("y".to_string())
+                    ]))
+                ])))),
+                
+                // Test 17: Deeply nested quoted structure
+                ("(define-syntax q-deep (syntax-rules () ((_ x) '(outer (middle (inner x))))))", Macro),
+                ("(q-deep core)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("outer".to_string()),
+                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("middle".to_string()),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::OwnedSymbol("inner".to_string()),
+                            ProcessedValue::OwnedSymbol("core".to_string())
+                        ]))
+                    ]))
+                ])))),
+                
+                // ===== Quote with Different Data Types =====
+                // Test 18: Quote with boolean
+                ("(define-syntax q-bool (syntax-rules () ((_ b) 'b)))", Macro),
+                ("(q-bool #t)", Success(ProcessedValue::Boolean(true))),
+                
+                // Test 19: Quote with empty list
+                ("(define-syntax q-empty (syntax-rules () ((_ e) 'e)))", Macro),
+                ("(q-empty ())", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![])))),
+                
+                // ===== Error Cases =====
+                // Test 20: Malformed quote (too many args) should error during compilation
+                // Note: This will be caught at macro definition time
+                // Commenting out as it would prevent other tests from running
+                // ("(define-syntax bad-quote (syntax-rules () ((_ x) (quote x y))))", 
+                //  SpecificError("Malformed quote form")),
             ]),
         ];
         run_tests_in_environment(test_cases);
@@ -2770,7 +2923,12 @@ mod comprehensive_evaluator_tests {
                 ("(do ((a 1) (b 2) (c 3) (d 4)) (#t (+ a b c d)))",
                  Success(ProcessedValue::Integer(10))),
 
-                // Test 9: Empty do loop (infinite loop protection with immediate exit)
+                // Test 9: Do loop with MIXED steps - some with step, some without
+                // **R7RS COMPLIANT:** Variables without step use their current value
+                ("(do ((i 0 (+ i 1)) (j 10)) ((> i 3) i))",
+                 Success(ProcessedValue::Integer(4))),
+
+                // Test 10: Empty do loop (infinite loop protection with immediate exit)
                 ("(do () (#t 42))", Success(ProcessedValue::Integer(42))),
             ]),
         ];
@@ -3166,7 +3324,11 @@ mod comprehensive_evaluator_tests {
             ]),
             // ===== SECTION 5: Multi-Ellipsis (Nested ...) =====
             TestEnvironment(vec![
-                // Test 5.1: Flatten - already tested in test_multi_ellipsis_macros, but verify
+                // Define flatten and zip for this test environment
+                ("(define-syntax flatten (syntax-rules () ((flatten ((x ...) ...)) (list x ... ...))))", Macro),
+                ("(define-syntax zip (syntax-rules () ((zip (a ...) (b ...)) (list (list a b) ...))))", Macro),
+
+                // Test 5.1: Flatten
                 ("(flatten ((1 2) (3 4) (5 6)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::Integer(1),
                     ProcessedValue::Integer(2),
@@ -3175,9 +3337,8 @@ mod comprehensive_evaluator_tests {
                     ProcessedValue::Integer(5),
                     ProcessedValue::Integer(6),
                 ])))),
-            ]),
-            TestEnvironment(vec![
-                // Test 5.2: Zip - already tested, verify
+
+                // Test 5.2: Zip
                 ("(zip (1 2 3) (4 5 6))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::Integer(1),

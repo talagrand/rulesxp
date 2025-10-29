@@ -20,8 +20,6 @@
 ;; - let, let* (4.2.2) - local binding forms
 ;; - do (4.2.4) - iteration form
 ;; - case-lambda - procedure with multiple arities
-;; - let-values, let*-values - multiple value binding (NEW with list-within-ellipsis)
-
 ;; ===== LOGICAL OPERATORS =====
 ;; R7RS section 4.2.1 - derived expressions for logical operations
 (define-syntax and
@@ -74,17 +72,27 @@
     ((cond (test result ...) clause ...)
      (if test (begin result ...) (cond clause ...)))))
 
-;; Case expressions (simplified version)
+;; R7RS section 4.2.5 - derived expressions for case
+;; This implementation ensures that <key> is evaluated only once.
 (define-syntax case
   (syntax-rules (else)
-    ((case key (else result ...))
+    ((case key-expr clause ...)
+     (let ((key key-expr))
+       ($case-helper key clause ...)))))
+
+(define-syntax $case-helper
+  (syntax-rules (else)
+    ;; Base case: No clauses match, result is unspecified. We return (void).
+    (($case-helper key)
+     (if #f #f))
+    ;; 'else' clause must be last.
+    (($case-helper key (else result ...))
      (begin result ...))
-    ((case key ((values ...) result ...))
-     (if (member key '(values ...)) (begin result ...)))
-    ((case key ((values ...) result ...) clause ...)
-     (if (member key '(values ...)) 
-         (begin result ...) 
-         (case key clause ...)))))
+    ;; Standard clause with one or more datums.
+    (($case-helper key ((datum ...) result ...) rest ...)
+     (if (member key '(datum ...))
+         (begin result ...)
+         ($case-helper key rest ...)))))
 
 ;; ===== LOCAL BINDING FORMS =====
 ;; R7RS section 4.2.2 - derived expressions for local variable binding
@@ -121,321 +129,89 @@
 
 ;; ===== ITERATION FORMS =====
 ;; R7RS section 4.2.4 - derived expressions for iteration
+;; R7RS-compliant 'do' macro using a recursive helper.
+;; This version uses only proper lists in its patterns and templates.
 
-;; **R7RS DEVIATION:** `do` macro is not fully compliant.
-;; The R7RS standard requires that `do` supports mixed variable bindings, where some
-;; variables have a `step` expression and others do not. For variables without a
-;; `step`, their value should remain unchanged across iterations.
-;;
-;; The implementation below attempts to use a helper macro `do-step-or-var` to
-;; correctly handle the optional `step`. However, this is blocked by a known bug
-;; in the macro expander's handling of optional ellipsis patterns. The pattern
-;; `(do ((var init step ...) ...) ...)` does not correctly bind variables when
-;; the optional `step ...` is not present for all variables.
-;;
-;; **NEEDS-ENFORCEMENT:** The macro expander needs to be fixed to support this.
-
-(define-syntax do-step-or-var
+(define-syntax $do-loop
   (syntax-rules ()
-    ;; If step is present (as a sequence of one element), use it
-    ((_ var step) step)
-    ;; If step is absent (as an empty sequence), use the variable itself
-    ((_ var) var)))
+    ;; Recursive step for normalization with explicit step: (var init step).
+    ;; Accumulates (var init) in bindings and step in steps.
+    ((_ ((var init step) var-clause ...)
+        (test result ...) (command ...)
+        (binding ...) (step-exp ...))
+     ($do-loop (var-clause ...)
+              (test result ...) (command ...)
+              (binding ... (var init)) (step-exp ... step)))
+
+    ;; Recursive step for normalization without step: (var init).
+    ;; Uses var as its own step expression.
+    ((_ ((var init) var-clause ...)
+        (test result ...) (command ...)
+        (binding ...) (step-exp ...))
+     ($do-loop (var-clause ...)
+              (test result ...) (command ...)
+              (binding ... (var init)) (step-exp ... var)))
+
+    ;; Base case: All bindings processed, generate named let.
+    ;; binding is now ((var init) ...) and step-exp is (step ...)
+    ((_ () (test result ...) (command ...)
+        (binding ...) (step-exp ...))
+     (let loop (binding ...)
+       (if test
+           (begin result ...)
+           (begin
+             command ...
+             (loop step-exp ...)))))
+))
 
 (define-syntax do
   (syntax-rules ()
-    ((do ((var init step ...) ...) (test result ...) command ...)
-     (let loop ((var init) ...)
-       (if test
-           (begin result ...)
-           (begin command ...
-                  (loop (do-step-or-var var step ...) ...)))))
-    ((do ((var init step ...) ...) (test result ...))
-     (let loop ((var init) ...)
-       (if test
-           (begin result ...)
-           (loop (do-step-or-var var step ...) ...))))))
+    ;; Main entry point: passes bindings, test/result, commands,
+    ;; and two empty accumulators for normalized bindings and step expressions.
+    ((_ (var-clause ...) (test result ...) command ...)
+     ($do-loop (var-clause ...) (test result ...) (command ...) () ()))))
 
-;; R7RS sections 4.2.1, 4.2.5 - derived expressions for cond/case
-;;
-;; **R7RS DEVIATION:** Literal keywords (else, =>) in syntax-rules use structural matching
-;; which means they must be present at the top level of a pattern. This prevents
-;; shadowing of these keywords, which is allowed by R7RS hygiene rules. Our system
-;; treats them as reserved syntax within `cond` and `case`, which is a deviation.
-;; For example, `(let ((else #f)) (cond (else 'foo)))` would fail to parse in our
-;; system, but should be valid R7RS.
-(define-syntax cond
-  (syntax-rules (else =>)
-    ((cond (else result1 result2 ...))
-     (begin result1 result2 ...))
-    ((cond (test => result))
-     (let ((temp test))
-       (if temp (result temp))))
-    ((cond (test => result) clause1 clause2 ...)
-     (let ((temp test))
-       (if temp
-           (result temp)
-           (cond clause1 clause2 ...))))
-    ((cond (test)) test)
-    ((cond (test) clause1 clause2 ...)
-     (let ((temp test))
-       (if temp
-           temp
-           (cond clause1 clause2 ...))))
-    ((cond (test result1 result2 ...))
-     (if test (begin result1 result2 ...)))
-    ((cond (test result1 result2 ...) clause1 clause2 ...)
-     (if test
-         (begin result1 result2 ...)
-         (cond clause1 clause2 ...)))))
 
-(define-syntax do
-  (syntax-rules ()
-    ;; All variables with explicit step expressions, with body commands
-    ((do ((var init step) ...)
-         (test result ...)
-         command ...)
-     (let loop ((var init) ...)
-       (if test
-           (begin result ...)
-           (begin command ... (loop step ...)))))
-    
-    ;; All variables with explicit step expressions, no body commands
-    ((do ((var init step) ...)
-         (test result ...))
-     (let loop ((var init) ...)
-       (if test
-           (begin result ...)
-           (loop step ...))))
-    
-    ;; All variables without step (step = init), with body commands
-    ((do ((var init) ...)
-         (test result ...)
-         command ...)
-     (let loop ((var init) ...)
-       (if test
-           (begin result ...)
-           (begin command ... (loop init ...)))))
-    
-    ;; All variables without step (step = init), no body commands
-    ((do ((var init) ...)
-         (test result ...))
-     (let loop ((var init) ...)
-       (if test
-           (begin result ...)
-           (loop init ...))))
-    
-    ;; Empty variable list (infinite loop until test becomes true), with body
-    ((do ()
-         (test result ...)
-         command ...)
-     (let loop ()
-       (if test
-           (begin result ...)
-           (begin command ... (loop)))))
-    
-    ;; Empty variable list, no body
-    ((do ()
-         (test result ...))
-     (let loop ()
-       (if test
-           (begin result ...)
-           (loop))))))
-
-;;; **R7RS RESTRICTED:** case-lambda - Only enumerates common arities (0-4 fixed args,
-;;; optional rest args). Full R7RS case-lambda supports arbitrary arities via nested 
-;;; ellipsis, which our macro system cannot handle. This covers ~95% of practical usage.
-;; **R7RS case-lambda** - Hybrid implementation
-;; Static dispatch for common small cases (0-3 args, 2-3 clauses)
-;; Runtime dispatch for complex cases (4+ args or many clauses)
+;; **R7RS RESTRICTED:** Supports up to 5 args due to dependency on apply which has this limitation
 (define-syntax case-lambda
   (syntax-rules ()
-    ;; Single clause - just wrap in lambda (no dispatch needed)
-    ((case-lambda (formals body ...))
-     (lambda formals body ...))
-    
-    ;; ===== STATIC DISPATCH - Optimized common patterns =====
-    
-    ;; Two clauses: zero args + one arg
-    ((case-lambda (() body0 ...) ((x) body1 ...))
-     (lambda args
-       (if (null? args)
-           (begin body0 ...)
-           (if (and (pair? args) (null? (cdr args)))
-               (let ((x (car args))) body1 ...)
-               (error "case-lambda: wrong number of arguments")))))
-    
-    ;; Two clauses: one arg + two args
-    ((case-lambda ((x) body1 ...) ((y z) body2 ...))
-     (lambda args
-       (if (and (pair? args) (null? (cdr args)))
-           (let ((x (car args))) body1 ...)
-           (if (and (pair? args) (pair? (cdr args)) (null? (cdr (cdr args))))
-               (let ((y (car args)) (z (car (cdr args)))) body2 ...)
-               (error "case-lambda: wrong number of arguments")))))
-    
-    ;; Three clauses: zero + one + two args
-    ((case-lambda (() body0 ...) ((x) body1 ...) ((y z) body2 ...))
-     (lambda args
-       (if (null? args)
-           (begin body0 ...)
-           (if (and (pair? args) (null? (cdr args)))
-               (let ((x (car args))) body1 ...)
-               (if (and (pair? args) (pair? (cdr args)) (null? (cdr (cdr args))))
-                   (let ((y (car args)) (z (car (cdr args)))) body2 ...)
-                   (error "case-lambda: wrong number of arguments"))))))
-    
-    ;; ===== RUNTIME DISPATCH - General case =====
-    ;; Handles: 4+ clauses, rest args, 3+ fixed args, or complex patterns
-    ((case-lambda clause ...)
-     ($case-lambda-dispatcher (clause ...)))))
+    ;; 1. Main entry point.
+    ;; This part is unchanged. It calls the helper with the clauses
+    ;; and an empty accumulator for the `cond` clauses.
+    ((_ clause ...)
+     ($case-lambda-helper (clause ...) ()))))
 
-;; Helper macro to generate the dispatcher
-(define-syntax $case-lambda-dispatcher
+(define-syntax $case-lambda-helper
   (syntax-rules ()
-    (($case-lambda-dispatcher clauses)
-     (lambda args
-       (let ((len ($length* args)))
-         ($case-lambda-match args len clauses))))))
+    ;; 2a. Recursive step for fixed-arity pattern (list of formals)
+    ;; This pattern matches when formals is a proper list with ellipsis.
+    ;; MUST come before rest-args pattern to match properly.
+    ((_ (((formal ...) body ...) rest-clauses ...) (cond-clause ...))
+     ($case-lambda-helper
+      (rest-clauses ...) ;; Recurse on the remaining clauses
+      (cond-clause ...   ;; Keep the clauses we've already built
+       ;; Add the new `cond` clause to the accumulator.
+       ;; Note: '(formal ...) expands to a quoted list like '(x y) for length counting.
+       ((= (length '(formal ...)) (length rest-args))
+        (apply (lambda (formal ...) body ...) rest-args)))))
 
-;; Match arguments against clauses based on length
-;; **R7RS RESTRICTED:** No dotted pair patterns, so rest args use symbol-only patterns
-(define-syntax $case-lambda-match
-  (syntax-rules ()
-    ;; No more clauses - error
-    (($case-lambda-match args len ())
-     (error "case-lambda: no matching clause for" len "arguments"))
-    
-    ;; Empty parameter list (zero args) - last clause
-    (($case-lambda-match args len ((() body ...)))
-     (if (= len 0)
-         (begin body ...)
-         (error "case-lambda: no matching clause for" len "arguments")))
-    
-    ;; One parameter - last clause
-    (($case-lambda-match args len (((p1) body ...)))
-     (if (= len 1)
-         (let ((p1 (car args))) body ...)
-         (error "case-lambda: no matching clause for" len "arguments")))
-    
-    ;; Two parameters - last clause
-    (($case-lambda-match args len (((p1 p2) body ...)))
-     (if (= len 2)
-         (let ((p1 (car args))
-               (p2 (car (cdr args))))
-           body ...)
-         (error "case-lambda: no matching clause for" len "arguments")))
-    
-    ;; Three parameters - last clause
-    (($case-lambda-match args len (((p1 p2 p3) body ...)))
-     (if (= len 3)
-         (let ((p1 (car args))
-               (p2 (car (cdr args)))
-               (p3 (car (cdr (cdr args)))))
-           body ...)
-         (error "case-lambda: no matching clause for" len "arguments")))
-    
-    ;; Four parameters - last clause
-    (($case-lambda-match args len (((p1 p2 p3 p4) body ...)))
-     (if (= len 4)
-         (let ((p1 (car args))
-               (p2 (car (cdr args)))
-               (p3 (car (cdr (cdr args))))
-               (p4 (car (cdr (cdr (cdr args))))))
-           body ...)
-         (error "case-lambda: no matching clause for" len "arguments")))
-    
-    ;; Five parameters - last clause
-    (($case-lambda-match args len (((p1 p2 p3 p4 p5) body ...)))
-     (if (= len 5)
-         (let ((p1 (car args))
-               (p2 (car (cdr args)))
-               (p3 (car (cdr (cdr args))))
-               (p4 (car (cdr (cdr (cdr args)))))
-               (p5 (car (cdr (cdr (cdr (cdr args)))))))
-           body ...)
-         (error "case-lambda: no matching clause for" len "arguments")))
-    
-    ;; Rest args clause - single symbol, no parameter list (matches anything remaining)
-    ;; This must come AFTER fixed-arg patterns - acts as catch-all for last clause
-    ;; **R7RS RESTRICTED:** Cannot use dotted pair (a . rest), so single symbol binds to full args list
-    (($case-lambda-match args len ((rest body ...)))
-     (let ((rest args)) body ...))
-    
-    ;; ===== Patterns with remaining clauses =====
-    
-    ;; Empty parameter list with more clauses
-    (($case-lambda-match args len ((() body ...) more-clause ...))
-     (if (= len 0)
-         (begin body ...)
-         ($case-lambda-match args len (more-clause ...))))
-    
-    ;; One parameter with more clauses
-    (($case-lambda-match args len (((p1) body ...) more-clause ...))
-     (if (= len 1)
-         (let ((p1 (car args))) body ...)
-         ($case-lambda-match args len (more-clause ...))))
-    
-    ;; Two parameters with more clauses
-    (($case-lambda-match args len (((p1 p2) body ...) more-clause ...))
-     (if (= len 2)
-         (let ((p1 (car args))
-               (p2 (car (cdr args))))
-           body ...)
-         ($case-lambda-match args len (more-clause ...))))
-    
-    ;; Three parameters with more clauses
-    (($case-lambda-match args len (((p1 p2 p3) body ...) more-clause ...))
-     (if (= len 3)
-         (let ((p1 (car args))
-               (p2 (car (cdr args)))
-               (p3 (car (cdr (cdr args)))))
-           body ...)
-         ($case-lambda-match args len (more-clause ...))))
-    
-    ;; Four parameters with more clauses
-    (($case-lambda-match args len (((p1 p2 p3 p4) body ...) more-clause ...))
-     (if (= len 4)
-         (let ((p1 (car args))
-               (p2 (car (cdr args)))
-               (p3 (car (cdr (cdr args))))
-               (p4 (car (cdr (cdr (cdr args))))))
-           body ...)
-         ($case-lambda-match args len (more-clause ...))))
-    
-    ;; Five parameters with more clauses
-    (($case-lambda-match args len (((p1 p2 p3 p4 p5) body ...) more-clause ...))
-     (if (= len 5)
-         (let ((p1 (car args))
-               (p2 (car (cdr args)))
-               (p3 (car (cdr (cdr args))))
-               (p4 (car (cdr (cdr (cdr args)))))
-               (p5 (car (cdr (cdr (cdr (cdr args)))))))
-           body ...)
-         ($case-lambda-match args len (more-clause ...))))
-    
-    ;; Rest args with more clauses following - acts as catch-all
-    ;; **R7RS RESTRICTED:** Cannot use dotted pair (a . rest), so single symbol binds to full args list
-    (($case-lambda-match args len ((rest body ...) more-clause ...))
-     (let ((rest args)) body ...))))
+    ;; 2b. Recursive step for rest-args pattern (single identifier)
+    ;; This pattern matches when formals is a single symbol (not a list).
+    ;; In R7RS, a single identifier in case-lambda matches any number of args.
+    ((_ ((rest-param body ...) rest-clauses ...) (cond-clause ...))
+     ($case-lambda-helper
+      (rest-clauses ...)
+      (cond-clause ...
+       ;; Rest args always match, so use #t as condition
+       (#t (apply (lambda rest-param body ...) rest-args)))))
 
-;; Note: $length* helper function is defined in functions.scm
+    ;; 3. Base case for recursion.
+    ;; It triggers when the clause list is empty.
+    ((_ () (cond-clause ...))
+     (lambda rest-args
+       (cond
+         cond-clause ... ;; Splice in all the generated clauses
+         (else
+          (error "case-lambda: no matching clause for arguments" rest-args)))))))
 
-;; ===== NESTED ELLIPSIS MACROS (Phase 2) =====
-;; These macros use nested ellipsis patterns (x ... ...) to manipulate
-;; nested list structures. Requires multi-ellipsis template support.
-
-;; Flatten: Convert nested list structure to flat list
-;; (flatten ((1 2) (3 4) (5 6))) => (1 2 3 4 5 6)
-(define-syntax flatten
-  (syntax-rules ()
-    ((_ ((x ...) ...))
-     (list x ... ...))))
-
-;; Zip: Combine two lists into list of pairs
-;; (zip (1 2 3) (4 5 6)) => ((1 4) (2 5) (3 6))
-(define-syntax zip
-  (syntax-rules ()
-    ((_ (a ...) (b ...))
-     (list (list a b) ...))))
 

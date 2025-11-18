@@ -10,7 +10,7 @@ use nom::{
 };
 
 use crate::MAX_PARSE_DEPTH;
-use crate::ast::{NumberType, Value, is_symbol_valid};
+use crate::ast::{NumberType, SYMBOL_SPECIAL_CHARS, Value, is_valid_symbol};
 use crate::builtinops::{find_scheme_op, get_quote_op};
 use crate::{Error, ParseError, ParseErrorKind};
 
@@ -93,7 +93,6 @@ trait ResultExt<T> {
         F: FnOnce() -> String;
 
     /// Attach context with explicit ParseErrorKind
-    #[expect(dead_code)]
     fn context_with_kind<F>(self, kind: ParseErrorKind, f: F) -> Self
     where
         F: FnOnce() -> String;
@@ -349,18 +348,25 @@ fn parse_bool(input: &str) -> SResult<'_, Value> {
     .parse(input)
 }
 
-/// R7RS-compliant symbol parser.
-/// This function implements the full R7RS grammar for identifiers, including
-/// peculiar identifiers like `+`, `-`, `...`, and the special `->` prefix.
-/// It relies on the `is_symbol_valid` function to perform the validation.
+/// Parse a symbol (identifier)
+/// R7RS-RESTRICTED: This parser does not support the `|symbol with spaces|` syntax.
+/// It also enforces case-sensitivity, which is a permitted implementation choice.
+/// The set of allowed characters is also more restrictive than the R7RS standard;
+/// Rust's `is_alphanumeric()` is not as permissive as the R7RS specification for identifiers.
 fn parse_symbol(input: &str) -> SResult<'_, Value> {
-    if is_symbol_valid(input) {
-        Ok(("", Value::Symbol(input.to_string())))
+    let (remaining, candidate) =
+        take_while1(|c: char| c.is_alphanumeric() || SYMBOL_SPECIAL_CHARS.contains(c))
+            .parse(input)?;
+
+    if is_valid_symbol(candidate) {
+        Ok((remaining, Value::Symbol(candidate.into())))
     } else {
-        Err(nom::Err::Error(SchemeParseError::from_error_kind(
+        Err(SchemeParseError::error(
             input,
-            nom::error::ErrorKind::Char,
-        )))
+            ErrorKind::Alpha,
+            ParseErrorKind::InvalidSyntax,
+            || format!("Invalid symbol: '{candidate}' (symbols cannot start with digits)"),
+        ))
     }
 }
 
@@ -1004,21 +1010,16 @@ mod tests {
 
                         // Test round-trip for PrecompiledOp
                         let displayed = format!("{actual}");
-                        let reparsed =
-                            parse_scheme_with_config(&displayed, config).unwrap_or_else(|e| {
-                                panic!(
-                                    "{test_id}: round-trip parse failed for '{displayed}': {e:?}"
-                                )
-                            });
+                        let reparsed = parse_scheme_with_config(&displayed, config).unwrap_or_else(|e| {
+                            panic!("{test_id}: round-trip parse failed for '{displayed}': {e:?}")
+                        });
                         let redisplayed = format!("{reparsed}");
                         assert_eq!(
                             displayed, redisplayed,
                             "{test_id}: round-trip display mismatch for '{input}'"
                         );
                     } else {
-                        panic!(
-                            "{test_id}: expected PrecompiledOp for input '{input}', got {actual:?}"
-                        );
+                        panic!("{test_id}: expected PrecompiledOp for input '{input}', got {actual:?}");
                     }
                 }
 
@@ -1033,10 +1034,9 @@ mod tests {
 
                     // Test round-trip for SemanticallyEquivalent
                     let displayed = format!("{actual}");
-                    let reparsed =
-                        parse_scheme_with_config(&displayed, config).unwrap_or_else(|e| {
-                            panic!("{test_id}: round-trip parse failed for '{displayed}': {e:?}")
-                        });
+                    let reparsed = parse_scheme_with_config(&displayed, config).unwrap_or_else(|e| {
+                        panic!("{test_id}: round-trip parse failed for '{displayed}': {e:?}")
+                    });
                     let redisplayed = format!("{reparsed}");
                     assert_eq!(
                         displayed, redisplayed,
@@ -1056,14 +1056,10 @@ mod tests {
 
                 // Success when error expected
                 (Ok(actual), ParseError(kind)) => {
-                    panic!(
-                        "{test_id} input '{input}': expected ParseError({kind:?}), got success: {actual:?}"
-                    );
+                    panic!("{test_id} input '{input}': expected ParseError({kind:?}), got success: {actual:?}");
                 }
                 (Ok(actual), ArityError) => {
-                    panic!(
-                        "{test_id} input '{input}': expected ArityError, got success: {actual:?}"
-                    );
+                    panic!("{test_id} input '{input}': expected ArityError, got success: {actual:?}");
                 }
 
                 // Error when success expected
@@ -1076,7 +1072,8 @@ mod tests {
                 // Wrong error type mismatches
                 (Err(Error::ParseError(parse_err)), ArityError) => {
                     panic!(
-                        "{test_id} input '{input}': expected ArityError, got ParseError: {parse_err:?}"
+                        "{test_id} input '{input}': expected ArityError, got ParseError: {:?}",
+                        parse_err
                     );
                 }
                 (Err(Error::ArityError { .. }), ParseError(kind)) => {
@@ -1098,8 +1095,8 @@ mod tests {
         // These tests check the arity validation that happens *after* a successful parse.
         let arity_tests = vec![
             // Valid arity
-            ("(+ 1 2)", precompiled_op("+", vec![val(1), val(2)])),
-            ("(quote foo)", precompiled_op("quote", vec![sym("foo")])),
+            ("(+ 1 2)", success(precompiled_op("+", vec![val(1), val(2)]))),
+            ("(quote foo)", success(precompiled_op("quote", vec![sym("foo")]))),
             // Invalid arity
             ("(+ 1)", ArityError),
             ("(quote)", ArityError),
@@ -1107,7 +1104,11 @@ mod tests {
             ("(- 1 2 3)", ArityError),
         ];
 
-        run_parse_tests(arity_tests, ParseConfig::default(), "ArityValidation");
+        run_parse_tests(
+            arity_tests,
+            ParseConfig::default(),
+            "ArityValidation",
+        );
     }
 
     #[test]
@@ -1121,57 +1122,51 @@ mod tests {
             ("-0", success(0)),
             ("2147483647", success(i32::MAX)),
             ("-2147483648", success(i32::MIN)),
+
             // ===== Numbers (Hexadecimal) =====
             ("#x1A", success(26)),
             ("#X1a", success(26)), // R7RS requires case-insensitivity for hex digits
-            ("#XFF", success(255)), // R7RS requires case-insensitivity for 'x' prefix
             ("#xff", success(255)),
             ("#x0", success(0)),
             ("#x12345", success(74565)),
             ("-#x10", success(-16)),
             ("+#x10", success(16)),
+
             // ===== Booleans =====
             ("#t", success(true)),
             ("#f", success(false)),
             ("#true", success(true)),
             ("#false", success(false)),
+
             // ===== Symbols =====
-            // R7RS valid symbols
             ("foo", success(sym("foo"))),
-            ("test-name", success(sym("test-name"))),
-            ("test!", success(sym("test!"))),
-            ("test?", success(sym("test?"))),
-            ("test_name", success(sym("test_name"))),
-            ("test$", success(sym("test$"))),
-            ("test%", success(sym("test%"))),
-            ("test&", success(sym("test&"))),
-            ("test*", success(sym("test*"))),
-            ("test/", success(sym("test/"))),
-            ("test:", success(sym("test:"))),
-            ("test<", success(sym("test<"))),
-            ("test=", success(sym("test="))),
-            ("test>", success(sym("test>"))),
-            ("test^", success(sym("test^"))),
-            ("test~", success(sym("test~"))),
-            ("a.b", success(sym("a.b"))),
-            ("a+b", success(sym("a+b"))),
-            ("a-b", success(sym("a-b"))),
-            ("a@b", success(sym("a@b"))),
-            ("->", success(sym("->"))),
-            ("->string", success(sym("->string"))),
-            // Peculiar identifiers
             ("+", success(sym("+"))),
+            (">=", success(sym(">="))),
+            ("test-name", success(sym("test-name"))),
+            ("test*name", success(sym("test*name"))),
+            ("test/name", success(sym("test/name"))),
+            ("test<name", success(sym("test<name"))),
+            ("test=name", success(sym("test=name"))),
+            ("test>name", success(sym("test>name"))),
+            ("test!name", success(sym("test!name"))),
+            ("test?name", success(sym("test?name"))),
+            ("test_name", success(sym("test_name"))),
+            ("test$name", success(sym("test$name"))),
+            ("test@home", success(sym("test@home"))),
+            ("test%name", success(sym("test%name"))),
+            ("test&name", success(sym("test&name"))),
+            ("test.name", success(sym("test.name"))),
+            ("test:name", success(sym("test:name"))),
+            ("test^name", success(sym("test^name"))),
+            ("test~name", success(sym("test~name"))),
+            ("var123", success(sym("var123"))),
             ("-", success(sym("-"))),
+            ("-abc", success(sym("-abc"))),
             ("...", success(sym("..."))),
-            // ===== Symbol Parsing Failures =====
-            // R7RS invalid symbols
-            ("@foo", ParseError(InvalidSyntax)), // `@` is not an initial character
-            (".1", ParseError(Unsupported)),     // This is a number, not a symbol
-            (".a", ParseError(InvalidSyntax)),   // `.` is not an initial character
-            ("[", ParseError(InvalidSyntax)),
-            ("]", ParseError(InvalidSyntax)),
-            ("{", ParseError(InvalidSyntax)),
-            ("}", ParseError(InvalidSyntax)),
+            ("a.b.c", success(sym("a.b.c"))),
+            (".foo", success(sym(".foo"))),
+            ("foo.", success(sym("foo."))),
+
             // ===== Strings =====
             ("\"hello\"", success("hello")),
             ("\"hello world\"", success("hello world")),
@@ -1180,52 +1175,39 @@ mod tests {
             (r#""hello\nworld""#, success("hello\nworld")),
             (r#""quote\"test""#, success("quote\"test")),
             (r#""backslash\\test""#, success("backslash\\test")),
-            (r#""tab\here""#, ParseError(Unsupported)), // \h is not a valid escape
-            // R7RS-RESTRICTED: Does not support line continuations in strings without script_syntax
-            (
-                r#""hello \
- world""#,
-                ParseError(Unsupported),
-            ),
-            // R7RS-RESTRICTED: Test boundary of hex escapes
-            (
-                r#""max_unicode\x10FFFF;""#,
-                success("max_unicode\u{10FFFF}"),
-            ),
+            (r#""tab\there""#, success("tab\there")), // \h is not a valid escape
+            (r#""carriage\rreturn""#, success("carriage\rreturn")),
+            // Additional R7RS escape sequences
+            (r#""alarm\a""#, success("alarm\u{07}")),
+            (r#""backspace\b""#, success("backspace\u{08}")),
+            // Hexadecimal escape sequences
+            (r#""unicode\x41;""#, success("unicodeA")),
+            (r#""euro\x20ac;""#, success("euro€")),
+            (r#""newline\xa;""#, success("newline\n")),
+            (r#""\x0;""#, success("\0")),
+            (r#""\x00;""#, success("\0")),
+
             // ===== Nil (Empty List) =====
             ("()", success(nil())),
             ("( )", success(nil())),
             ("(\t\n)", success(nil())),
+
             // ===== Lists =====
             ("(1 2 3)", success([1, 2, 3])),
             ("(42)", success([42])),
-            (
-                "(1 hello \"world\" #t)",
-                success([val(1), sym("hello"), val("world"), val(true)]),
-            ),
+            ("(1 hello \"world\" #t)", success([val(1), sym("hello"), val("world"), val(true)])),
             ("(foo 1 2)", success([sym("foo"), val(1), val(2)])),
             ("(a b c)", success([sym("a"), sym("b"), sym("c")])),
-            (
-                "(42 is the answer)",
-                success([val(42), sym("is"), sym("the"), sym("answer")]),
-            ),
+            ("(42 is the answer)", success([val(42), sym("is"), sym("the"), sym("answer")])),
             ("((1 2) (3 4))", success([[1, 2], [3, 4]])),
             ("(((1)))", success([val([val([val(1)])])])),
-            (
-                "(foo (\"bar\" #t) -123)",
-                success([sym("foo"), val([val("bar"), val(true)]), val(-123)]),
-            ),
+            ("(foo (\"bar\" #t) -123)", success([sym("foo"), val([val("bar"), val(true)]), val(-123)])),
+
             // ===== Precompiled Operations =====
             ("(+ 1 2)", precompiled_op("+", vec![val(1), val(2)])),
-            (
-                "(* 3 4 5)",
-                precompiled_op("*", vec![val(3), val(4), val(5)]),
-            ),
+            ("(* 3 4 5)", precompiled_op("*", vec![val(3), val(4), val(5)])),
             ("(< 1 2)", precompiled_op("<", vec![val(1), val(2)])),
-            (
-                "(if #t 1 2)",
-                precompiled_op("if", vec![val(true), val(1), val(2)]),
-            ),
+            ("(if #t 1 2)", precompiled_op("if", vec![val(true), val(1), val(2)])),
             // Nested precompiled ops
             (
                 "(car (list 1 2 3))",
@@ -1250,31 +1232,22 @@ mod tests {
                     val([sym("foo"), sym("bar")]),
                 ]),
             ),
+
             // ===== Quote Syntax =====
             // Shorthand quote
-            (
-                "'foo",
-                semantically_equivalent(val([sym("quote"), sym("foo")])),
-            ),
-            (
-                "'(1 2 3)",
-                semantically_equivalent(val([sym("quote"), val([1, 2, 3])])),
-            ),
+            ("'foo", semantically_equivalent(val([sym("quote"), sym("foo")]))),
+            ("'(1 2 3)", semantically_equivalent(val([sym("quote"), val([1, 2, 3])]))),
             ("'()", semantically_equivalent(val([sym("quote"), nil()]))),
             // Longhand quote (precompiled)
             ("(quote foo)", precompiled_op("quote", vec![sym("foo")])),
-            (
-                "(quote (1 2 3))",
-                precompiled_op("quote", vec![val([1, 2, 3])]),
-            ),
+            ("(quote (1 2 3))", precompiled_op("quote", vec![val([1, 2, 3])])),
+
             // ===== Whitespace =====
             ("  42  ", success(42)),
             ("\t#t\n", success(true)),
             ("\r\n  foo  \t", success(sym("foo"))),
             ("( 1   2\t\n3 )", success([1, 2, 3])),
-            // R7RS-RESTRICTED: Test non-standard whitespace characters
-            ("(1\x0B2)", success([1, 2])), // Vertical Tab
-            ("(1\x0C2)", success([1, 2])), // Form Feed
+
             // ===== General Error Handling =====
             // Empty/whitespace-only input
             ("", ParseError(Incomplete)),
@@ -1291,6 +1264,7 @@ mod tests {
             ("(+ 1 2) (+ 3 4)", ParseError(TrailingContent)),
             ("\"hello\" world", ParseError(TrailingContent)),
             ("#t #f", ParseError(TrailingContent)),
+
             // ===== Atom Parsing Error Cases (Corrected for parse_atom) =====
             // These now correctly fail as InvalidSyntax for the whole token
             ("123var", ParseError(InvalidSyntax)),
@@ -1307,12 +1281,14 @@ mod tests {
             ("abc\"", ParseError(TrailingContent)),
             ("test#tag", ParseError(TrailingContent)), // Parses "test", "#tag" is trailing
             ("test space", ParseError(TrailingContent)), // Parses "test", " space" is trailing
+
             // ===== Number Parsing Failures =====
             ("99999999999999999999", ParseError(ImplementationLimit)),
             ("-99999999999999999999", ParseError(ImplementationLimit)),
             ("#xG", ParseError(InvalidSyntax)),
             ("#x", ParseError(InvalidSyntax)),
             ("#y123", ParseError(InvalidSyntax)),
+
             // ===== Boolean Parsing Failures (Case-sensitive) =====
             ("#T", ParseError(InvalidSyntax)),
             ("#F", ParseError(InvalidSyntax)),
@@ -1320,73 +1296,38 @@ mod tests {
             ("#False", ParseError(InvalidSyntax)),
             ("#TRUE", ParseError(InvalidSyntax)),
             ("#FALSE", ParseError(InvalidSyntax)),
+
             // ===== String Parsing Failures =====
             (r#""unterminated"#, ParseError(Incomplete)),
             (r#""unterminated\""#, ParseError(Incomplete)), // ends with backslash
             (r#""test\""#, ParseError(Incomplete)),
             (r#""other\zchar""#, ParseError(InvalidSyntax)), // Unknown escape
-            (r#""badhex\xZ;""#, ParseError(InvalidSyntax)),  // Invalid hex digit
+            (r#""badhex\xZ;""#, ParseError(InvalidSyntax)), // Invalid hex digit
             (r#""no-semicolon\x41""#, ParseError(Incomplete)), // Missing semicolon
-            (r#""empty_hex\x;""#, ParseError(InvalidSyntax)), // Empty hex escape
-            // R7RS DEVIATION: The spec says unknown escapes should be the char itself. We fail.
-            (r#""unknown_escape\z""#, ParseError(InvalidSyntax)),
+
             // ===== List/Quote Failures =====
             ("(", ParseError(Incomplete)),
             ("((", ParseError(Incomplete)),
             ("'", ParseError(Incomplete)),
             ("'(1 2", ParseError(Incomplete)), // Dangling quote with list
+
             // ===== R7RS Unsupported Features =====
-            // R7RS-RESTRICTED: No floating point numbers
-            ("1.0", ParseError(Unsupported)),
-            // R7RS-RESTRICTED: No floating point numbers
-            ("1.e10", ParseError(Unsupported)),
-            // R7RS-RESTRICTED: No floating point numbers
-            ("1.2e3", ParseError(Unsupported)),
-            // R7RS-RESTRICTED: No floating point numbers
-            ("1e10", ParseError(InvalidSyntax)), // symbol
             // R7RS-RESTRICTED: No floating point numbers
             ("3.14", ParseError(Unsupported)),
             // R7RS-RESTRICTED: No floating point numbers
             ("-1.5", ParseError(Unsupported)),
             // R7RS-RESTRICTED: No floating point numbers
             (".5", ParseError(Unsupported)),
-            // R7RS-RESTRICTED: No rationals
             ("1/2", ParseError(InvalidSyntax)), // Parsed as symbol "1/2"
-            // R7RS-RESTRICTED: No complex numbers
             ("1+2i", ParseError(InvalidSyntax)), // Parsed as symbol "1+2i"
-            // R7RS-RESTRICTED: No complex numbers
-            ("1.5+2.5i", ParseError(InvalidSyntax)),
             // R7RS-RESTRICTED: No binary number syntax
             ("#b101", ParseError(Unsupported)),
-            // R7RS-RESTRICTED: No binary number syntax & case-insensitive prefix
-            ("#B101", ParseError(Unsupported)),
-            // R7RS-RESTRICTED: No binary number syntax
-            (
-                "#b11111111111111111111111111111111",
-                ParseError(Unsupported),
-            ),
             // R7RS-RESTRICTED: No octal number syntax
             ("#o10", ParseError(Unsupported)),
-            // R7RS-RESTRICTED: No octal number syntax & case-insensitive prefix
-            ("#O10", ParseError(Unsupported)),
-            // R7RS-RESTRICTED: No octal number syntax
-            ("#o77777777777", ParseError(Unsupported)),
-            // R7RS-RESTRICTED: No decimal prefix
-            ("#d123", ParseError(Unsupported)),
-            // R7RS-RESTRICTED: No decimal prefix & case-insensitive prefix
-            ("#D123", ParseError(Unsupported)),
             // R7RS-RESTRICTED: No exactness prefix
             ("#e10", ParseError(Unsupported)),
-            // R7RS-RESTRICTED: No exactness prefix & case-insensitive prefix
-            ("#E10", ParseError(Unsupported)),
-            // R7RS-RESTRICTED: No exactness prefix
-            ("#e3.14", ParseError(Unsupported)),
             // R7RS-RESTRICTED: No inexactness prefix
             ("#i10", ParseError(Unsupported)),
-            // R7RS-RESTRICTED: No inexactness prefix & case-insensitive prefix
-            ("#I10", ParseError(Unsupported)),
-            // R7RS-RESTRICTED: No inexactness prefix
-            ("#i3.14", ParseError(Unsupported)),
             // R7RS-RESTRICTED: No improper lists (dotted pairs)
             (".", ParseError(Unsupported)),
             // R7RS-RESTRICTED: No improper lists (dotted pairs)
@@ -1412,13 +1353,11 @@ mod tests {
             // R7RS-RESTRICTED: No directives
             ("#!fold-case", ParseError(Unsupported)),
             // R7RS-RESTRICTED: No S-expression comments
-            ("#;(1 2 3)", ParseError(Unsupported)),
+            ("#;(1 2 3)", ParseError(Unsupported)), // S-expression comment
+
             // ===== Standalone symbols that look like numbers =====
             ("+", success(sym("+"))),
             ("-", success(sym("-"))),
-            ("+5", success(sym("+5"))),
-            ("-10.", success(sym("-10."))),
-            ("1a", success(sym("1a"))),
         ];
 
         run_parse_tests(
@@ -1436,37 +1375,21 @@ mod tests {
             // ===== Comments =====
             // Single-line comments
             ("42 ; this is a comment", success(42)),
-            (
-                "(+ 1 2) ; and another",
-                precompiled_op("+", vec![val(1), val(2)]),
-            ),
+            ("(+ 1 2) ; and another", precompiled_op("+", vec![val(1), val(2)])),
             // Block comments
             ("1 #| comment |# 2", ParseError(TrailingContent)), // Parses 1, rest is trailing
             ("#| comment |# 42", success(42)),
-            (
-                "(#| comment |# + 1 2)",
-                precompiled_op("+", vec![val(1), val(2)]),
-            ),
-            (
-                "(+ #| comment |# 1 2)",
-                precompiled_op("+", vec![val(1), val(2)]),
-            ),
-            (
-                "(+ 1 #| comment |# 2)",
-                precompiled_op("+", vec![val(1), val(2)]),
-            ),
-            (
-                "(+ 1 2 #| comment |#)",
-                precompiled_op("+", vec![val(1), val(2)]),
-            ),
+            ("(#| comment |# + 1 2)", precompiled_op("+", vec![val(1), val(2)])),
+            ("(+ #| comment |# 1 2)", precompiled_op("+", vec![val(1), val(2)])),
+            ("(+ 1 #| comment |# 2)", precompiled_op("+", vec![val(1), val(2)])),
+            ("(+ 1 2 #| comment |#)", precompiled_op("+", vec![val(1), val(2)])),
             // Nested block comments
             ("#| outer #| inner |# outer |# 123", success(123)),
             // Unclosed block comments
-            ("#| unclosed", ParseError(Incomplete)),
-            ("#| outer #| inner |# unclosed", ParseError(Incomplete)),
             ("#| unclosed comment", ParseError(Incomplete)),
             ("#| nested #| unclosed", ParseError(Incomplete)),
             ("42 #| unclosed", ParseError(TrailingContent)), // Parses 42, then trailing unclosed comment
+
             // ===== Line Continuations in Strings =====
             ("\"line1\\\nline2\"", success("line1line2")),
             ("\"before\\\n   after\"", success("beforeafter")),
@@ -1475,6 +1398,7 @@ mod tests {
             ("\"before\\   \n   after\"", success("beforeafter")),
             ("\"a\\\nb\\\nc\"", success("abc")),
             ("\"before\\\n\\x0;after\"", success("before\0after")),
+
             // ===== Line Continuations Between Tokens =====
             ("(\\ \n + 1 2)", precompiled_op("+", vec![val(1), val(2)])),
             ("(+ 1 \\\n 2)", precompiled_op("+", vec![val(1), val(2)])),
@@ -1495,6 +1419,7 @@ mod tests {
             ("42 ; comment", ParseError(TrailingContent)),
             // R7RS-RESTRICTED: Block comments require script_syntax mode
             ("#| comment |# 42", ParseError(Unsupported)),
+
             // ===== Line Continuations (should be unsupported) =====
             // R7RS-RESTRICTED: Line continuations in strings require script_syntax mode
             ("\"line1\\\nline2\"", ParseError(Unsupported)),

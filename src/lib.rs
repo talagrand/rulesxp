@@ -54,52 +54,99 @@ pub const MAX_PARSE_DEPTH: usize = 32;
 /// Set higher than parse depth to allow for nested function applications
 pub const MAX_EVAL_DEPTH: usize = 64;
 
-/// Represents a position (line and column) in the source input.
-#[derive(Debug, PartialEq, Clone, Copy, Default)]
-pub struct Position {
-    pub line: usize,
-    pub column: usize,
-}
-
 /// Categorizes the different kinds of parsing errors.
 #[derive(Debug, PartialEq, Clone)]
 pub enum ParseErrorKind {
-    InvalidToken,          // An unexpected character or token was found.
-    UnexpectedEndOfInput,  // The input ended prematurely.
-    NumericOverflow,       // A number literal was too large or small.
-    InvalidHexLiteral,     // A hexadecimal literal was malformed.
-    InvalidEscapeSequence, // An unrecognized escape sequence in a string.
-    UnterminatedString,    // A string literal was not closed.
-    MismatchedParentheses, // Unbalanced parentheses in a list.
-    TooDeeplyNested,       // The expression exceeded the maximum parse depth.
-    EmptyInput,            // The input string was empty.
-    TrailingInput,         // Extra characters were found after a valid expression.
-    TrailingContent,       // The parser encountered content after a complete expression was parsed.
-    Incomplete,            // The input is a valid prefix but is not a complete expression.
-    Unsupported, // The input uses valid R7RS syntax that is not supported by this interpreter.
+    /// Invalid or unexpected syntax (bad tokens, malformed expressions)
+    InvalidSyntax,
+    /// Input ended before the expression was complete (EOF, unterminated string, unclosed parens)
+    Incomplete,
+    /// Expression nesting exceeded the maximum parse depth
+    TooDeeplyNested,
+    /// Extra input found after a complete, valid expression
+    TrailingContent,
+    /// Valid language syntax that is intentionally not supported in this implementation
+    Unsupported,
+    /// Implementation-imposed limit exceeded (depth, integer overflow, etc.)
+    ImplementationLimit,
 }
 
 /// A structured error providing detailed information about a parsing failure.
 #[derive(Debug, PartialEq, Clone)]
 pub struct ParseError {
-    pub position: Position,
     pub kind: ParseErrorKind,
     pub message: String,
+    /// Context snippet from the input showing where the error occurred (max 100 chars)
+    pub context: Option<String>,
+    /// The problematic token or character encountered, if identifiable
+    pub found: Option<String>,
 }
 
 impl ParseError {
-    /// Create a simple ParseError with no position information (for JSONLogic and CEL parsers)
-    pub fn simple(kind: ParseErrorKind, message: impl Into<String>) -> Self {
+    /// Create a ParseError with all fields
+    pub fn new(
+        kind: ParseErrorKind,
+        message: impl Into<String>,
+        context: Option<String>,
+        found: Option<String>,
+    ) -> Self {
         ParseError {
-            position: Position::default(),
             kind,
             message: message.into(),
+            context,
+            found,
         }
     }
 
-    /// Create a ParseError from just a message (defaults to InvalidToken kind, no position)
-    pub fn from_message(message: impl Into<String>) -> Self {
-        Self::simple(ParseErrorKind::InvalidToken, message)
+    /// Create a simple ParseError with a kind and message but no context
+    pub fn from_message(kind: ParseErrorKind, message: impl Into<String>) -> Self {
+        Self::new(kind, message, None, None)
+    }
+
+    /// Create a ParseError with context extracted from input at a given offset
+    pub fn with_context(
+        kind: ParseErrorKind,
+        message: impl Into<String>,
+        input: &str,
+        error_offset: usize,
+    ) -> Self {
+        Self::with_context_and_found(kind, message, input, error_offset, None)
+    }
+
+    /// Create a ParseError with context and found token
+    pub fn with_context_and_found(
+        kind: ParseErrorKind,
+        message: impl Into<String>,
+        input: &str,
+        error_offset: usize,
+        found: Option<String>,
+    ) -> Self {
+        const MAX_CONTEXT: usize = 100;
+
+        // Calculate start position: try to show some context before the error
+        let context_start = error_offset.saturating_sub(20);
+
+        // Extract context using chars().take() for simplicity
+        let context_str: String = input
+            .chars()
+            .skip(context_start)
+            .take(MAX_CONTEXT)
+            .collect();
+
+        // Add ellipsis if we truncated
+        let mut display_context = String::new();
+        if context_start > 0 {
+            display_context.push_str("[...]");
+        }
+        display_context.push_str(&context_str);
+        if context_start + context_str.len() < input.len() {
+            display_context.push_str("[...]");
+        }
+
+        // Replace newlines with visible markers for better error display
+        let display_context = display_context.replace('\n', "\\n").replace('\r', "");
+
+        Self::new(kind, message, Some(display_context), found)
     }
 }
 
@@ -140,12 +187,17 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Error::ParseError(e) => write!(
-                f,
-                "Parse error at line {} col {}: {}",
-                e.position.line, e.position.column, e.message
-            ),
-            Error::EvalError(msg) => write!(f, "Evaluation error: {msg}"),
+            Error::ParseError(e) => {
+                write!(f, "ParseError: {}", e.message)?;
+                if let Some(found) = &e.found {
+                    write!(f, "\nFound: {found}")?;
+                }
+                if let Some(context) = &e.context {
+                    write!(f, "\nContext: {context}")?;
+                }
+                Ok(())
+            }
+            Error::EvalError(msg) => write!(f, "EvaluationError: {msg}"),
             Error::TypeError(msg) => write!(f, "Type error: {msg}"),
             Error::UnboundVariable(var) => write!(f, "Unbound variable: {var}"),
             Error::ArityError {
@@ -155,11 +207,11 @@ impl fmt::Display for Error {
             } => match expression {
                 Some(expr) => write!(
                     f,
-                    "Arity error in expression {expr}: expected {expected} arguments, got {got}"
+                    "ArityError: expression {expr}: expected {expected} arguments, got {got}"
                 ),
                 None => write!(
                     f,
-                    "Arity error: function expected {expected} arguments but got {got}"
+                    "ArityError: function expected {expected} arguments but got {got}"
                 ),
             },
         }

@@ -1,4 +1,5 @@
 use rulesxp::Error;
+use rulesxp::ParseErrorKind;
 use rulesxp::ast::Value;
 use rulesxp::evaluator;
 use rulesxp::jsonlogic::{ast_to_jsonlogic, parse_jsonlogic};
@@ -7,6 +8,19 @@ use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use std::panic;
 use std::process;
+
+/// Check if an error indicates incomplete input that needs continuation
+fn is_incomplete_error(error: &Error) -> bool {
+    match error {
+        Error::ParseError(parse_err) => {
+            matches!(parse_err.kind, ParseErrorKind::Incomplete)
+                || parse_err.message.contains("Expected closing ')'")
+                || parse_err.message.contains("Expected symbol characters")
+                || parse_err.message.contains("Expected valid string literal")
+        }
+        _ => false,
+    }
+}
 
 fn main() {
     let result = panic::catch_unwind(|| {
@@ -43,101 +57,164 @@ fn run_repl() {
     env.register_builtin_operation::<()>("help", print_help);
 
     let mut jsonlogic_mode = false;
+    let mut accumulated_input = String::new();
 
     loop {
-        match rl.readline("rulesxp> ") {
+        let prompt = if accumulated_input.is_empty() {
+            "rulesxp> "
+        } else {
+            "     ... "
+        };
+
+        match rl.readline(prompt) {
             Ok(line) => {
-                let line = line.trim();
-                if line.is_empty() {
+                let line_trimmed = line.trim();
+
+                // Accumulate input
+                if !accumulated_input.is_empty() {
+                    accumulated_input.push('\n');
+                }
+                accumulated_input.push_str(&line);
+
+                // Skip empty lines unless we're accumulating
+                if line_trimmed.is_empty() && accumulated_input.trim().is_empty() {
+                    accumulated_input.clear();
                     continue;
                 }
 
-                // Add the line to history
-                let _ = rl.add_history_entry(line);
+                // Add the accumulated input to history only when complete
+                // (we'll add it later when we successfully parse)
 
-                // Handle special commands
-                match line {
-                    ":help" => {
-                        _ = print_help().is_ok();
-                        continue;
-                    }
-                    ":env" => {
-                        print_environment(&env);
-                        continue;
-                    }
-                    ":jsonlogic" => {
-                        jsonlogic_mode = !jsonlogic_mode;
-                        if jsonlogic_mode {
-                            println!("JSONLogic mode enabled:");
-                            println!("  • Results shown as JSONLogic");
-                            println!("  • Scheme inputs show JSONLogic translation (→)");
-                        } else {
-                            println!("Scheme mode enabled:");
-                            println!("  • Results shown as S-expressions");
-                            println!("  • JSONLogic inputs show Scheme translation (→)");
+                // Add the accumulated input to history only when complete
+                // (we'll add it later when we successfully parse)
+
+                // Handle special commands (only when not accumulating multi-line input)
+                if accumulated_input.trim().starts_with(':') && !accumulated_input.contains('\n') {
+                    match accumulated_input.trim() {
+                        ":help" => {
+                            _ = print_help().is_ok();
+                            accumulated_input.clear();
+                            continue;
                         }
-                        continue;
+                        ":env" => {
+                            print_environment(&env);
+                            accumulated_input.clear();
+                            continue;
+                        }
+                        ":jsonlogic" => {
+                            jsonlogic_mode = !jsonlogic_mode;
+                            if jsonlogic_mode {
+                                println!("JSONLogic mode enabled:");
+                                println!("  • Results shown as JSONLogic");
+                                println!("  • Scheme inputs show JSONLogic translation (→)");
+                            } else {
+                                println!("Scheme mode enabled:");
+                                println!("  • Results shown as S-expressions");
+                                println!("  • JSONLogic inputs show Scheme translation (→)");
+                            }
+                            accumulated_input.clear();
+                            continue;
+                        }
+                        ":quit" | ":exit" => {
+                            println!("Goodbye!");
+                            break;
+                        }
+                        _ => {}
                     }
-                    ":quit" | ":exit" => {
-                        println!("Goodbye!");
-                        break;
-                    }
-                    _ => {}
                 }
 
                 // Try to parse and evaluate the expression
                 // First check if input looks like JSON (starts with { or [)
-                let result =
-                    if line.trim_start().starts_with('{') || line.trim_start().starts_with('[') {
-                        // Try JSONLogic parsing
-                        match parse_jsonlogic(line) {
-                            Ok(expr) => {
-                                // If in Scheme mode, show the parsed expression as Scheme
-                                if !jsonlogic_mode {
-                                    println!("→ {expr}");
-                                }
-                                evaluator::eval(&expr, &mut env)
+                let input = accumulated_input.trim();
+                let result = if input.starts_with('{') || input.starts_with('[') {
+                    // Try JSONLogic parsing
+                    match parse_jsonlogic(input) {
+                        Ok(expr) => {
+                            // If in Scheme mode, show the parsed expression as Scheme
+                            if !jsonlogic_mode {
+                                println!("→ {expr}");
                             }
-                            Err(e) => Err(e),
+                            Ok(Some(evaluator::eval(&expr, &mut env)))
                         }
-                    } else {
-                        // Try Scheme parsing with comments enabled
-                        let config = ParseConfig {
-                            handle_comments: true,
-                        };
-                        match parse_scheme_with_config(line, config) {
-                            Ok(expr) => {
-                                // If in JSONLogic mode, show the parsed expression as JSONLogic
-                                if jsonlogic_mode && let Ok(json_str) = ast_to_jsonlogic(&expr) {
-                                    println!("→ {json_str}");
-                                } // Skip if conversion fails
-                                evaluator::eval(&expr, &mut env)
-                            }
-                            Err(e) => Err(e),
-                        }
-                    };
-
-                match result {
-                    Ok(result) => {
-                        // Don't print Unspecified values (e.g., from define)
-                        if !matches!(result, Value::Unspecified) {
-                            if jsonlogic_mode {
-                                match ast_to_jsonlogic(&result) {
-                                    Ok(json_str) => println!("{json_str}"),
-                                    Err(_) => println!("{result}"), // Fallback to S-expression if conversion fails
-                                }
+                        Err(e) => {
+                            // Check if error is due to incomplete input
+                            if is_incomplete_error(&e) {
+                                Ok(None) // Signal to continue accumulating
                             } else {
-                                println!("{result}");
+                                Err(e)
                             }
                         }
                     }
-                    Err(e) => println!("Error: {e}"),
+                } else {
+                    // Try Scheme parsing with script syntax enabled (comments and line continuations)
+                    let config = ParseConfig {
+                        script_syntax: true,
+                    };
+                    match parse_scheme_with_config(input, config) {
+                        Ok(expr) => {
+                            // If in JSONLogic mode, show the parsed expression as JSONLogic
+                            if jsonlogic_mode && let Ok(json_str) = ast_to_jsonlogic(&expr) {
+                                println!("→ {json_str}");
+                            } // Skip if conversion fails
+                            Ok(Some(evaluator::eval(&expr, &mut env)))
+                        }
+                        Err(e) => {
+                            // Check if error is due to incomplete input
+                            if is_incomplete_error(&e) {
+                                Ok(None) // Signal to continue accumulating
+                            } else {
+                                Err(e)
+                            }
+                        }
+                    }
+                };
+
+                match result {
+                    Ok(Some(eval_result)) => {
+                        // Successfully parsed and evaluated - add to history and clear accumulator
+                        let _ = rl.add_history_entry(&accumulated_input);
+                        accumulated_input.clear();
+
+                        match eval_result {
+                            Ok(result) => {
+                                // Don't print Unspecified values (e.g., from define)
+                                if !matches!(result, Value::Unspecified) {
+                                    if jsonlogic_mode {
+                                        match ast_to_jsonlogic(&result) {
+                                            Ok(json_str) => println!("{json_str}"),
+                                            Err(_) => println!("{result}"), // Fallback to S-expression if conversion fails
+                                        }
+                                    } else {
+                                        println!("{result}");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                println!("Error: {e}");
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        // Incomplete input - continue accumulating on next iteration
+                        // The loop will show the continuation prompt
+                    }
+                    Err(e) => {
+                        // Real error - show it and clear accumulator
+                        println!("Error: {e}");
+                        accumulated_input.clear();
+                    }
                 }
             }
 
             Err(ReadlineError::Eof) | Err(ReadlineError::Interrupted) => {
-                println!("Goodbye!");
-                break;
+                // On Ctrl+C or Ctrl+D, clear accumulated input if any, otherwise exit
+                if !accumulated_input.is_empty() {
+                    println!("^C");
+                    accumulated_input.clear();
+                } else {
+                    println!("Goodbye!");
+                    break;
+                }
             }
             Err(err) => {
                 println!("Error: {err:?}");

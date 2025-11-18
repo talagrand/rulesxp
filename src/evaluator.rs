@@ -762,8 +762,9 @@ mod tests {
             ("42", success(42)),
             ("-271", success(-271)),
             ("0", success(0)),
-            ("9223372036854775807", success(i64::MAX)),
-            ("-9223372036854775808", success(i64::MIN)),
+            // R7RS-RESTRICTED: Limited to 32-bit integers to reserve upper bits for type tags
+            ("2147483647", success(i32::MAX)), // Max 32-bit signed integer
+            ("-2147483648", success(i32::MIN)), // Min 32-bit signed integer
             // Booleans
             ("#t", success(true)),
             ("#f", success(false)),
@@ -796,10 +797,11 @@ mod tests {
             ("(* (+ 1 2) (- 5 2))", success(9)),
             ("(- (+ 10 5) (* 2 3))", success(9)),
             // Arithmetic overflow errors
-            ("(+ 9223372036854775807 1)", Error), // i64::MAX + 1
-            ("(- -9223372036854775808)", Error),  // -(i64::MIN)
-            ("(- -9223372036854775808 1)", Error), // i64::MIN - 1
-            ("(* 4611686018427387904 2)", Error), // (i64::MAX/2 + 1) * 2
+            // R7RS-RESTRICTED: Limited to 32-bit integers
+            ("(+ 2147483647 1)", Error),  // i32::MAX + 1
+            ("(- -2147483648)", Error),   // -(i32::MIN)
+            ("(- -2147483648 1)", Error), // i32::MIN - 1
+            ("(* 1073741824 2)", Error),  // (i32::MAX/2 + 1) * 2
             // === EQUALITY AND COMPARISON OPERATIONS ===
             // Numeric equality (spec-compliant - only accepts numbers)
             ("(= 5 5)", success(true)),

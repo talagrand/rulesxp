@@ -15,37 +15,43 @@ use crate::builtinops::BuiltinOp;
 use crate::evaluator::intooperation::OperationFn;
 
 /// Type alias for number values in interpreter
-pub(crate) type NumberType = i64;
+/// Using i32 instead of i64 to reserve upper bits for future type tags or NaN-boxing optimizations
+pub(crate) type NumberType = i32;
 
-/// Allowed non-alphanumeric characters in Scheme symbol names
-/// Most represent mathematical symbols or predicates ("?"), "$" supported for JavaScript identifiers
-pub(crate) const SYMBOL_SPECIAL_CHARS: &str = "+-*/<>=!?_$";
+/// Checks if a given string is a valid Scheme symbol using the R7RS grammar, including
+/// peculiar identifiers like `+`, `-`, `...`, and the special `->` prefix.
+/// R7RS-RESTRICTED: This parser does not support the `|symbol with spaces|` syntax.
+/// It also enforces case-sensitivity, which is a permitted implementation choice.
+/// R7RS-RESTRICTED: The set of characters permitted is ASCII only for now,
+/// as R7RS has requirements on initials/subsequents that do not match Rust's native character categories.
+pub fn is_symbol_valid(s: &str) -> bool {
+    // Case 1: Check for peculiar identifiers.
+    // These are valid only if they are the entire symbol.
+    if s == "+" || s == "-" || s == "..." {
+        return true;
+    }
 
-/// Check if a string is a valid symbol name
-/// Valid: non-empty, no leading digit, no "-digit" prefix, alphanumeric + SYMBOL_SPECIAL_CHARS
-/// Note: This function is tested as part of the parser tests in parser.rs
-pub(crate) fn is_valid_symbol(name: &str) -> bool {
-    let mut chars = name.chars();
+    // R7RS §7.1.1 <initial> and <subsequent> character sets (ASCII-only version).
+    let is_initial = |c: char| c.is_ascii_alphabetic() || "!$%&*/:<=>?^_~".contains(c);
+    let is_subsequent = |c: char| is_initial(c) || c.is_ascii_digit() || "+-.@".contains(c);
 
-    match chars.next() {
-        None => false, // name is empty
-        Some(first_char) => {
-            if first_char.is_ascii_digit() {
-                return false;
-            }
+    // Case 2: Check for regular identifiers.
+    let mut chars = s.chars();
 
-            if first_char == '-'
-                && let Some(second_char) = chars.next()
-                && second_char.is_ascii_digit()
-            {
-                return false;
-            }
-
-            // Check all characters are valid
-            // The first character is checked here again, but it's a cheap operation.
-            name.chars()
-                .all(|c| c.is_alphanumeric() || SYMBOL_SPECIAL_CHARS.contains(c))
-        }
+    // The first part of the symbol must be either a valid initial character
+    // or the special "->" prefix.
+    if s.starts_with("->") {
+        chars.next();
+        chars.next();
+        // All remaining characters must be subsequent characters.
+        chars.all(is_subsequent)
+    } else if let Some(first) = chars.next()
+        && is_initial(first)
+    {
+        // All remaining characters must be subsequent characters.
+        chars.all(is_subsequent)
+    } else {
+        false
     }
 }
 
@@ -156,7 +162,7 @@ macro_rules! impl_from_integer {
     ($int_type:ty) => {
         impl From<$int_type> for Value {
             fn from(n: $int_type) -> Self {
-                Value::Number(n as i64)
+                Value::Number(n as NumberType)
             }
         }
     };
@@ -166,7 +172,6 @@ macro_rules! impl_from_integer {
 impl_from_integer!(i8);
 impl_from_integer!(i16);
 impl_from_integer!(i32);
-impl_from_integer!(NumberType); // Special case - no casting
 impl_from_integer!(u8);
 impl_from_integer!(u16);
 impl_from_integer!(u32);
@@ -365,12 +370,13 @@ mod helper_function_tests {
             (val(-17), Value::Number(-17)),
             (val(-0), Value::Number(0)),
             // Different integer types from macro
-            (val(4294967295u32), Value::Number(4294967295)),
-            (val(2147483647i32), Value::Number(2147483647)),
+            // R7RS-RESTRICTED: Limited to 32-bit signed integers (values must fit in i32)
+            (val(2147483647i32), Value::Number(2147483647)), // i32::MAX
+            (val(-2147483648i32), Value::Number(-2147483648)), // i32::MIN
             (val(255u8), Value::Number(255)),
             (val(-128i8), Value::Number(-128)),
-            (val(65535u16), Value::Number(65535)),
-            (val(-32768i16), Value::Number(-32768)),
+            (val(32767i16), Value::Number(32767)),   // i16::MAX
+            (val(-32768i16), Value::Number(-32768)), // i16::MIN
             (val(NumberType::MAX), Value::Number(NumberType::MAX)),
             (val(NumberType::MIN), Value::Number(NumberType::MIN)),
             // Basic booleans

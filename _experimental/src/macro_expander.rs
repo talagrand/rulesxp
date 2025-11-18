@@ -142,7 +142,9 @@ fn expand_template_internal(
                         if templates.len() != 2 {
                             return Err(MacroError(format!(
                                 "Malformed {} form in template: expected ({} <datum>), found list with {} elements",
-                                quote_symbol, quote_symbol, templates.len()
+                                quote_symbol,
+                                quote_symbol,
+                                templates.len()
                             )));
                         }
 

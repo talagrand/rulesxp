@@ -32,7 +32,7 @@ pub use crate::macro_compiler::{
     MacroTemplate, SyntaxRule,
 };
 pub use crate::macro_expander::expand_template;
-pub use crate::macro_matcher::{match_pattern, MatchContext, MatchResult};
+pub use crate::macro_matcher::{MatchContext, MatchResult, match_pattern};
 
 // Global debug flag - set via environment variable MACRO_DEBUG=1
 static DEBUG: std::sync::LazyLock<bool> =
@@ -163,7 +163,7 @@ impl MacroExpander {
             _ => {
                 return Err(MacroError(
                     "define-syntax name must be a symbol".to_string(),
-                ))
+                ));
             }
         };
         let macro_def = crate::macro_compiler::parse_syntax_rules(&name, &items[2])?;

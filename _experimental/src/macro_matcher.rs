@@ -48,13 +48,17 @@ macro_rules! debug_trace {
 /// The structure mirrors the ellipsis nesting in the pattern.
 ///
 /// Example:
+///
 /// - Pattern `(x)` matching `(5)` → x: Direct(5)
 /// - Pattern `(x ...)` matching `(1 2 3)` → x: Repeated{count: 3, elements: [Direct(1), Direct(2), Direct(3)]}
-/// - Pattern `((x ...) ...)` matching `((1 2) (3 4))` →
-///   x: Repeated{count: 2, elements: [
-///     Repeated{count: 2, elements: [Direct(1), Direct(2)]},
-///     Repeated{count: 2, elements: [Direct(3), Direct(4)]}
-///   ]}
+/// - Pattern `((x ...) ...)` matching `((1 2) (3 4))`:
+///
+/// ```text
+/// x: Repeated{count: 2, elements: [
+///   Repeated{count: 2, elements: [Direct(1), Direct(2)]},
+///   Repeated{count: 2, elements: [Direct(3), Direct(4)]}
+/// ]}
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum Binding {
     /// Direct value binding - variable matched a single value (depth 0)

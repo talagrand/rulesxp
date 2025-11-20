@@ -213,8 +213,8 @@ fn capture_stack_trace<'ast>(
                             ))
                         }
                         ProcessedValue::If {
-                            test,
-                            then_branch,
+                            test: _,
+                            then_branch: _,
                             else_branch,
                         } => {
                             let has_else = else_branch.is_some();
@@ -1197,7 +1197,8 @@ impl SuperDirectVM {
                             if matches!(expr, ProcessedValue::Define { .. }) {
                                 return Err(RuntimeError::new(format!(
                                     "Definitions must come before expressions in body at position {}: {}",
-                                    i, expr.display(&self.ast.interner)
+                                    i,
+                                    expr.display(&self.ast.interner)
                                 )));
                             }
                         }
@@ -1631,7 +1632,13 @@ impl SuperStackVM {
                                 continue;
                             } else {
                                 // Internal define outside Begin/Lambda body - should be caught by body processing
-                                return Err(create_runtime_error_with_stack_trace(&self.ast.interner, "Define outside of body start - should be caught by begin/lambda processing", &stack, &shared_args_buffer, &current_env));
+                                return Err(create_runtime_error_with_stack_trace(
+                                    &self.ast.interner,
+                                    "Define outside of body start - should be caught by begin/lambda processing",
+                                    &stack,
+                                    &shared_args_buffer,
+                                    &current_env,
+                                ));
                             }
                         }
 
@@ -1960,7 +1967,7 @@ impl SuperStackVM {
                                             &stack,
                                             &shared_args_buffer,
                                             &current_env,
-                                        ))
+                                        ));
                                     }
                                 }
 
@@ -1976,30 +1983,34 @@ impl SuperStackVM {
                                 // Check argument count (exact match for non-variadic functions)
                                 if !*variadic && evaluated_args.len() != params.len() {
                                     return Err(augment_error_with_stack_trace(
-                                    &self.ast.interner,
-                                    RuntimeError::new(format!(
-                                        "Arity mismatch: expected {} arguments, got {} for procedure {}",
-                                        params.len(),
-                                        evaluated_args.len(),
-                                        func_value.display(&self.ast.interner)
-                                    )),
-                                    &stack,
-                                    &shared_args_buffer, &current_env));
+                                        &self.ast.interner,
+                                        RuntimeError::new(format!(
+                                            "Arity mismatch: expected {} arguments, got {} for procedure {}",
+                                            params.len(),
+                                            evaluated_args.len(),
+                                            func_value.display(&self.ast.interner)
+                                        )),
+                                        &stack,
+                                        &shared_args_buffer,
+                                        &current_env,
+                                    ));
                                 }
 
                                 if *variadic && evaluated_args.len() < params.len() - 1 {
                                     return Err(augment_error_with_stack_trace(
-                                    &self.ast.interner,
-                                    RuntimeError::new(format!(
-                                        "Arity mismatch: expected at least {} arguments, got {} for procedure {}",
-                                        params.len() - 1,
-                                        evaluated_args.len(),
-                                        func_value.display(&self.ast.interner)
-                                    )),
-                                    &stack,
-                                    &shared_args_buffer, &current_env));
+                                        &self.ast.interner,
+                                        RuntimeError::new(format!(
+                                            "Arity mismatch: expected at least {} arguments, got {} for procedure {}",
+                                            params.len() - 1,
+                                            evaluated_args.len(),
+                                            func_value.display(&self.ast.interner)
+                                        )),
+                                        &stack,
+                                        &shared_args_buffer,
+                                        &current_env,
+                                    ));
                                 } // Create environment extending closure's captured environment
-                                  // **NEW IMMUTABLE ARCHITECTURE:** Use extend() for each parameter
+                                // **NEW IMMUTABLE ARCHITECTURE:** Use extend() for each parameter
                                 let mut call_env_rc = Rc::clone(closure_env);
 
                                 // Bind parameters to arguments using extend()
@@ -2055,7 +2066,7 @@ impl SuperStackVM {
                                     &stack,
                                     &shared_args_buffer,
                                     &current_env,
-                                ))
+                                ));
                             }
                         }
                     } else {
@@ -2087,7 +2098,7 @@ impl SuperStackVM {
                 SuperEvalFrame::ProcedureCall {
                     body,
                     call_env,
-                    is_tail_call,
+                    is_tail_call: _,
                 } => {
                     // Procedure call: parameters are bound, now evaluate body
                     // **ENVIRONMENT HANDLING:** Set current_env to call_env for body evaluation.

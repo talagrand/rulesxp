@@ -191,7 +191,7 @@ impl<'ast> ProcessedValue<'ast> {
         ProcessedValueDisplay {
             value: self,
             interner,
-            scheme_display: false,
+            _scheme_display: false,
         }
     }
 
@@ -203,7 +203,7 @@ impl<'ast> ProcessedValue<'ast> {
         ProcessedValueDisplay {
             value: self,
             interner,
-            scheme_display: true,
+            _scheme_display: true,
         }
     }
 }
@@ -212,7 +212,7 @@ impl<'ast> ProcessedValue<'ast> {
 pub struct ProcessedValueDisplay<'a, 'ast> {
     value: &'a ProcessedValue<'ast>,
     interner: &'a SchemeStringInterner,
-    scheme_display: bool,
+    _scheme_display: bool,
 }
 
 impl<'a, 'ast> std::fmt::Display for ProcessedValueDisplay<'a, 'ast> {

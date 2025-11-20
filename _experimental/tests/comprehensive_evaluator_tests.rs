@@ -792,9 +792,14 @@ mod comprehensive_evaluator_tests {
                                                     ProcessedValue::List(actual_list),
                                                     ProcessedValue::List(expected_list),
                                                 ) => {
-                                                    format!("{}: expected list {:?} (len={}), got list {:?} (len={})",
-                                                        test_id, expected_list.as_ref(), expected_list.len(),
-                                                        actual_list.as_ref(), actual_list.len())
+                                                    format!(
+                                                        "{}: expected list {:?} (len={}), got list {:?} (len={})",
+                                                        test_id,
+                                                        expected_list.as_ref(),
+                                                        expected_list.len(),
+                                                        actual_list.as_ref(),
+                                                        actual_list.len()
+                                                    )
                                                 }
                                                 _ => format!(
                                                     "{}: expected {:?}, got {:?}",
@@ -1294,7 +1299,6 @@ mod comprehensive_evaluator_tests {
                 ("(is-odd 4)", success(false)),
                 ("(is-odd 5)", success(true)),
             ]),
-
             // === COMPLEX INNER DEFINE TESTS ===
             // From inner_define_results_test.scm - multiple inner defines with list result
             TestEnvironment(vec![
@@ -1319,12 +1323,22 @@ mod comprehensive_evaluator_tests {
             ]),
             // From inner_mutual_both_results.scm - inner mutual recursion with list result
             TestEnvironment(vec![
-                test_setup!("(define (mutual-test n) (define (is-even x) (if (= x 0) #t (is-odd (- x 1)))) (define (is-odd x) (if (= x 0) #f (is-even (- x 1)))) (is-even n))"),
-                ("(list (mutual-test 4) (mutual-test 5))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![ProcessedValue::Boolean(true), ProcessedValue::Boolean(false)])))),
+                test_setup!(
+                    "(define (mutual-test n) (define (is-even x) (if (= x 0) #t (is-odd (- x 1)))) (define (is-odd x) (if (= x 0) #f (is-even (- x 1)))) (is-even n))"
+                ),
+                (
+                    "(list (mutual-test 4) (mutual-test 5))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::Boolean(true),
+                        ProcessedValue::Boolean(false),
+                    ]))),
+                ),
             ]),
             // From inner_mutual_recursion_test.scm - individual inner mutual recursion tests
             TestEnvironment(vec![
-                test_setup!("(define (mutual-test n) (define (is-even x) (if (= x 0) #t (is-odd (- x 1)))) (define (is-odd x) (if (= x 0) #f (is-even (- x 1)))) (is-even n))"),
+                test_setup!(
+                    "(define (mutual-test n) (define (is-even x) (if (= x 0) #t (is-odd (- x 1)))) (define (is-odd x) (if (= x 0) #f (is-even (- x 1)))) (is-even n))"
+                ),
                 ("(mutual-test 4)", success(true)),
                 ("(mutual-test 5)", success(false)),
             ]),
@@ -1333,12 +1347,13 @@ mod comprehensive_evaluator_tests {
             TestEnvironment(vec![
                 test_setup!("(define x 99)"),
                 ("(letrec ((x 42)) x)", success(42)), // inner letrec shadows outer
-                ("x", success(99)), // outer x unchanged
+                ("x", success(99)),                   // outer x unchanged
             ]),
             // Test letrec closure capturing letrec-bound variable
-            TestEnvironment(vec![
-                ("(letrec ((x 123) (f (lambda () x))) (f))", success(123)),
-            ]),
+            TestEnvironment(vec![(
+                "(letrec ((x 123) (f (lambda () x))) (f))",
+                success(123),
+            )]),
             // Test letrec closure capturing shadowed variable
             TestEnvironment(vec![
                 test_setup!("(define x 77)"),
@@ -1351,18 +1366,19 @@ mod comprehensive_evaluator_tests {
                 ("(letrec ((x 1)) (letrec ((y 2)) (+ x y)))", success(3)),
             ]),
             // Test letrec closure capturing mutually recursive functions
-            TestEnvironment(vec![
-                ("(letrec ((even? (lambda (n) (if (= n 0) #t (odd? (- n 1))))) (odd? (lambda (n) (if (= n 0) #f (even? (- n 1)))))) (letrec ((f (lambda () (even? 10)))) (f)))", success(true)),
-            ]),
+            TestEnvironment(vec![(
+                "(letrec ((even? (lambda (n) (if (= n 0) #t (odd? (- n 1))))) (odd? (lambda (n) (if (= n 0) #f (even? (- n 1)))))) (letrec ((f (lambda () (even? 10)))) (f)))",
+                success(true),
+            )]),
             // Test letrec with multiple body expressions and environment sharing
             TestEnvironment(vec![
                 ("(letrec ((x 5)) (+ x 1) (+ x 2) (* x 3))", success(15)), // last expr returned
             ]),
             // Test letrec closure capturing variable from outer letrec
-            TestEnvironment(vec![
-                ("(letrec ((x 7)) (letrec ((f (lambda () x))) (f)))", success(7)),
-            ]),
-
+            TestEnvironment(vec![(
+                "(letrec ((x 7)) (letrec ((f (lambda () x))) (f)))",
+                success(7),
+            )]),
             // === NEW INTERNAL DEFINES TESTS (Demonstrating SuperDirectVM Parity) ===
             // Test sequential internal defines where later functions call earlier functions (letrec* semantics)
             TestEnvironment(vec![
@@ -1426,7 +1442,6 @@ mod comprehensive_evaluator_tests {
                 ),
                 ("(test-chained 3)", success(21)), // 3*2=6, 6+10=16, 16+5=21
             ]),
-
             // === R7RS COMPLIANCE: MIXED DEFINES ERROR DETECTION ===
             // Test that defines mixed with expressions are properly rejected
             TestEnvironment(vec![
@@ -1440,7 +1455,10 @@ mod comprehensive_evaluator_tests {
                 "#
                 ),
                 // This should fail - define appears after non-define expression
-                ("(bad-mixed 5)", SpecificError("Definitions must come before expressions")),
+                (
+                    "(bad-mixed 5)",
+                    SpecificError("Definitions must come before expressions"),
+                ),
             ]),
             // Test error when first expression is not a define
             TestEnvironment(vec![
@@ -1452,9 +1470,11 @@ mod comprehensive_evaluator_tests {
                       (+ x n))
                 "#
                 ),
-                ("(bad-no-leading 5)", SpecificError("Definitions must come before expressions")),
+                (
+                    "(bad-no-leading 5)",
+                    SpecificError("Definitions must come before expressions"),
+                ),
             ]),
-
             // === SIMPLE BENCHMARK EXTRACTS ===
             // From simple_benchmark.scm - basic arithmetic functions
             TestEnvironment(vec![
@@ -1478,12 +1498,13 @@ mod comprehensive_evaluator_tests {
                 ("(multiply-add 7 6 5)", success(47)), // 7*6 + 5 = 47
                 ("(complex-calc 3 4 5)", success(50)), // 9 + 16 + 25 = 50
             ]),
-
             // From debug_stack_ast.scm - complex nested arithmetic expression
             TestEnvironment(vec![
                 test_setup!("(define square (lambda (x) (* x x)))"),
                 test_setup!("(define multiply-add (lambda (a b c) (+ (* a b) c)))"),
-                test_setup!(r#"(define complex-calc (lambda (x y z) (+ (* x x) (* y y) (* z z))))"#),
+                test_setup!(
+                    r#"(define complex-calc (lambda (x y z) (+ (* x x) (* y y) (* z z))))"#
+                ),
                 (
                     r#"
                     (+ (square 10)
@@ -1499,35 +1520,43 @@ mod comprehensive_evaluator_tests {
                     success(98560i64),
                 ), // 100+47+74088+225+50+750+1000+2000+20300 = 98560
             ]),
-
             // === MACRO DEFINITION TESTS ===
             // From test_simple_macros.scm - basic macro definition and usage
             TestEnvironment(vec![
-                scheme_macro!("(define-syntax my-if (syntax-rules () ((my-if test then else) (if test then else))))"),
+                scheme_macro!(
+                    "(define-syntax my-if (syntax-rules () ((my-if test then else) (if test then else))))"
+                ),
                 test_setup!("(define x 10)"),
                 ("(my-if (= x 10) 42 0)", success(42)),
             ]),
             TestEnvironment(vec![
-                scheme_macro!("(define-syntax double (syntax-rules () ((double expr) (+ expr expr))))"),
+                scheme_macro!(
+                    "(define-syntax double (syntax-rules () ((double expr) (+ expr expr))))"
+                ),
                 ("(double 21)", success(42)),
             ]),
-
             // From simple_macro_test.scm - single-line macro test
             TestEnvironment(vec![
-                scheme_macro!("(define-syntax my-if (syntax-rules () ((my-if test then else) (if test then else))))"),
+                scheme_macro!(
+                    "(define-syntax my-if (syntax-rules () ((my-if test then else) (if test then else))))"
+                ),
                 ("(my-if (= 5 5) 'true 'false)", success(sym("true"))),
             ]),
-
             // === ADVANCED MACRO TESTS ===
             // From test_smart_macros.scm - smart macro expansion and nested macro generation
             TestEnvironment(vec![
-                scheme_macro!(r#"
+                scheme_macro!(
+                    r#"
                     (define-syntax when
                       (syntax-rules ()
                         ((when test body)
                          (if test body))))
-                "#),
-                ("(when #t \"This should work\")", success("This should work")),
+                "#
+                ),
+                (
+                    "(when #t \"This should work\")",
+                    success("This should work"),
+                ),
             ]),
             // **INCOMPLETE MIGRATION:** test_smart_macros.scm contains a complex nested macro test:
             // define-simple-macro that generates another define-syntax at expansion time.
@@ -1535,63 +1564,69 @@ mod comprehensive_evaluator_tests {
             // Original test: (define-simple-macro hello "Hello World!") then (hello)
             // Simplified version below until nested macro generation is supported:
             TestEnvironment(vec![
-                scheme_macro!(r#"
+                scheme_macro!(
+                    r#"
                     (define-syntax hello
                       (syntax-rules ()
                         ((hello) "Hello World!")))
-                "#),
+                "#
+                ),
                 ("(hello)", success("Hello World!")),
             ]),
-
             // From test_nested_macro.scm - nested pattern matching in macros
             // **R7RS DEVIATION:** Original test uses equal? as literal keyword, which breaks function resolution
             // Modified to use = for comparison instead
             TestEnvironment(vec![
-                scheme_macro!(r#"
+                scheme_macro!(
+                    r#"
                     (define-syntax test-nested-pattern
                       (syntax-rules (not)
                         ((test-nested-pattern (not (= a b)))
                          (not (= a b)))))
-                "#),
+                "#
+                ),
                 test_setup!("(define x 10)"),
                 test_setup!("(define y 20)"),
                 ("(test-nested-pattern (not (= x y)))", success(true)),
             ]),
-
             // From test_hygienic_macros.scm - hygienic macro expansion and variable capture prevention
             TestEnvironment(vec![
-                scheme_macro!(r#"
+                scheme_macro!(
+                    r#"
                     (define-syntax my-let
                       (syntax-rules ()
                         ((my-let ((var val)) body)
                          (let ((var val)) body))))
-                "#),
+                "#
+                ),
                 test_setup!("(define x 10)"),
                 ("(my-let ((y 5)) (+ x y))", success(15)),
             ]),
             TestEnvironment(vec![
-                scheme_macro!(r#"
+                scheme_macro!(
+                    r#"
                     (define-syntax bad-macro-attempt
                       (syntax-rules ()
                         ((bad-macro-attempt expr)
                          (let ((temp expr)) (+ temp temp)))))
-                "#),
+                "#
+                ),
                 test_setup!("(define temp 100)"),
                 ("(bad-macro-attempt 5)", success(10)), // Should expand to (let ((temp 5)) (+ temp temp)) = 10, not use outer temp
             ]),
-
             // Complete test_ellipsis.scm migration - adding the when test (display test would need output capture)
             TestEnvironment(vec![
-                scheme_macro!(r#"
+                scheme_macro!(
+                    r#"
                     (define-syntax when
                       (syntax-rules ()
                         ((when test body ...)
                          (if test (begin body ...)))))
-                "#),
+                "#
+                ),
                 ("(when #t 42)", success(42)),
                 ("(when #f 42)", Success(ProcessedValue::Unspecified)),
             ]),
-
             // === DUPLICATE RECURSIVE TESTS ===
             // From recursive_test.scm - duplicate of test_recursive.scm (already migrated above)
         ];
@@ -1940,14 +1975,17 @@ mod comprehensive_evaluator_tests {
                 test_setup!("(define countdown (lambda (n) (if (<= n 0) n (countdown (- n 1)))))"),
                 ("(countdown 100)", VeryDeep(ProcessedValue::Integer(0))), // TCO required for deep recursion
             ]),
-
             // From tail_call_test.rs - More comprehensive tail call tests
             // Test 1: Deep tail recursive countdown (tests TCO effectiveness)
             TestEnvironment(vec![
-                test_setup!("(define countdown-deep (lambda (n) (if (<= n 0) 0 (countdown-deep (- n 1)))))"),
-                ("(countdown-deep 1000)", VeryDeep(ProcessedValue::Integer(0))), // Very deep recursion requires TCO
+                test_setup!(
+                    "(define countdown-deep (lambda (n) (if (<= n 0) 0 (countdown-deep (- n 1)))))"
+                ),
+                (
+                    "(countdown-deep 1000)",
+                    VeryDeep(ProcessedValue::Integer(0)),
+                ), // Very deep recursion requires TCO
             ]),
-
             // Test 2: Mutual recursion (even/odd) - currently blocked by forward reference restriction
             // **R7RS RESTRICTED:** Forward references not supported - this would work with TCO if forward references were implemented
             // TestEnvironment(vec![
@@ -1958,13 +1996,16 @@ mod comprehensive_evaluator_tests {
 
             // Test 3: Non-tail recursive factorial for comparison (should work with smaller numbers)
             TestEnvironment(vec![
-                test_setup!("(define factorial-small (lambda (n) (if (<= n 1) 1 (* n (factorial-small (- n 1))))))"),
+                test_setup!(
+                    "(define factorial-small (lambda (n) (if (<= n 1) 1 (* n (factorial-small (- n 1))))))"
+                ),
                 ("(factorial-small 10)", success(3628800)), // Non-tail recursion, small depth, should work on both VMs
             ]),
-
             // Additional tail call patterns
             TestEnvironment(vec![
-                test_setup!("(define tail-sum (lambda (n acc) (if (= n 0) acc (tail-sum (- n 1) (+ acc n)))))"),
+                test_setup!(
+                    "(define tail-sum (lambda (n acc) (if (= n 0) acc (tail-sum (- n 1) (+ acc n)))))"
+                ),
                 ("(tail-sum 100 0)", VeryDeep(ProcessedValue::Integer(5050))), // Tail recursive accumulator pattern
             ]),
         ];
@@ -2337,7 +2378,9 @@ mod comprehensive_evaluator_tests {
             ]),
             // Test 3: Variadic function that counts arguments
             TestEnvironment(vec![
-                test_setup!("(define count-args (lambda args (define (count-list lst) (if (null? lst) 0 (+ 1 (count-list (cdr lst))))) (count-list args)))"),
+                test_setup!(
+                    "(define count-args (lambda args (define (count-list lst) (if (null? lst) 0 (+ 1 (count-list (cdr lst))))) (count-list args)))"
+                ),
                 ("(count-args 1 2 3 4 5)", success(5i64)),
                 ("(count-args)", success(0i64)),
                 ("(count-args 42)", success(1i64)),
@@ -2365,7 +2408,9 @@ mod comprehensive_evaluator_tests {
             ]),
             // Test 2: Set! in closure (counter pattern)
             TestEnvironment(vec![
-                test_setup!("(define make-counter (lambda (count) (lambda () (set! count (+ count 1)) count)))"),
+                test_setup!(
+                    "(define make-counter (lambda (count) (lambda () (set! count (+ count 1)) count)))"
+                ),
                 test_setup!("(define counter (make-counter 0))"),
                 ("(counter)", success(1i64)),
                 ("(counter)", success(2i64)),
@@ -2406,22 +2451,26 @@ mod comprehensive_evaluator_tests {
             ]),
             // Test 4: Nested ellipsis - define collection
             TestEnvironment(vec![
-                scheme_macro!("(define-syntax collect-defines (syntax-rules (define) ((collect-defines (define name value) ...) (quote ((name value) ...)))))"),
-                ("(collect-defines (define a 1) (define b 2) (define c 3))",
-                 Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                     ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                         ProcessedValue::OwnedSymbol("a".to_string()),
-                         ProcessedValue::Integer(1),
-                     ])),
-                     ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                         ProcessedValue::OwnedSymbol("b".to_string()),
-                         ProcessedValue::Integer(2),
-                     ])),
-                     ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                         ProcessedValue::OwnedSymbol("c".to_string()),
-                         ProcessedValue::Integer(3),
-                     ])),
-                 ])))),
+                scheme_macro!(
+                    "(define-syntax collect-defines (syntax-rules (define) ((collect-defines (define name value) ...) (quote ((name value) ...)))))"
+                ),
+                (
+                    "(collect-defines (define a 1) (define b 2) (define c 3))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::OwnedSymbol("a".to_string()),
+                            ProcessedValue::Integer(1),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::OwnedSymbol("b".to_string()),
+                            ProcessedValue::Integer(2),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::OwnedSymbol("c".to_string()),
+                            ProcessedValue::Integer(3),
+                        ])),
+                    ]))),
+                ),
             ]),
         ];
         run_tests_in_environment(test_cases);
@@ -2432,13 +2481,17 @@ mod comprehensive_evaluator_tests {
         let test_cases = vec![
             // Test 1: Basic macro hygiene - macro-introduced bindings don't capture
             TestEnvironment(vec![
-                scheme_macro!("(define-syntax my-let (syntax-rules () ((my-let ((var val)) body) (let ((var val)) body))))"),
+                scheme_macro!(
+                    "(define-syntax my-let (syntax-rules () ((my-let ((var val)) body) (let ((var val)) body))))"
+                ),
                 test_setup!("(define x 10)"),
                 ("(my-let ((y 5)) (+ x y))", success(15i64)),
             ]),
             // Test 2: Temp variable hygiene
             TestEnvironment(vec![
-                scheme_macro!("(define-syntax double-it (syntax-rules () ((double-it expr) (let ((temp expr)) (+ temp temp)))))"),
+                scheme_macro!(
+                    "(define-syntax double-it (syntax-rules () ((double-it expr) (let ((temp expr)) (+ temp temp)))))"
+                ),
                 test_setup!("(define temp 100)"),
                 ("(double-it 5)", success(10i64)),
                 ("temp", success(100i64)), // User's temp unchanged
@@ -2473,22 +2526,50 @@ mod comprehensive_evaluator_tests {
     #[test]
     fn test_underscore_wildcard_patterns() {
         // Test underscore wildcard in macro patterns
-        let test_cases = vec![
-            TestEnvironment(vec![
-                // Define test macros
-                ("(define-syntax ignore-first (syntax-rules () ((ignore-first _ x) x)))", Macro),
-                ("(define-syntax take-middle (syntax-rules () ((take-middle _ x _) x)))", Macro),
-                ("(define-syntax count-args (syntax-rules () ((count-args x ...) (length '(x ...)))))", Macro),
-                ("(define-syntax swap-args (syntax-rules () ((swap-args _ x) (list x '_))))", Macro),
-                ("(define-syntax test-no-bind (syntax-rules () ((test-no-bind (_ y)) y)))", Macro),
-                // Test cases
-                ("(ignore-first 'a 'b)", Success(ProcessedValue::OwnedSymbol("b".to_string()))),
-                ("(take-middle 1 2 3)", Success(ProcessedValue::Integer(2))),
-                ("(count-args 1 2 3 4 5)", Success(ProcessedValue::Integer(5))),
-                ("(swap-args 'ignored 'kept)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![ProcessedValue::OwnedSymbol("kept".to_string()), ProcessedValue::OwnedSymbol("_".to_string())])))),
-                ("(test-no-bind (99 42))", Success(ProcessedValue::Integer(42))), // Pattern expects a single list argument
-            ]),
-        ];
+        let test_cases = vec![TestEnvironment(vec![
+            // Define test macros
+            (
+                "(define-syntax ignore-first (syntax-rules () ((ignore-first _ x) x)))",
+                Macro,
+            ),
+            (
+                "(define-syntax take-middle (syntax-rules () ((take-middle _ x _) x)))",
+                Macro,
+            ),
+            (
+                "(define-syntax count-args (syntax-rules () ((count-args x ...) (length '(x ...)))))",
+                Macro,
+            ),
+            (
+                "(define-syntax swap-args (syntax-rules () ((swap-args _ x) (list x '_))))",
+                Macro,
+            ),
+            (
+                "(define-syntax test-no-bind (syntax-rules () ((test-no-bind (_ y)) y)))",
+                Macro,
+            ),
+            // Test cases
+            (
+                "(ignore-first 'a 'b)",
+                Success(ProcessedValue::OwnedSymbol("b".to_string())),
+            ),
+            ("(take-middle 1 2 3)", Success(ProcessedValue::Integer(2))),
+            (
+                "(count-args 1 2 3 4 5)",
+                Success(ProcessedValue::Integer(5)),
+            ),
+            (
+                "(swap-args 'ignored 'kept)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("kept".to_string()),
+                    ProcessedValue::OwnedSymbol("_".to_string()),
+                ]))),
+            ),
+            (
+                "(test-no-bind (99 42))",
+                Success(ProcessedValue::Integer(42)),
+            ), // Pattern expects a single list argument
+        ])];
         run_tests_in_environment(test_cases);
     }
 
@@ -2516,273 +2597,804 @@ mod comprehensive_evaluator_tests {
     fn test_comprehensive_quote_contexts() {
         // Comprehensive test suite for quote context behavior in macros
         // Tests R7RS semantics: pattern variables are substituted BEFORE quote is applied
-        let test_cases = vec![
-            TestEnvironment(vec![
-                // ===== Basic Quote Substitution =====
-                // Test 1: Pattern variable in quoted context - the key test from the issue
-                ("(define-syntax test (syntax-rules () ((_ x) 'x)))", Macro),
-                ("(test 123)", Success(ProcessedValue::Integer(123))),  // Returns 123, NOT symbol 'x'
-                
-                // Test 2: Multiple pattern variables in quote
-                ("(define-syntax quote-two (syntax-rules () ((_ a b) '(a b))))", Macro),
-                ("(quote-two foo bar)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+        let test_cases = vec![TestEnvironment(vec![
+            // ===== Basic Quote Substitution =====
+            // Test 1: Pattern variable in quoted context - the key test from the issue
+            ("(define-syntax test (syntax-rules () ((_ x) 'x)))", Macro),
+            ("(test 123)", Success(ProcessedValue::Integer(123))), // Returns 123, NOT symbol 'x'
+            // Test 2: Multiple pattern variables in quote
+            (
+                "(define-syntax quote-two (syntax-rules () ((_ a b) '(a b))))",
+                Macro,
+            ),
+            (
+                "(quote-two foo bar)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("foo".to_string()),
-                    ProcessedValue::OwnedSymbol("bar".to_string())
-                ])))),
-                
-                // Test 3: Pattern variable substitution with numbers
-                ("(define-syntax quote-num (syntax-rules () ((_ n) 'n)))", Macro),
-                ("(quote-num 42)", Success(ProcessedValue::Integer(42))),
-                
-                // Test 4: Pattern variable substitution with strings
-                ("(define-syntax quote-str (syntax-rules () ((_ s) 's)))", Macro),
-                ("(quote-str \"hello\")", Success(ProcessedValue::OwnedString("hello".to_string()))),
-                
-                // ===== Nested Quote Contexts =====
-                // Test 5: Double quote - substitutes then wraps in quote
-                ("(define-syntax double-q (syntax-rules () ((_ x) ''x)))", Macro),
-                ("(double-q alpha)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("bar".to_string()),
+                ]))),
+            ),
+            // Test 3: Pattern variable substitution with numbers
+            (
+                "(define-syntax quote-num (syntax-rules () ((_ n) 'n)))",
+                Macro,
+            ),
+            ("(quote-num 42)", Success(ProcessedValue::Integer(42))),
+            // Test 4: Pattern variable substitution with strings
+            (
+                "(define-syntax quote-str (syntax-rules () ((_ s) 's)))",
+                Macro,
+            ),
+            (
+                "(quote-str \"hello\")",
+                Success(ProcessedValue::OwnedString("hello".to_string())),
+            ),
+            // ===== Nested Quote Contexts =====
+            // Test 5: Double quote - substitutes then wraps in quote
+            (
+                "(define-syntax double-q (syntax-rules () ((_ x) ''x)))",
+                Macro,
+            ),
+            (
+                "(double-q alpha)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("quote".to_string()),
-                    ProcessedValue::OwnedSymbol("alpha".to_string())
-                ])))),
-                
-                // Test 6: Triple quote
-                ("(define-syntax triple-q (syntax-rules () ((_ x) '''x)))", Macro),
-                ("(triple-q beta)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("alpha".to_string()),
+                ]))),
+            ),
+            // Test 6: Triple quote
+            (
+                "(define-syntax triple-q (syntax-rules () ((_ x) '''x)))",
+                Macro,
+            ),
+            (
+                "(triple-q beta)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("quote".to_string()),
                     ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::OwnedSymbol("quote".to_string()),
-                        ProcessedValue::OwnedSymbol("beta".to_string())
-                    ]))
-                ])))),
-                
-                // ===== Quote with Lists =====
-                // Test 7: Quoted list with pattern variable at start
-                ("(define-syntax q-list-start (syntax-rules () ((_ x) '(x 1 2))))", Macro),
-                ("(q-list-start replaced)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("beta".to_string()),
+                    ])),
+                ]))),
+            ),
+            // ===== Quote with Lists =====
+            // Test 7: Quoted list with pattern variable at start
+            (
+                "(define-syntax q-list-start (syntax-rules () ((_ x) '(x 1 2))))",
+                Macro,
+            ),
+            (
+                "(q-list-start replaced)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("replaced".to_string()),
                     ProcessedValue::Integer(1),
-                    ProcessedValue::Integer(2)
-                ])))),
-                
-                // Test 8: Quoted list with pattern variable in middle
-                ("(define-syntax q-list-mid (syntax-rules () ((_ x) '(a x b))))", Macro),
-                ("(q-list-mid mid)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(2),
+                ]))),
+            ),
+            // Test 8: Quoted list with pattern variable in middle
+            (
+                "(define-syntax q-list-mid (syntax-rules () ((_ x) '(a x b))))",
+                Macro,
+            ),
+            (
+                "(q-list-mid mid)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("a".to_string()),
                     ProcessedValue::OwnedSymbol("mid".to_string()),
-                    ProcessedValue::OwnedSymbol("b".to_string())
-                ])))),
-                
-                // Test 9: Quoted list with pattern variable at end
-                ("(define-syntax q-list-end (syntax-rules () ((_ x) '(1 2 x))))", Macro),
-                ("(q-list-end end)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("b".to_string()),
+                ]))),
+            ),
+            // Test 9: Quoted list with pattern variable at end
+            (
+                "(define-syntax q-list-end (syntax-rules () ((_ x) '(1 2 x))))",
+                Macro,
+            ),
+            (
+                "(q-list-end end)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::Integer(1),
                     ProcessedValue::Integer(2),
-                    ProcessedValue::OwnedSymbol("end".to_string())
-                ])))),
-                
-                // ===== Quote with Ellipsis =====
-                // Test 10: Quoted list with ellipsis - all vars substituted
-                ("(define-syntax q-ellipsis (syntax-rules () ((_ x ...) '(x ...))))", Macro),
-                ("(q-ellipsis a b c)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("end".to_string()),
+                ]))),
+            ),
+            // ===== Quote with Ellipsis =====
+            // Test 10: Quoted list with ellipsis - all vars substituted
+            (
+                "(define-syntax q-ellipsis (syntax-rules () ((_ x ...) '(x ...))))",
+                Macro,
+            ),
+            (
+                "(q-ellipsis a b c)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("a".to_string()),
                     ProcessedValue::OwnedSymbol("b".to_string()),
-                    ProcessedValue::OwnedSymbol("c".to_string())
-                ])))),
-                
-                // Test 11: Quoted list with ellipsis and literals
-                ("(define-syntax q-ellipsis-lit (syntax-rules () ((_ x ...) '(start x ... end))))", Macro),
-                ("(q-ellipsis-lit 1 2 3)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("c".to_string()),
+                ]))),
+            ),
+            // Test 11: Quoted list with ellipsis and literals
+            (
+                "(define-syntax q-ellipsis-lit (syntax-rules () ((_ x ...) '(start x ... end))))",
+                Macro,
+            ),
+            (
+                "(q-ellipsis-lit 1 2 3)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("start".to_string()),
                     ProcessedValue::Integer(1),
                     ProcessedValue::Integer(2),
                     ProcessedValue::Integer(3),
-                    ProcessedValue::OwnedSymbol("end".to_string())
-                ])))),
-                
-                // ===== Mixed Quote/Unquote Patterns =====
-                // Test 12: Some vars quoted, some not
-                ("(define-syntax mixed-q (syntax-rules () ((_ a b) (list 'a b))))", Macro),
-                ("(mixed-q foo 42)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("end".to_string()),
+                ]))),
+            ),
+            // ===== Mixed Quote/Unquote Patterns =====
+            // Test 12: Some vars quoted, some not
+            (
+                "(define-syntax mixed-q (syntax-rules () ((_ a b) (list 'a b))))",
+                Macro,
+            ),
+            (
+                "(mixed-q foo 42)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("foo".to_string()),
-                    ProcessedValue::Integer(42)
-                ])))),
-                
-                // Test 13: Quote around some ellipsis elements
-                ("(define-syntax partial-q-ellip (syntax-rules () ((_ x ...) (list 'x ...))))", Macro),
-                ("(partial-q-ellip p q r)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(42),
+                ]))),
+            ),
+            // Test 13: Quote around some ellipsis elements
+            (
+                "(define-syntax partial-q-ellip (syntax-rules () ((_ x ...) (list 'x ...))))",
+                Macro,
+            ),
+            (
+                "(partial-q-ellip p q r)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("p".to_string()),
                     ProcessedValue::OwnedSymbol("q".to_string()),
-                    ProcessedValue::OwnedSymbol("r".to_string())
-                ])))),
-                
-                // ===== Underscore in Quotes =====
-                // Test 14: Quoted underscore is a literal symbol
-                ("(define-syntax q-underscore (syntax-rules () ((_ x) '(x _))))", Macro),
-                ("(q-underscore val)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("r".to_string()),
+                ]))),
+            ),
+            // ===== Underscore in Quotes =====
+            // Test 14: Quoted underscore is a literal symbol
+            (
+                "(define-syntax q-underscore (syntax-rules () ((_ x) '(x _))))",
+                Macro,
+            ),
+            (
+                "(q-underscore val)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("val".to_string()),
-                    ProcessedValue::OwnedSymbol("_".to_string())
-                ])))),
-                
-                // Test 15: Underscore pattern with quoted output
-                ("(define-syntax ignore-quote (syntax-rules () ((_ _ x) 'x)))", Macro),
-                ("(ignore-quote ignored 99)", Success(ProcessedValue::Integer(99))),
-                
-                // ===== Complex Nested Structures =====
-                // Test 16: Quoted nested list with pattern vars
-                ("(define-syntax q-nested (syntax-rules () ((_ a b) '((a) (b)))))", Macro),
-                ("(q-nested x y)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("_".to_string()),
+                ]))),
+            ),
+            // Test 15: Underscore pattern with quoted output
+            (
+                "(define-syntax ignore-quote (syntax-rules () ((_ _ x) 'x)))",
+                Macro,
+            ),
+            (
+                "(ignore-quote ignored 99)",
+                Success(ProcessedValue::Integer(99)),
+            ),
+            // ===== Complex Nested Structures =====
+            // Test 16: Quoted nested list with pattern vars
+            (
+                "(define-syntax q-nested (syntax-rules () ((_ a b) '((a) (b)))))",
+                Macro,
+            ),
+            (
+                "(q-nested x y)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::OwnedSymbol("x".to_string())
+                        ProcessedValue::OwnedSymbol("x".to_string()),
                     ])),
                     ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::OwnedSymbol("y".to_string())
-                    ]))
-                ])))),
-                
-                // Test 17: Deeply nested quoted structure
-                ("(define-syntax q-deep (syntax-rules () ((_ x) '(outer (middle (inner x))))))", Macro),
-                ("(q-deep core)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("y".to_string()),
+                    ])),
+                ]))),
+            ),
+            // Test 17: Deeply nested quoted structure
+            (
+                "(define-syntax q-deep (syntax-rules () ((_ x) '(outer (middle (inner x))))))",
+                Macro,
+            ),
+            (
+                "(q-deep core)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("outer".to_string()),
                     ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::OwnedSymbol("middle".to_string()),
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::OwnedSymbol("inner".to_string()),
-                            ProcessedValue::OwnedSymbol("core".to_string())
-                        ]))
-                    ]))
-                ])))),
-                
-                // ===== Quote with Different Data Types =====
-                // Test 18: Quote with boolean
-                ("(define-syntax q-bool (syntax-rules () ((_ b) 'b)))", Macro),
-                ("(q-bool #t)", Success(ProcessedValue::Boolean(true))),
-                
-                // Test 19: Quote with empty list
-                ("(define-syntax q-empty (syntax-rules () ((_ e) 'e)))", Macro),
-                ("(q-empty ())", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![])))),
-                
-                // ===== Error Cases =====
-                // Test 20: Malformed quote (too many args) should error during compilation
-                // Note: This will be caught at macro definition time
-                // Commenting out as it would prevent other tests from running
-                // ("(define-syntax bad-quote (syntax-rules () ((_ x) (quote x y))))", 
-                //  SpecificError("Malformed quote form")),
-            ]),
-        ];
+                            ProcessedValue::OwnedSymbol("core".to_string()),
+                        ])),
+                    ])),
+                ]))),
+            ),
+            // ===== Quote with Different Data Types =====
+            // Test 18: Quote with boolean
+            ("(define-syntax q-bool (syntax-rules () ((_ b) 'b)))", Macro),
+            ("(q-bool #t)", Success(ProcessedValue::Boolean(true))),
+            // Test 19: Quote with empty list
+            (
+                "(define-syntax q-empty (syntax-rules () ((_ e) 'e)))",
+                Macro,
+            ),
+            (
+                "(q-empty ())",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![]))),
+            ),
+            // ===== Error Cases =====
+            // Test 20: Malformed quote (too many args) should error during compilation
+            // Note: This will be caught at macro definition time
+            // Commenting out as it would prevent other tests from running
+            // ("(define-syntax bad-quote (syntax-rules () ((_ x) (quote x y))))",
+            //  SpecificError("Malformed quote form")),
+        ])];
         run_tests_in_environment(test_cases);
+    }
+
+    #[test]
+    fn test_comprehensive_quasiquote_contexts() {
+        // **NOTE:** This project does NOT support runtime quasiquote/unquote/unquote-splicing evaluation.
+        // These forms are ONLY recognized by the macro compiler for template context tracking.
+        //
+        // This test verifies that the macro compiler correctly handles quasiquote contexts:
+        // - Quasiquote creates quoted context (pattern variables NOT substituted)
+        // - Unquote escapes quasiquote context (pattern variables ARE substituted)
+        // - Quote inside quasiquote is absolute (cannot be escaped)
+        //
+        // The macro expander will output (quasiquote ...) / (unquote ...) forms literally,
+        // which will fail at runtime since they're not implemented as builtins.
+        //
+        // **R7RS DEVIATION:** No runtime quasiquote evaluation support.
+
+        let test_cases = vec![TestEnvironment(vec![
+            // ===== Helper Macro for Testing =====
+            // This macro captures the expansion of another macro and quotes it for inspection
+            (
+                "(define-syntax capture (syntax-rules () ((_ expr) 'expr)))",
+                Macro,
+            ),
+            // ===== Basic Quasiquote Context =====
+            // Test 1: Quasiquote makes pattern variables literal (not substituted)
+            (
+                "(define-syntax qq-test (syntax-rules () ((_ x) (quasiquote x))))",
+                Macro,
+            ),
+            (
+                "(capture (qq-test foo))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("quasiquote".to_string()),
+                    ProcessedValue::OwnedSymbol("foo".to_string()),
+                ]))),
+            ),
+            // Test 2: Quasiquote with literals
+            (
+                "(define-syntax qq-lit (syntax-rules () ((_ x) (quasiquote (a b c)))))",
+                Macro,
+            ),
+            (
+                "(capture (qq-lit ignored))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("quasiquote".to_string()),
+                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("a".to_string()),
+                        ProcessedValue::OwnedSymbol("b".to_string()),
+                        ProcessedValue::OwnedSymbol("c".to_string()),
+                    ])),
+                ]))),
+            ),
+            // ===== Unquote Escapes Quasiquote =====
+            // Test 3: Unquote escapes quasiquote - pattern variable IS substituted
+            (
+                "(define-syntax qq-unq (syntax-rules () ((_ x) (quasiquote ((unquote x))))))",
+                Macro,
+            ),
+            (
+                "(capture (qq-unq foo))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("quasiquote".to_string()),
+                    ProcessedValue::List(std::borrow::Cow::Owned(vec![ProcessedValue::List(
+                        std::borrow::Cow::Owned(vec![
+                            ProcessedValue::OwnedSymbol("unquote".to_string()),
+                            ProcessedValue::OwnedSymbol("foo".to_string()), // Pattern var substituted!
+                        ]),
+                    )])),
+                ]))),
+            ),
+            // Test 4: Multiple unquotes
+            (
+                "(define-syntax qq-multi-unq (syntax-rules () ((_ a b) (quasiquote (lit1 (unquote a) lit2 (unquote b))))))",
+                Macro,
+            ),
+            (
+                "(capture (qq-multi-unq x y))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("quasiquote".to_string()),
+                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("lit1".to_string()),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::OwnedSymbol("unquote".to_string()),
+                            ProcessedValue::OwnedSymbol("x".to_string()), // Substituted
+                        ])),
+                        ProcessedValue::OwnedSymbol("lit2".to_string()),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::OwnedSymbol("unquote".to_string()),
+                            ProcessedValue::OwnedSymbol("y".to_string()), // Substituted
+                        ])),
+                    ])),
+                ]))),
+            ),
+            // ===== Nested Quasiquote =====
+            // Test 5: Double quasiquote - depth tracking
+            (
+                "(define-syntax qq-double (syntax-rules () ((_ x) (quasiquote (quasiquote x)))))",
+                Macro,
+            ),
+            (
+                "(capture (qq-double val))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("quasiquote".to_string()),
+                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("quasiquote".to_string()),
+                        ProcessedValue::OwnedSymbol("val".to_string()), // Still literal at depth 2
+                    ])),
+                ]))),
+            ),
+            // Test 6: Double quasiquote with single unquote - reduces depth by 1
+            (
+                "(define-syntax qq-double-unq1 (syntax-rules () ((_ x) (quasiquote (quasiquote (unquote x))))))",
+                Macro,
+            ),
+            (
+                "(capture (qq-double-unq1 sym))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("quasiquote".to_string()),
+                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("quasiquote".to_string()),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::OwnedSymbol("unquote".to_string()),
+                            ProcessedValue::OwnedSymbol("sym".to_string()), // Literal - still at depth 1
+                        ])),
+                    ])),
+                ]))),
+            ),
+            // Test 7: Double quasiquote with double unquote - escapes completely
+            (
+                "(define-syntax qq-double-unq2 (syntax-rules () ((_ x) (quasiquote (quasiquote (unquote (unquote x)))))))",
+                Macro,
+            ),
+            (
+                "(capture (qq-double-unq2 test))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("quasiquote".to_string()),
+                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("quasiquote".to_string()),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::OwnedSymbol("unquote".to_string()),
+                            ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                                ProcessedValue::OwnedSymbol("unquote".to_string()),
+                                ProcessedValue::OwnedSymbol("test".to_string()), // Substituted!
+                            ])),
+                        ])),
+                    ])),
+                ]))),
+            ),
+            // ===== Quote Inside Quasiquote =====
+            // Test 8: Quote inside quasiquote - quote is absolute, cannot be escaped
+            (
+                "(define-syntax qq-with-quote (syntax-rules () ((_ x) (quasiquote (quote (unquote x))))))",
+                Macro,
+            ),
+            (
+                "(capture (qq-with-quote test))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("quasiquote".to_string()),
+                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("quote".to_string()),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::OwnedSymbol("unquote".to_string()),
+                            ProcessedValue::OwnedSymbol("test".to_string()), // Literal - quote blocks unquote
+                        ])),
+                    ])),
+                ]))),
+            ),
+            // Test 9: Quoted quasiquote - quasiquote becomes literal
+            (
+                "(define-syntax quote-qq (syntax-rules () ((_ x) (quote (quasiquote x)))))",
+                Macro,
+            ),
+            (
+                "(quote-qq anything)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("quasiquote".to_string()),
+                    ProcessedValue::OwnedSymbol("anything".to_string()),
+                ]))),
+            ),
+            // Test 10: Quoted unquote - unquote becomes literal
+            (
+                "(define-syntax quote-unq (syntax-rules () ((_ x) (quote (unquote x)))))",
+                Macro,
+            ),
+            (
+                "(quote-unq test)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("unquote".to_string()),
+                    ProcessedValue::OwnedSymbol("test".to_string()),
+                ]))),
+            ),
+            // ===== Unquote-Splicing =====
+            // Test 11: Unquote-splicing in quasiquote context
+            (
+                "(define-syntax qq-splice (syntax-rules () ((_ x ...) (quasiquote ((unquote-splicing (list x ...)))))))",
+                Macro,
+            ),
+            (
+                "(capture (qq-splice a b))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("quasiquote".to_string()),
+                    ProcessedValue::List(std::borrow::Cow::Owned(vec![ProcessedValue::List(
+                        std::borrow::Cow::Owned(vec![
+                            ProcessedValue::OwnedSymbol("unquote-splicing".to_string()),
+                            ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                                ProcessedValue::OwnedSymbol("list".to_string()),
+                                ProcessedValue::OwnedSymbol("a".to_string()),
+                                ProcessedValue::OwnedSymbol("b".to_string()),
+                            ])),
+                        ]),
+                    )])),
+                ]))),
+            ),
+            // Test 12: Quoted unquote-splicing - becomes literal
+            (
+                "(define-syntax quote-splice (syntax-rules () ((_ x) (quote (unquote-splicing x)))))",
+                Macro,
+            ),
+            (
+                "(quote-splice test)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("unquote-splicing".to_string()),
+                    ProcessedValue::OwnedSymbol("test".to_string()),
+                ]))),
+            ),
+            // ===== Ellipsis with Quasiquote =====
+            // Test 13: Ellipsis in quasiquote - pattern vars literal
+            (
+                "(define-syntax qq-ellip (syntax-rules () ((_ x ...) (quasiquote (x ...)))))",
+                Macro,
+            ),
+            (
+                "(capture (qq-ellip a b c))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("quasiquote".to_string()),
+                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("a".to_string()),
+                        ProcessedValue::OwnedSymbol("b".to_string()),
+                        ProcessedValue::OwnedSymbol("c".to_string()),
+                    ])),
+                ]))),
+            ),
+            // Test 14: Ellipsis with unquote in quasiquote - pattern vars substituted
+            (
+                "(define-syntax qq-ellip-unq (syntax-rules () ((_ x ...) (quasiquote ((unquote x) ...)))))",
+                Macro,
+            ),
+            (
+                "(capture (qq-ellip-unq a b c))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("quasiquote".to_string()),
+                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::OwnedSymbol("unquote".to_string()),
+                            ProcessedValue::OwnedSymbol("a".to_string()),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::OwnedSymbol("unquote".to_string()),
+                            ProcessedValue::OwnedSymbol("b".to_string()),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::OwnedSymbol("unquote".to_string()),
+                            ProcessedValue::OwnedSymbol("c".to_string()),
+                        ])),
+                    ])),
+                ]))),
+            ),
+        ])];
+        run_tests_in_environment(test_cases);
+    }
+
+    #[test]
+    fn test_quasiquote_syntax_sugar_errors() {
+        // Test that backtick, comma, and comma-at syntax sugar are rejected by parser
+        // **R7RS DEVIATION:** We require explicit (quasiquote ...), (unquote ...), (unquote-splicing ...)
+        // This test verifies the parser rejects the shorthand syntax
+
+        use samplescheme::parser::parse;
+
+        // Test backtick (quasiquote sugar) is rejected
+        let result = parse("`x");
+        assert!(result.is_err(), "Parser should reject backtick syntax");
+
+        // Test comma (unquote sugar) is rejected
+        let result = parse(",x");
+        assert!(result.is_err(), "Parser should reject comma syntax");
+
+        // Test comma-at (unquote-splicing sugar) is rejected
+        let result = parse(",@x");
+        assert!(result.is_err(), "Parser should reject comma-at syntax");
+
+        // Test backtick in list context
+        let result = parse("(list `x)");
+        assert!(
+            result.is_err(),
+            "Parser should reject backtick in list context"
+        );
+
+        // Test comma in list context
+        let result = parse("(list ,x)");
+        assert!(
+            result.is_err(),
+            "Parser should reject comma in list context"
+        );
+
+        // Test that explicit forms still work
+        let result = parse("(quasiquote x)");
+        assert!(result.is_ok(), "Parser should accept explicit quasiquote");
+
+        let result = parse("(quasiquote (unquote x))");
+        assert!(result.is_ok(), "Parser should accept explicit unquote");
+
+        let result = parse("(quasiquote (unquote-splicing xs))");
+        assert!(
+            result.is_ok(),
+            "Parser should accept explicit unquote-splicing"
+        );
+    }
+
+    /// Test that R7RS keywords cannot be bound
+    ///
+    /// **R7RS 5.2:** It is an error to bind or assign to keywords like if, lambda, define, etc.
+    /// **R7RS 7.1.1:** Auxiliary keywords like else, =>, _, ... are also reserved
+    #[test]
+    fn test_keyword_binding_errors() {
+        use TestResult::*;
+
+        let test_cases = vec![
+            // Core special forms
+            ("(define if 42)", SpecificError("keyword")),
+            ("(define lambda 42)", SpecificError("keyword")),
+            ("(define define 42)", SpecificError("keyword")),
+            ("(define quote 42)", SpecificError("keyword")),
+            ("(define set! 42)", SpecificError("keyword")),
+            ("(define begin 42)", SpecificError("keyword")),
+            ("(define quasiquote 42)", SpecificError("keyword")),
+            ("(define unquote 42)", SpecificError("keyword")),
+            ("(define unquote-splicing 42)", SpecificError("keyword")),
+            ("(define letrec 42)", SpecificError("keyword")),
+            ("(define letrec* 42)", SpecificError("keyword")),
+            ("(define define-syntax 42)", SpecificError("keyword")),
+            ("(define syntax-rules 42)", SpecificError("keyword")),
+            // Universal auxiliary keywords
+            ("(define else 42)", SpecificError("keyword")),
+            ("(define => 42)", SpecificError("keyword")),
+            ("(define _ 42)", SpecificError("keyword")),
+            ("(define ... 42)", SpecificError("keyword")),
+            // Keywords in function definitions
+            ("(define (if x) x)", SpecificError("keyword")),
+            ("(define (lambda x) x)", SpecificError("keyword")),
+            // Keywords as lambda parameters
+            ("((lambda (if) if) 42)", SpecificError("keyword")),
+            ("((lambda (x else) x) 1 2)", SpecificError("keyword")),
+            ("((lambda if if) 42)", SpecificError("keyword")),
+            // Keywords in set!
+            ("(set! if 42)", SpecificError("keyword")),
+            ("(set! else 42)", SpecificError("keyword")),
+            // Keywords in letrec bindings
+            ("(letrec ((if 42)) if)", SpecificError("keyword")),
+            ("(letrec ((else 42)) else)", SpecificError("keyword")),
+            // Keywords in letrec* bindings
+            ("(letrec* ((lambda 42)) lambda)", SpecificError("keyword")),
+            ("(letrec* ((=> 42)) =>)", SpecificError("keyword")),
+            // Verify non-keywords still work
+            (
+                "(define my-if 42)",
+                Success(ProcessedValue::Unspecified),
+            ),
+            (
+                "(define lambda-calculus 42)",
+                Success(ProcessedValue::Unspecified),
+            ),
+            ("((lambda (x) x) 42)", Success(ProcessedValue::Integer(42))),
+        ];
+
+        run_comprehensive_tests(test_cases);
     }
 
     #[test]
     fn test_case_lambda() {
         // Test hybrid case-lambda with static and runtime dispatch
-        let test_cases = vec![
-            TestEnvironment(vec![
-                // Test 1: Variable arity addition (0/1/2 args - static dispatch)
-                ("(define add (case-lambda (() 0) ((x) x) ((x y) (+ x y))))", Success(ProcessedValue::Unspecified)),
-                ("(add)", Success(ProcessedValue::Integer(0))),
-                ("(add 5)", Success(ProcessedValue::Integer(5))),
-                ("(add 3 4)", Success(ProcessedValue::Integer(7))),
-
-                // Test 2: Three args (runtime dispatch)
-                ("(define add3 (case-lambda ((x y z) (+ x y z))))", Success(ProcessedValue::Unspecified)),
-                ("(add3 1 2 3)", Success(ProcessedValue::Integer(6))),
-
-                // Test 3: Four args (runtime dispatch)
-                ("(define add4 (case-lambda ((a b c d) (+ a b c d))))", Success(ProcessedValue::Unspecified)),
-                ("(add4 1 2 3 4)", Success(ProcessedValue::Integer(10))),
-
-                // Test 4: Rest args with apply
-                ("(define sum-all (case-lambda (() 0) ((x) x) ((x y) (+ x y)) ((x y z) (+ x y z)) (rest (apply + rest))))", Success(ProcessedValue::Unspecified)),
-                ("(sum-all)", Success(ProcessedValue::Integer(0))),
-                ("(sum-all 1)", Success(ProcessedValue::Integer(1))),
-                ("(sum-all 1 2)", Success(ProcessedValue::Integer(3))),
-                ("(sum-all 1 2 3)", Success(ProcessedValue::Integer(6))),
-                ("(sum-all 1 2 3 4)", Success(ProcessedValue::Integer(10))),
-                ("(sum-all 1 2 3 4 5)", Success(ProcessedValue::Integer(15))),
-
-                // Test 5: Pattern with list construction
-                ("(define rest-arity (case-lambda (() '(none)) ((x) (list 'one x)) ((x y) (list 'two x y)) (args (cons 'more args))))", Success(ProcessedValue::Unspecified)),
-                ("(rest-arity)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![ProcessedValue::OwnedSymbol("none".to_string())])))),
-                ("(rest-arity 1)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![ProcessedValue::OwnedSymbol("one".to_string()), ProcessedValue::Integer(1)])))),
-                ("(rest-arity 1 2)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![ProcessedValue::OwnedSymbol("two".to_string()), ProcessedValue::Integer(1), ProcessedValue::Integer(2)])))),
-                ("(rest-arity 1 2 3)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![ProcessedValue::OwnedSymbol("more".to_string()), ProcessedValue::Integer(1), ProcessedValue::Integer(2), ProcessedValue::Integer(3)])))),
-            ]),
-        ];
+        let test_cases = vec![TestEnvironment(vec![
+            // Test 1: Variable arity addition (0/1/2 args - static dispatch)
+            (
+                "(define add (case-lambda (() 0) ((x) x) ((x y) (+ x y))))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            ("(add)", Success(ProcessedValue::Integer(0))),
+            ("(add 5)", Success(ProcessedValue::Integer(5))),
+            ("(add 3 4)", Success(ProcessedValue::Integer(7))),
+            // Test 2: Three args (runtime dispatch)
+            (
+                "(define add3 (case-lambda ((x y z) (+ x y z))))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            ("(add3 1 2 3)", Success(ProcessedValue::Integer(6))),
+            // Test 3: Four args (runtime dispatch)
+            (
+                "(define add4 (case-lambda ((a b c d) (+ a b c d))))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            ("(add4 1 2 3 4)", Success(ProcessedValue::Integer(10))),
+            // Test 4: Rest args with apply
+            (
+                "(define sum-all (case-lambda (() 0) ((x) x) ((x y) (+ x y)) ((x y z) (+ x y z)) (rest (apply + rest))))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            ("(sum-all)", Success(ProcessedValue::Integer(0))),
+            ("(sum-all 1)", Success(ProcessedValue::Integer(1))),
+            ("(sum-all 1 2)", Success(ProcessedValue::Integer(3))),
+            ("(sum-all 1 2 3)", Success(ProcessedValue::Integer(6))),
+            ("(sum-all 1 2 3 4)", Success(ProcessedValue::Integer(10))),
+            ("(sum-all 1 2 3 4 5)", Success(ProcessedValue::Integer(15))),
+            // Test 5: Pattern with list construction
+            (
+                "(define rest-arity (case-lambda (() '(none)) ((x) (list 'one x)) ((x y) (list 'two x y)) (args (cons 'more args))))",
+                Success(ProcessedValue::Unspecified),
+            ),
+            (
+                "(rest-arity)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("none".to_string()),
+                ]))),
+            ),
+            (
+                "(rest-arity 1)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("one".to_string()),
+                    ProcessedValue::Integer(1),
+                ]))),
+            ),
+            (
+                "(rest-arity 1 2)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("two".to_string()),
+                    ProcessedValue::Integer(1),
+                    ProcessedValue::Integer(2),
+                ]))),
+            ),
+            (
+                "(rest-arity 1 2 3)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("more".to_string()),
+                    ProcessedValue::Integer(1),
+                    ProcessedValue::Integer(2),
+                    ProcessedValue::Integer(3),
+                ]))),
+            ),
+        ])];
         run_tests_in_environment(test_cases);
     }
 
     #[test]
     fn test_quote_in_macros() {
         // Test R7RS quote behavior in macro patterns and templates
-        let test_cases = vec![
-            TestEnvironment(vec![
-                // Test 1: Quote in template - pattern variable gets substituted then quoted
-                ("(define-syntax make-quoted (syntax-rules () ((make-quoted x) 'x)))", Macro),
-                // **R7RS:** 'x in template should substitute x, then quote result.
-                // So (make-quoted foo) matches x→foo, then 'x becomes 'foo which evaluates to symbol foo.
-                ("(make-quoted foo)", Success(ProcessedValue::OwnedSymbol("foo".to_string()))),
-
-                // Test 2: Quote with list - pattern variables expand THEN quote is applied
-                ("(define-syntax quote-it (syntax-rules () ((quote-it x) '(result x))))", Macro),
-                // **R7RS:** Pattern variable x gets substituted first, then quote is applied.
-                // So (quote-it 42) expands '(result x) to '(result 42) which becomes (result 42).
-                ("(quote-it 42)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+        let test_cases = vec![TestEnvironment(vec![
+            // Test 1: Quote in template - pattern variable gets substituted then quoted
+            (
+                "(define-syntax make-quoted (syntax-rules () ((make-quoted x) 'x)))",
+                Macro,
+            ),
+            // **R7RS:** 'x in template should substitute x, then quote result.
+            // So (make-quoted foo) matches x→foo, then 'x becomes 'foo which evaluates to symbol foo.
+            (
+                "(make-quoted foo)",
+                Success(ProcessedValue::OwnedSymbol("foo".to_string())),
+            ),
+            // Test 2: Quote with list - pattern variables expand THEN quote is applied
+            (
+                "(define-syntax quote-it (syntax-rules () ((quote-it x) '(result x))))",
+                Macro,
+            ),
+            // **R7RS:** Pattern variable x gets substituted first, then quote is applied.
+            // So (quote-it 42) expands '(result x) to '(result 42) which becomes (result 42).
+            (
+                "(quote-it 42)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("result".to_string()),
-                    ProcessedValue::Integer(42)
-                ])))),
-
-                // Test 3: Building quoted list with pattern variable OUTSIDE quote
-                ("(define-syntax build-quoted (syntax-rules () ((build-quoted x) (list 'result x))))", Macro),
-                ("(build-quoted 42)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(42),
+                ]))),
+            ),
+            // Test 3: Building quoted list with pattern variable OUTSIDE quote
+            (
+                "(define-syntax build-quoted (syntax-rules () ((build-quoted x) (list 'result x))))",
+                Macro,
+            ),
+            (
+                "(build-quoted 42)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("result".to_string()),
-                    ProcessedValue::Integer(42)
-                ])))), // x interpolated because it's outside the quote
-
-                // Test 4: Quote in pattern - matches literal (quote x) structure
-                ("(define-syntax unquote-it (syntax-rules () ((unquote-it 'x) x)))", Macro),
-                test_setup!("(define foo 99)"), // Define foo so extracted symbol can be evaluated
-                ("(unquote-it 'foo)", Success(ProcessedValue::Integer(99))), // Pattern extracts foo symbol, template returns it, evaluates to 99
-
-                // Test 5: Nested quotes in template - pattern variables get substituted
-                ("(define-syntax double-quote (syntax-rules () ((double-quote x) ''x)))", Macro),
-                // **R7RS:** ''x means (quote 'x), and 'x gets pattern substitution to become 'bar
-                // So ''x becomes (quote 'bar) which evaluates to the quoted form 'bar = (quote bar)
-                ("(double-quote bar)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(42),
+                ]))),
+            ), // x interpolated because it's outside the quote
+            // Test 4: Quote in pattern - matches literal (quote x) structure
+            (
+                "(define-syntax unquote-it (syntax-rules () ((unquote-it 'x) x)))",
+                Macro,
+            ),
+            test_setup!("(define foo 99)"), // Define foo so extracted symbol can be evaluated
+            ("(unquote-it 'foo)", Success(ProcessedValue::Integer(99))), // Pattern extracts foo symbol, template returns it, evaluates to 99
+            // Test 5: Nested quotes in template - pattern variables get substituted
+            (
+                "(define-syntax double-quote (syntax-rules () ((double-quote x) ''x)))",
+                Macro,
+            ),
+            // **R7RS:** ''x means (quote 'x), and 'x gets pattern substitution to become 'bar
+            // So ''x becomes (quote 'bar) which evaluates to the quoted form 'bar = (quote bar)
+            (
+                "(double-quote bar)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("quote".to_string()),
-                    ProcessedValue::OwnedSymbol("bar".to_string())
-                ])))), // ''bar becomes (quote bar) after substitution
-
-                // Test 6: Empty list literal in template
-                ("(define-syntax make-empty (syntax-rules () ((make-empty) '())))", Macro),
-                ("(make-empty)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![])))),
-
-                // Test 7: Quoted underscore (literal symbol, not wildcard)
-                ("(define-syntax quote-underscore (syntax-rules () ((quote-underscore x) (list x '_))))", Macro),
-                ("(quote-underscore 99)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("bar".to_string()),
+                ]))),
+            ), // ''bar becomes (quote bar) after substitution
+            // Test 6: Empty list literal in template
+            (
+                "(define-syntax make-empty (syntax-rules () ((make-empty) '())))",
+                Macro,
+            ),
+            (
+                "(make-empty)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![]))),
+            ),
+            // Test 7: Quoted underscore (literal symbol, not wildcard)
+            (
+                "(define-syntax quote-underscore (syntax-rules () ((quote-underscore x) (list x '_))))",
+                Macro,
+            ),
+            (
+                "(quote-underscore 99)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::Integer(99),
-                    ProcessedValue::OwnedSymbol("_".to_string())
-                ])))), // '_ is a literal quoted symbol, not the wildcard pattern
-
-                // Test 8: Quote with ellipsis - pattern variables expand THEN quote result
-                ("(define-syntax quote-each (syntax-rules () ((quote-each x ...) '(x ...))))", Macro),
-                // **R7RS:** Ellipsis expansion happens first, then quote is applied to result.
-                // So (quote-each a b c) expands '(x ...) to '(a b c) which becomes (a b c) after evaluation.
-                ("(quote-each a b c)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("_".to_string()),
+                ]))),
+            ), // '_ is a literal quoted symbol, not the wildcard pattern
+            // Test 8: Quote with ellipsis - pattern variables expand THEN quote result
+            (
+                "(define-syntax quote-each (syntax-rules () ((quote-each x ...) '(x ...))))",
+                Macro,
+            ),
+            // **R7RS:** Ellipsis expansion happens first, then quote is applied to result.
+            // So (quote-each a b c) expands '(x ...) to '(a b c) which becomes (a b c) after evaluation.
+            (
+                "(quote-each a b c)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("a".to_string()),
                     ProcessedValue::OwnedSymbol("b".to_string()),
-                    ProcessedValue::OwnedSymbol("c".to_string())
-                ])))),
-
-                // Test 9: Building list of quoted symbols with ellipsis OUTSIDE quote
-                ("(define-syntax make-symbol-list (syntax-rules () ((make-symbol-list x ...) (list 'x ...))))", Macro),
-                ("(make-symbol-list a b c)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("c".to_string()),
+                ]))),
+            ),
+            // Test 9: Building list of quoted symbols with ellipsis OUTSIDE quote
+            (
+                "(define-syntax make-symbol-list (syntax-rules () ((make-symbol-list x ...) (list 'x ...))))",
+                Macro,
+            ),
+            (
+                "(make-symbol-list a b c)",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("a".to_string()),
                     ProcessedValue::OwnedSymbol("b".to_string()),
-                    ProcessedValue::OwnedSymbol("c".to_string())
-                ])))), // Each x becomes a quoted symbol
-            ]),
-        ];
+                    ProcessedValue::OwnedSymbol("c".to_string()),
+                ]))),
+            ), // Each x becomes a quoted symbol
+        ])];
         run_tests_in_environment(test_cases);
     }
 
@@ -2791,147 +3403,200 @@ mod comprehensive_evaluator_tests {
         // Test list-within-ellipsis patterns: ((a b) ...)
         // This pattern binds multiple variables from each structured iteration
         // Pattern ((a b) ...) matching ((1 2) (3 4)) binds a→[1,3], b→[2,4]
-        let test_cases = vec![
-            TestEnvironment(vec![
-                // Test 1: Basic flatten-pairs - extract and reorder
-                ("(define-syntax flatten-pairs (syntax-rules () ((flatten-pairs ((a b) ...)) (list a ... b ...))))", Macro),
-                ("(flatten-pairs ((1 2) (3 4) (5 6)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+        let test_cases = vec![TestEnvironment(vec![
+            // Test 1: Basic flatten-pairs - extract and reorder
+            (
+                "(define-syntax flatten-pairs (syntax-rules () ((flatten-pairs ((a b) ...)) (list a ... b ...))))",
+                Macro,
+            ),
+            (
+                "(flatten-pairs ((1 2) (3 4) (5 6)))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::Integer(1),
                     ProcessedValue::Integer(3),
                     ProcessedValue::Integer(5),
                     ProcessedValue::Integer(2),
                     ProcessedValue::Integer(4),
-                    ProcessedValue::Integer(6)
-                ])))), // a→[1,3,5], b→[2,4,6], template produces (list 1 3 5 2 4 6)
-
-                // Test 2: Extract first elements from pairs
-                ("(define-syntax extract-first (syntax-rules () ((extract-first ((a b) ...)) (list a ...))))", Macro),
-                ("(extract-first ((10 20) (30 40) (50 60)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(6),
+                ]))),
+            ), // a→[1,3,5], b→[2,4,6], template produces (list 1 3 5 2 4 6)
+            // Test 2: Extract first elements from pairs
+            (
+                "(define-syntax extract-first (syntax-rules () ((extract-first ((a b) ...)) (list a ...))))",
+                Macro,
+            ),
+            (
+                "(extract-first ((10 20) (30 40) (50 60)))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::Integer(10),
                     ProcessedValue::Integer(30),
-                    ProcessedValue::Integer(50)
-                ])))), // a→[10,30,50], template produces (list 10 30 50)
-
-                // Test 3: Extract second elements from pairs
-                ("(define-syntax extract-second (syntax-rules () ((extract-second ((a b) ...)) (list b ...))))", Macro),
-                ("(extract-second ((10 20) (30 40) (50 60)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(50),
+                ]))),
+            ), // a→[10,30,50], template produces (list 10 30 50)
+            // Test 3: Extract second elements from pairs
+            (
+                "(define-syntax extract-second (syntax-rules () ((extract-second ((a b) ...)) (list b ...))))",
+                Macro,
+            ),
+            (
+                "(extract-second ((10 20) (30 40) (50 60)))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::Integer(20),
                     ProcessedValue::Integer(40),
-                    ProcessedValue::Integer(60)
-                ])))), // b→[20,40,60], template produces (list 20 40 60)
-
-                // Test 4: Pattern with literals inside ellipsis
-                ("(define-syntax extract-names (syntax-rules (define) ((extract-names ((define name value) ...)) (list (quote name) ...))))", Macro),
-                ("(extract-names ((define x 1) (define y 2) (define z 3)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(60),
+                ]))),
+            ), // b→[20,40,60], template produces (list 20 40 60)
+            // Test 4: Pattern with literals inside ellipsis
+            (
+                "(define-syntax extract-names (syntax-rules (define) ((extract-names ((define name value) ...)) (list (quote name) ...))))",
+                Macro,
+            ),
+            (
+                "(extract-names ((define x 1) (define y 2) (define z 3)))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("x".to_string()),
                     ProcessedValue::OwnedSymbol("y".to_string()),
-                    ProcessedValue::OwnedSymbol("z".to_string())
-                ])))), // Pattern matches literal 'define', extracts name from each
-
-                // Test 5: Three-element tuples
-                ("(define-syntax extract-triples (syntax-rules () ((extract-triples ((a b c) ...)) (list a ... b ... c ...))))", Macro),
-                ("(extract-triples ((1 2 3) (4 5 6)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("z".to_string()),
+                ]))),
+            ), // Pattern matches literal 'define', extracts name from each
+            // Test 5: Three-element tuples
+            (
+                "(define-syntax extract-triples (syntax-rules () ((extract-triples ((a b c) ...)) (list a ... b ... c ...))))",
+                Macro,
+            ),
+            (
+                "(extract-triples ((1 2 3) (4 5 6)))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::Integer(1),
                     ProcessedValue::Integer(4),
                     ProcessedValue::Integer(2),
                     ProcessedValue::Integer(5),
                     ProcessedValue::Integer(3),
-                    ProcessedValue::Integer(6)
-                ])))), // a→[1,4], b→[2,5], c→[3,6]
-
-                // Test 6: Empty list case
-                ("(define-syntax flatten-empty (syntax-rules () ((flatten-empty ((a b) ...)) (list a ... b ...))))", Macro),
-                ("(flatten-empty ())", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![])))), // No iterations, empty result
-
-                // Test 7: Single pair
-                ("(flatten-pairs ((100 200)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(6),
+                ]))),
+            ), // a→[1,4], b→[2,5], c→[3,6]
+            // Test 6: Empty list case
+            (
+                "(define-syntax flatten-empty (syntax-rules () ((flatten-empty ((a b) ...)) (list a ... b ...))))",
+                Macro,
+            ),
+            (
+                "(flatten-empty ())",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![]))),
+            ), // No iterations, empty result
+            // Test 7: Single pair
+            (
+                "(flatten-pairs ((100 200)))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::Integer(100),
-                    ProcessedValue::Integer(200)
-                ])))), // Single iteration: a→[100], b→[200]
-
-                // Test 8: Combine with computation
-                ("(define-syntax sum-pairs (syntax-rules () ((sum-pairs ((a b) ...)) (list (+ a b) ...))))", Macro),
-                ("(sum-pairs ((1 2) (3 4) (5 6)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(200),
+                ]))),
+            ), // Single iteration: a→[100], b→[200]
+            // Test 8: Combine with computation
+            (
+                "(define-syntax sum-pairs (syntax-rules () ((sum-pairs ((a b) ...)) (list (+ a b) ...))))",
+                Macro,
+            ),
+            (
+                "(sum-pairs ((1 2) (3 4) (5 6)))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::Integer(3),
                     ProcessedValue::Integer(7),
-                    ProcessedValue::Integer(11)
-                ])))), // Computes (+ 1 2), (+ 3 4), (+ 5 6)
-
-                // Test 9: Pattern with nested structure and literal matching
-                ("(define-syntax extract-let-bindings (syntax-rules (let) ((extract-let-bindings (let ((var val) ...) body ...)) (list (quote var) ...))))", Macro),
-                ("(extract-let-bindings (let ((x 1) (y 2) (z 3)) (+ x y z)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(11),
+                ]))),
+            ), // Computes (+ 1 2), (+ 3 4), (+ 5 6)
+            // Test 9: Pattern with nested structure and literal matching
+            (
+                "(define-syntax extract-let-bindings (syntax-rules (let) ((extract-let-bindings (let ((var val) ...) body ...)) (list (quote var) ...))))",
+                Macro,
+            ),
+            (
+                "(extract-let-bindings (let ((x 1) (y 2) (z 3)) (+ x y z)))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::OwnedSymbol("x".to_string()),
                     ProcessedValue::OwnedSymbol("y".to_string()),
-                    ProcessedValue::OwnedSymbol("z".to_string())
-                ])))), // Extract variable names from let bindings
-
-                // Test 10: Reverse order - b's then a's
-                ("(define-syntax reverse-pairs (syntax-rules () ((reverse-pairs ((a b) ...)) (list b ... a ...))))", Macro),
-                ("(reverse-pairs ((1 2) (3 4) (5 6)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::OwnedSymbol("z".to_string()),
+                ]))),
+            ), // Extract variable names from let bindings
+            // Test 10: Reverse order - b's then a's
+            (
+                "(define-syntax reverse-pairs (syntax-rules () ((reverse-pairs ((a b) ...)) (list b ... a ...))))",
+                Macro,
+            ),
+            (
+                "(reverse-pairs ((1 2) (3 4) (5 6)))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                     ProcessedValue::Integer(2),
                     ProcessedValue::Integer(4),
                     ProcessedValue::Integer(6),
                     ProcessedValue::Integer(1),
                     ProcessedValue::Integer(3),
-                    ProcessedValue::Integer(5)
-                ])))), // List all b's first, then all a's
-            ]),
-        ];
+                    ProcessedValue::Integer(5),
+                ]))),
+            ), // List all b's first, then all a's
+        ])];
         run_tests_in_environment(test_cases);
     }
 
     #[test]
     fn test_improved_let_and_do_macros() {
         // Test improved let and do macros enabled by list-within-ellipsis patterns
-        let test_cases = vec![
-            TestEnvironment(vec![
-                // Test 1: Named let with 5 bindings (previously limited to 4)
-                ("(let loop ((a 1) (b 2) (c 3) (d 4) (e 5)) (+ a b c d e))",
-                 Success(ProcessedValue::Integer(15))),
-
-                // Test 2: Named let with 6 bindings
-                ("(let sum ((a 1) (b 2) (c 3) (d 4) (e 5) (f 6)) (+ a b c d e f))",
-                 Success(ProcessedValue::Integer(21))),
-
-                // Test 3: Named let factorial with recursion
-                test_setup!("(define (factorial n) (let loop ((n n) (acc 1)) (if (<= n 1) acc (loop (- n 1) (* acc n)))))"),
-                ("(factorial 5)", Success(ProcessedValue::Integer(120))),
-                ("(factorial 0)", Success(ProcessedValue::Integer(1))),
-
-                // Test 4: Do loop with 4 variables (all with steps)
-                ("(do ((i 0 (+ i 1)) (j 10 (- j 1)) (k 5 (+ k 2)) (m 1 (* m 2))) ((> i 3) (list i j k m)))",
-                 Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                     ProcessedValue::Integer(4),  // i: 0→1→2→3→4
-                     ProcessedValue::Integer(6),  // j: 10→9→8→7→6
-                     ProcessedValue::Integer(13), // k: 5→7→9→11→13
-                     ProcessedValue::Integer(16)  // m: 1→2→4→8→16
-                 ])))),
-
-                // Test 5: Do loop with 5 variables
-                ("(do ((a 0 (+ a 1)) (b 0 (+ b 2)) (c 0 (+ c 3)) (d 0 (+ d 4)) (e 0 (+ e 5))) ((> a 2) (+ a b c d e)))",
-                 Success(ProcessedValue::Integer(45))), // a=3, b=6, c=9, d=12, e=15
-
-                // Test 6: Do loop with 6 variables
-                ("(do ((a 0 (+ a 1)) (b 0 (+ b 1)) (c 0 (+ c 2)) (d 0 (+ d 3)) (e 0 (+ e 4)) (f 0 (+ f 5))) ((> a 2) (+ a b c d e f)))",
-                 Success(ProcessedValue::Integer(48))), // a=3, b=3, c=6, d=9, e=12, f=15
-
-                // Test 7: Do loop with no steps (all variables static)
-                ("(do ((x 10) (y 20) (z 30)) ((> x 5) (+ x y z)))",
-                 Success(ProcessedValue::Integer(60))),
-
-                // Test 8: Do loop with 4 variables, no steps
-                ("(do ((a 1) (b 2) (c 3) (d 4)) (#t (+ a b c d)))",
-                 Success(ProcessedValue::Integer(10))),
-
-                // Test 9: Do loop with MIXED steps - some with step, some without
-                // **R7RS COMPLIANT:** Variables without step use their current value
-                ("(do ((i 0 (+ i 1)) (j 10)) ((> i 3) i))",
-                 Success(ProcessedValue::Integer(4))),
-
-                // Test 10: Empty do loop (infinite loop protection with immediate exit)
-                ("(do () (#t 42))", Success(ProcessedValue::Integer(42))),
-            ]),
-        ];
+        let test_cases = vec![TestEnvironment(vec![
+            // Test 1: Named let with 5 bindings (previously limited to 4)
+            (
+                "(let loop ((a 1) (b 2) (c 3) (d 4) (e 5)) (+ a b c d e))",
+                Success(ProcessedValue::Integer(15)),
+            ),
+            // Test 2: Named let with 6 bindings
+            (
+                "(let sum ((a 1) (b 2) (c 3) (d 4) (e 5) (f 6)) (+ a b c d e f))",
+                Success(ProcessedValue::Integer(21)),
+            ),
+            // Test 3: Named let factorial with recursion
+            test_setup!(
+                "(define (factorial n) (let loop ((n n) (acc 1)) (if (<= n 1) acc (loop (- n 1) (* acc n)))))"
+            ),
+            ("(factorial 5)", Success(ProcessedValue::Integer(120))),
+            ("(factorial 0)", Success(ProcessedValue::Integer(1))),
+            // Test 4: Do loop with 4 variables (all with steps)
+            (
+                "(do ((i 0 (+ i 1)) (j 10 (- j 1)) (k 5 (+ k 2)) (m 1 (* m 2))) ((> i 3) (list i j k m)))",
+                Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                    ProcessedValue::Integer(4),  // i: 0→1→2→3→4
+                    ProcessedValue::Integer(6),  // j: 10→9→8→7→6
+                    ProcessedValue::Integer(13), // k: 5→7→9→11→13
+                    ProcessedValue::Integer(16), // m: 1→2→4→8→16
+                ]))),
+            ),
+            // Test 5: Do loop with 5 variables
+            (
+                "(do ((a 0 (+ a 1)) (b 0 (+ b 2)) (c 0 (+ c 3)) (d 0 (+ d 4)) (e 0 (+ e 5))) ((> a 2) (+ a b c d e)))",
+                Success(ProcessedValue::Integer(45)),
+            ), // a=3, b=6, c=9, d=12, e=15
+            // Test 6: Do loop with 6 variables
+            (
+                "(do ((a 0 (+ a 1)) (b 0 (+ b 1)) (c 0 (+ c 2)) (d 0 (+ d 3)) (e 0 (+ e 4)) (f 0 (+ f 5))) ((> a 2) (+ a b c d e f)))",
+                Success(ProcessedValue::Integer(48)),
+            ), // a=3, b=3, c=6, d=9, e=12, f=15
+            // Test 7: Do loop with no steps (all variables static)
+            (
+                "(do ((x 10) (y 20) (z 30)) ((> x 5) (+ x y z)))",
+                Success(ProcessedValue::Integer(60)),
+            ),
+            // Test 8: Do loop with 4 variables, no steps
+            (
+                "(do ((a 1) (b 2) (c 3) (d 4)) (#t (+ a b c d)))",
+                Success(ProcessedValue::Integer(10)),
+            ),
+            // Test 9: Do loop with MIXED steps - some with step, some without
+            // **R7RS COMPLIANT:** Variables without step use their current value
+            (
+                "(do ((i 0 (+ i 1)) (j 10)) ((> i 3) i))",
+                Success(ProcessedValue::Integer(4)),
+            ),
+            // Test 10: Empty do loop (infinite loop protection with immediate exit)
+            ("(do () (#t 42))", Success(ProcessedValue::Integer(42))),
+        ])];
         run_tests_in_environment(test_cases);
     }
 
@@ -2941,9 +3606,14 @@ mod comprehensive_evaluator_tests {
         // These macros use nested ellipsis patterns (x ... ...) to manipulate nested list structures
         let test_cases = vec![TestEnvironment(vec![
             // Define flatten and zip macros locally (not in R7RS standard)
-            ("(define-syntax flatten (syntax-rules () ((flatten ((x ...) ...)) (list x ... ...))))", Macro),
-            ("(define-syntax zip (syntax-rules () ((zip (a ...) (b ...)) (list (list a b) ...))))", Macro),
-
+            (
+                "(define-syntax flatten (syntax-rules () ((flatten ((x ...) ...)) (list x ... ...))))",
+                Macro,
+            ),
+            (
+                "(define-syntax zip (syntax-rules () ((zip (a ...) (b ...)) (list (list a b) ...))))",
+                Macro,
+            ),
             // Flatten tests - convert nested lists to flat lists using (list x ... ...)
             (
                 "(define flat1 (flatten ((1 2) (3 4) (5 6))))",
@@ -3131,296 +3801,432 @@ mod comprehensive_evaluator_tests {
             // ===== SECTION 1: Basic Ellipsis (Single Variable) =====
             TestEnvironment(vec![
                 // Test 1.1: Empty list
-                scheme_macro!("(define-syntax basic-empty (syntax-rules () ((_ (x ...)) (quote (x ...)))))"),
-                ("(basic-empty ())", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![])))),
+                scheme_macro!(
+                    "(define-syntax basic-empty (syntax-rules () ((_ (x ...)) (quote (x ...)))))"
+                ),
+                (
+                    "(basic-empty ())",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![]))),
+                ),
             ]),
             TestEnvironment(vec![
                 // Test 1.2: Single element
-                scheme_macro!("(define-syntax basic-one (syntax-rules () ((_ (x ...)) (quote (x ...)))))"),
-                ("(basic-one (1))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::Integer(1),
-                ])))),
+                scheme_macro!(
+                    "(define-syntax basic-one (syntax-rules () ((_ (x ...)) (quote (x ...)))))"
+                ),
+                (
+                    "(basic-one (1))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::Integer(1),
+                    ]))),
+                ),
             ]),
             TestEnvironment(vec![
                 // Test 1.3: Multiple elements
-                scheme_macro!("(define-syntax basic-many (syntax-rules () ((_ (x ...)) (quote (x ...)))))"),
-                ("(basic-many (1 2 3 4 5))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::Integer(1),
-                    ProcessedValue::Integer(2),
-                    ProcessedValue::Integer(3),
-                    ProcessedValue::Integer(4),
-                    ProcessedValue::Integer(5),
-                ])))),
+                scheme_macro!(
+                    "(define-syntax basic-many (syntax-rules () ((_ (x ...)) (quote (x ...)))))"
+                ),
+                (
+                    "(basic-many (1 2 3 4 5))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::Integer(1),
+                        ProcessedValue::Integer(2),
+                        ProcessedValue::Integer(3),
+                        ProcessedValue::Integer(4),
+                        ProcessedValue::Integer(5),
+                    ]))),
+                ),
             ]),
             // ===== SECTION 2: Ellipsis Position Restrictions (R7RS Compliance) =====
             // **R7RS RESTRICTED:** Ellipsis must be the last element in a pattern list
             TestEnvironment(vec![
                 // Test 2.1: Pattern (x ... y) - ILLEGAL, ellipsis not last
-                ("(define-syntax get-last (syntax-rules () ((_ (x ... y)) y)))",
-                 SpecificError("Ellipsis '...' must be the last element in a pattern list")),
+                (
+                    "(define-syntax get-last (syntax-rules () ((_ (x ... y)) y)))",
+                    SpecificError("Ellipsis '...' must be the last element in a pattern list"),
+                ),
             ]),
             TestEnvironment(vec![
                 // Test 2.2: Pattern (x ... y z) - ILLEGAL, ellipsis not last
-                ("(define-syntax get-last-two (syntax-rules () ((_ (x ... y z)) (list y z))))",
-                 SpecificError("Ellipsis '...' must be the last element in a pattern list")),
+                (
+                    "(define-syntax get-last-two (syntax-rules () ((_ (x ... y z)) (list y z))))",
+                    SpecificError("Ellipsis '...' must be the last element in a pattern list"),
+                ),
             ]),
             TestEnvironment(vec![
                 // Test 2.3: Pattern (a x ... b) - ILLEGAL, ellipsis not last
-                ("(define-syntax first-middle-last (syntax-rules () ((_ (a x ... b)) (list a (quote (x ...)) b))))",
-                 SpecificError("Ellipsis '...' must be the last element in a pattern list")),
+                (
+                    "(define-syntax first-middle-last (syntax-rules () ((_ (a x ... b)) (list a (quote (x ...)) b))))",
+                    SpecificError("Ellipsis '...' must be the last element in a pattern list"),
+                ),
             ]),
             TestEnvironment(vec![
                 // Test 2.4: Pattern (a b x ...) - LEGAL, ellipsis IS last
-                scheme_macro!("(define-syntax first-two-rest (syntax-rules () ((_ (a b x ...)) (list a b (quote (x ...))))))"),
-                ("(first-two-rest (1 2 3 4 5))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::Integer(1),
-                    ProcessedValue::Integer(2),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(3),
-                        ProcessedValue::Integer(4),
-                        ProcessedValue::Integer(5),
-                    ])),
-                ])))),
-                ("(first-two-rest (10 20))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::Integer(10),
-                    ProcessedValue::Integer(20),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
-                ])))),
+                scheme_macro!(
+                    "(define-syntax first-two-rest (syntax-rules () ((_ (a b x ...)) (list a b (quote (x ...))))))"
+                ),
+                (
+                    "(first-two-rest (1 2 3 4 5))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::Integer(1),
+                        ProcessedValue::Integer(2),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(3),
+                            ProcessedValue::Integer(4),
+                            ProcessedValue::Integer(5),
+                        ])),
+                    ]))),
+                ),
+                (
+                    "(first-two-rest (10 20))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::Integer(10),
+                        ProcessedValue::Integer(20),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
+                    ]))),
+                ),
             ]),
             // ===== SECTION 3: Multiple Ellipsis Variables (Interleaved) =====
             TestEnvironment(vec![
                 // Test 3.1: Two separate ellipsis variables in separate positions
-                scheme_macro!("(define-syntax two-lists (syntax-rules () ((_ (x ...) (y ...)) (list (quote (x ...)) (quote (y ...))))))"),
-                ("(two-lists (1 2 3) (4 5 6))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(1),
-                        ProcessedValue::Integer(2),
-                        ProcessedValue::Integer(3),
-                    ])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(4),
-                        ProcessedValue::Integer(5),
-                        ProcessedValue::Integer(6),
-                    ])),
-                ])))),
-                ("(two-lists () (1 2))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(1),
-                        ProcessedValue::Integer(2),
-                    ])),
-                ])))),
+                scheme_macro!(
+                    "(define-syntax two-lists (syntax-rules () ((_ (x ...) (y ...)) (list (quote (x ...)) (quote (y ...))))))"
+                ),
+                (
+                    "(two-lists (1 2 3) (4 5 6))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(1),
+                            ProcessedValue::Integer(2),
+                            ProcessedValue::Integer(3),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(4),
+                            ProcessedValue::Integer(5),
+                            ProcessedValue::Integer(6),
+                        ])),
+                    ]))),
+                ),
+                (
+                    "(two-lists () (1 2))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(1),
+                            ProcessedValue::Integer(2),
+                        ])),
+                    ]))),
+                ),
             ]),
             TestEnvironment(vec![
                 // Test 3.2: Interleave two ellipsis variables as pairs
-                scheme_macro!("(define-syntax interleave (syntax-rules () ((_ (x ...) (y ...)) (list (list x y) ...))))"),
-                ("(interleave (1 2 3) (10 20 30))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(1),
-                        ProcessedValue::Integer(10),
-                    ])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(2),
-                        ProcessedValue::Integer(20),
-                    ])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(3),
-                        ProcessedValue::Integer(30),
-                    ])),
-                ])))),
+                scheme_macro!(
+                    "(define-syntax interleave (syntax-rules () ((_ (x ...) (y ...)) (list (list x y) ...))))"
+                ),
+                (
+                    "(interleave (1 2 3) (10 20 30))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(1),
+                            ProcessedValue::Integer(10),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(2),
+                            ProcessedValue::Integer(20),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(3),
+                            ProcessedValue::Integer(30),
+                        ])),
+                    ]))),
+                ),
             ]),
             TestEnvironment(vec![
                 // Test 3.3: Three separate ellipsis variables in separate positions
-                scheme_macro!("(define-syntax three-lists (syntax-rules () ((_ (a ...) (b ...) (c ...)) (list (quote (a ...)) (quote (b ...)) (quote (c ...))))))"),
-                ("(three-lists (1 2) (3 4) (5 6))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(1),
-                        ProcessedValue::Integer(2),
-                    ])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(3),
-                        ProcessedValue::Integer(4),
-                    ])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(5),
-                        ProcessedValue::Integer(6),
-                    ])),
-                ])))),
+                scheme_macro!(
+                    "(define-syntax three-lists (syntax-rules () ((_ (a ...) (b ...) (c ...)) (list (quote (a ...)) (quote (b ...)) (quote (c ...))))))"
+                ),
+                (
+                    "(three-lists (1 2) (3 4) (5 6))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(1),
+                            ProcessedValue::Integer(2),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(3),
+                            ProcessedValue::Integer(4),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(5),
+                            ProcessedValue::Integer(6),
+                        ])),
+                    ]))),
+                ),
             ]),
             TestEnvironment(vec![
                 // Test 3.4: Concatenate multiple ellipsis variables sequentially
-                scheme_macro!("(define-syntax concat-lists (syntax-rules () ((_ (a ...) (b ...)) (quote (a ... b ...)))))"),
-                ("(concat-lists (1 2 3) (4 5 6))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::Integer(1),
-                    ProcessedValue::Integer(2),
-                    ProcessedValue::Integer(3),
-                    ProcessedValue::Integer(4),
-                    ProcessedValue::Integer(5),
-                    ProcessedValue::Integer(6),
-                ])))),
+                scheme_macro!(
+                    "(define-syntax concat-lists (syntax-rules () ((_ (a ...) (b ...)) (quote (a ... b ...)))))"
+                ),
+                (
+                    "(concat-lists (1 2 3) (4 5 6))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::Integer(1),
+                        ProcessedValue::Integer(2),
+                        ProcessedValue::Integer(3),
+                        ProcessedValue::Integer(4),
+                        ProcessedValue::Integer(5),
+                        ProcessedValue::Integer(6),
+                    ]))),
+                ),
             ]),
             // ===== SECTION 4: List-Within-Ellipsis =====
             TestEnvironment(vec![
                 // Test 4.1: Extract first element from each pair
-                scheme_macro!("(define-syntax firsts (syntax-rules () ((_ ((a b) ...)) (quote (a ...)))))"),
-                ("(firsts ((1 2) (3 4) (5 6)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::Integer(1),
-                    ProcessedValue::Integer(3),
-                    ProcessedValue::Integer(5),
-                ])))),
+                scheme_macro!(
+                    "(define-syntax firsts (syntax-rules () ((_ ((a b) ...)) (quote (a ...)))))"
+                ),
+                (
+                    "(firsts ((1 2) (3 4) (5 6)))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::Integer(1),
+                        ProcessedValue::Integer(3),
+                        ProcessedValue::Integer(5),
+                    ]))),
+                ),
             ]),
             TestEnvironment(vec![
                 // Test 4.2: Extract second element from each pair
-                scheme_macro!("(define-syntax seconds (syntax-rules () ((_ ((a b) ...)) (quote (b ...)))))"),
-                ("(seconds ((1 2) (3 4) (5 6)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::Integer(2),
-                    ProcessedValue::Integer(4),
-                    ProcessedValue::Integer(6),
-                ])))),
+                scheme_macro!(
+                    "(define-syntax seconds (syntax-rules () ((_ ((a b) ...)) (quote (b ...)))))"
+                ),
+                (
+                    "(seconds ((1 2) (3 4) (5 6)))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::Integer(2),
+                        ProcessedValue::Integer(4),
+                        ProcessedValue::Integer(6),
+                    ]))),
+                ),
             ]),
             TestEnvironment(vec![
                 // Test 4.3: Swap elements in each pair
-                scheme_macro!("(define-syntax swap-pairs (syntax-rules () ((_ ((a b) ...)) (quote ((b a) ...)))))"),
-                ("(swap-pairs ((1 2) (3 4) (5 6)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(2),
-                        ProcessedValue::Integer(1),
-                    ])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(4),
-                        ProcessedValue::Integer(3),
-                    ])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(6),
-                        ProcessedValue::Integer(5),
-                    ])),
-                ])))),
+                scheme_macro!(
+                    "(define-syntax swap-pairs (syntax-rules () ((_ ((a b) ...)) (quote ((b a) ...)))))"
+                ),
+                (
+                    "(swap-pairs ((1 2) (3 4) (5 6)))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(2),
+                            ProcessedValue::Integer(1),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(4),
+                            ProcessedValue::Integer(3),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(6),
+                            ProcessedValue::Integer(5),
+                        ])),
+                    ]))),
+                ),
             ]),
             TestEnvironment(vec![
                 // Test 4.4: Triple elements - extract all three
-                scheme_macro!("(define-syntax triple-sum (syntax-rules () ((_ ((a b c) ...)) (list (+ a ...) (+ b ...) (+ c ...)))))"),
-                ("(triple-sum ((1 2 3) (10 20 30) (100 200 300)))",
-                 Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                     ProcessedValue::Integer(111),  // 1 + 10 + 100
-                     ProcessedValue::Integer(222),  // 2 + 20 + 200
-                     ProcessedValue::Integer(333),  // 3 + 30 + 300
-                 ])))),
+                scheme_macro!(
+                    "(define-syntax triple-sum (syntax-rules () ((_ ((a b c) ...)) (list (+ a ...) (+ b ...) (+ c ...)))))"
+                ),
+                (
+                    "(triple-sum ((1 2 3) (10 20 30) (100 200 300)))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::Integer(111), // 1 + 10 + 100
+                        ProcessedValue::Integer(222), // 2 + 20 + 200
+                        ProcessedValue::Integer(333), // 3 + 30 + 300
+                    ]))),
+                ),
             ]),
             // ===== SECTION 5: Multi-Ellipsis (Nested ...) =====
             TestEnvironment(vec![
                 // Define flatten and zip for this test environment
-                ("(define-syntax flatten (syntax-rules () ((flatten ((x ...) ...)) (list x ... ...))))", Macro),
-                ("(define-syntax zip (syntax-rules () ((zip (a ...) (b ...)) (list (list a b) ...))))", Macro),
-
+                (
+                    "(define-syntax flatten (syntax-rules () ((flatten ((x ...) ...)) (list x ... ...))))",
+                    Macro,
+                ),
+                (
+                    "(define-syntax zip (syntax-rules () ((zip (a ...) (b ...)) (list (list a b) ...))))",
+                    Macro,
+                ),
                 // Test 5.1: Flatten
-                ("(flatten ((1 2) (3 4) (5 6)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::Integer(1),
-                    ProcessedValue::Integer(2),
-                    ProcessedValue::Integer(3),
-                    ProcessedValue::Integer(4),
-                    ProcessedValue::Integer(5),
-                    ProcessedValue::Integer(6),
-                ])))),
-
-                // Test 5.2: Zip
-                ("(zip (1 2 3) (4 5 6))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                (
+                    "(flatten ((1 2) (3 4) (5 6)))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::Integer(1),
-                        ProcessedValue::Integer(4),
-                    ])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::Integer(2),
-                        ProcessedValue::Integer(5),
-                    ])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::Integer(3),
+                        ProcessedValue::Integer(4),
+                        ProcessedValue::Integer(5),
                         ProcessedValue::Integer(6),
-                    ])),
-                ])))),
+                    ]))),
+                ),
+                // Test 5.2: Zip
+                (
+                    "(zip (1 2 3) (4 5 6))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(1),
+                            ProcessedValue::Integer(4),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(2),
+                            ProcessedValue::Integer(5),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(3),
+                            ProcessedValue::Integer(6),
+                        ])),
+                    ]))),
+                ),
             ]),
             TestEnvironment(vec![
                 // Test 5.3: Multi-ellipsis with simple computation
-                scheme_macro!("(define-syntax add-all-nested (syntax-rules () ((_ ((x ...) ...)) (+ x ... ...))))"),
-                ("(add-all-nested ((1 2 3) (4 5) (6)))", Success(ProcessedValue::Integer(21))),  // 1+2+3+4+5+6
+                scheme_macro!(
+                    "(define-syntax add-all-nested (syntax-rules () ((_ ((x ...) ...)) (+ x ... ...))))"
+                ),
+                (
+                    "(add-all-nested ((1 2 3) (4 5) (6)))",
+                    Success(ProcessedValue::Integer(21)),
+                ), // 1+2+3+4+5+6
             ]),
             // ===== SECTION 6: Complex Combinations =====
             TestEnvironment(vec![
                 // Test 6.1: Ellipsis in multiple positions
-                scheme_macro!("(define-syntax multi-pos (syntax-rules () ((_ (a ...) b (c ...)) (list (quote (a ...)) b (quote (c ...))))))"),
-                ("(multi-pos (1 2 3) 10 (4 5 6))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(1),
-                        ProcessedValue::Integer(2),
-                        ProcessedValue::Integer(3),
-                    ])),
-                    ProcessedValue::Integer(10),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(4),
-                        ProcessedValue::Integer(5),
-                        ProcessedValue::Integer(6),
-                    ])),
-                ])))),
+                scheme_macro!(
+                    "(define-syntax multi-pos (syntax-rules () ((_ (a ...) b (c ...)) (list (quote (a ...)) b (quote (c ...))))))"
+                ),
+                (
+                    "(multi-pos (1 2 3) 10 (4 5 6))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(1),
+                            ProcessedValue::Integer(2),
+                            ProcessedValue::Integer(3),
+                        ])),
+                        ProcessedValue::Integer(10),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(4),
+                            ProcessedValue::Integer(5),
+                            ProcessedValue::Integer(6),
+                        ])),
+                    ]))),
+                ),
             ]),
             TestEnvironment(vec![
                 // Test 6.2: Nested list-within-ellipsis with computation
-                scheme_macro!("(define-syntax pair-products (syntax-rules () ((_ ((a b) ...)) (list (* a b) ...))))"),
-                ("(pair-products ((2 3) (4 5) (6 7)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::Integer(6),   // 2 * 3
-                    ProcessedValue::Integer(20),  // 4 * 5
-                    ProcessedValue::Integer(42),  // 6 * 7
-                ])))),
+                scheme_macro!(
+                    "(define-syntax pair-products (syntax-rules () ((_ ((a b) ...)) (list (* a b) ...))))"
+                ),
+                (
+                    "(pair-products ((2 3) (4 5) (6 7)))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::Integer(6),  // 2 * 3
+                        ProcessedValue::Integer(20), // 4 * 5
+                        ProcessedValue::Integer(42), // 6 * 7
+                    ]))),
+                ),
             ]),
             TestEnvironment(vec![
                 // Test 6.3: Recursive conditional structure (cond-like with literal matching)
-                scheme_macro!("(define-syntax simple-cond (syntax-rules (else) ((_ (else default)) default) ((_ (test result) rest ...) (if test result (simple-cond rest ...)))))"),
-                ("(simple-cond (#f 1) (#f 2) (#t 3) (else 4))", Success(ProcessedValue::Integer(3))),
-                ("(simple-cond (#f 1) (#f 2) (#f 3) (else 4))", Success(ProcessedValue::Integer(4))),
+                scheme_macro!(
+                    "(define-syntax simple-cond (syntax-rules (else) ((_ (else default)) default) ((_ (test result) rest ...) (if test result (simple-cond rest ...)))))"
+                ),
+                (
+                    "(simple-cond (#f 1) (#f 2) (#t 3) (else 4))",
+                    Success(ProcessedValue::Integer(3)),
+                ),
+                (
+                    "(simple-cond (#f 1) (#f 2) (#f 3) (else 4))",
+                    Success(ProcessedValue::Integer(4)),
+                ),
             ]),
             // ===== SECTION 7: Edge Cases =====
             TestEnvironment(vec![
                 // Test 7.1: Empty ellipsis in various positions
-                scheme_macro!("(define-syntax edge-empty (syntax-rules () ((_ (x ...) (y ...) (z ...)) (list (quote (x ...)) (quote (y ...)) (quote (z ...))))))"),
-                ("(edge-empty () () ())", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
-                ])))),
-                ("(edge-empty (1) () (2))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![ProcessedValue::Integer(1)])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![ProcessedValue::Integer(2)])),
-                ])))),
+                scheme_macro!(
+                    "(define-syntax edge-empty (syntax-rules () ((_ (x ...) (y ...) (z ...)) (list (quote (x ...)) (quote (y ...)) (quote (z ...))))))"
+                ),
+                (
+                    "(edge-empty () () ())",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
+                    ]))),
+                ),
+                (
+                    "(edge-empty (1) () (2))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(1),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(2),
+                        ])),
+                    ]))),
+                ),
             ]),
             TestEnvironment(vec![
                 // Test 7.2: Many elements stress test
-                scheme_macro!("(define-syntax stress-many (syntax-rules () ((_ (x ...)) (+ x ...))))"),
-                ("(stress-many (1 2 3 4 5 6 7 8 9 10))", Success(ProcessedValue::Integer(55))),
+                scheme_macro!(
+                    "(define-syntax stress-many (syntax-rules () ((_ (x ...)) (+ x ...))))"
+                ),
+                (
+                    "(stress-many (1 2 3 4 5 6 7 8 9 10))",
+                    Success(ProcessedValue::Integer(55)),
+                ),
             ]),
             // ===== SECTION 8: Real-World Patterns =====
             TestEnvironment(vec![
                 // Test 8.1: let binding pattern (already in prelude, but verify understanding)
-                scheme_macro!("(define-syntax my-let (syntax-rules () ((_ ((var val) ...) body) ((lambda (var ...) body) val ...))))"),
-                ("(my-let ((x 10) (y 20) (z 30)) (+ x y z))", Success(ProcessedValue::Integer(60))),
+                scheme_macro!(
+                    "(define-syntax my-let (syntax-rules () ((_ ((var val) ...) body) ((lambda (var ...) body) val ...))))"
+                ),
+                (
+                    "(my-let ((x 10) (y 20) (z 30)) (+ x y z))",
+                    Success(ProcessedValue::Integer(60)),
+                ),
             ]),
             TestEnvironment(vec![
                 // Test 8.2: begin-like sequence
-                scheme_macro!("(define-syntax seq (syntax-rules () ((_ e) e) ((_ e1 e2 ...) (begin e1 (seq e2 ...)))))"),
+                scheme_macro!(
+                    "(define-syntax seq (syntax-rules () ((_ e) e) ((_ e1 e2 ...) (begin e1 (seq e2 ...)))))"
+                ),
                 test_setup!("(define counter 0)"),
                 test_setup!("(define (inc) (set! counter (+ counter 1)) counter)"),
-                ("(seq (inc) (inc) (inc))", Success(ProcessedValue::Integer(3))),
+                (
+                    "(seq (inc) (inc) (inc))",
+                    Success(ProcessedValue::Integer(3)),
+                ),
                 ("counter", Success(ProcessedValue::Integer(3))),
             ]),
             TestEnvironment(vec![
                 // Test 8.3: list construction from multiple sources
-                scheme_macro!("(define-syntax combine (syntax-rules () ((_ (a ...) (b ...) (c ...)) (list a ... b ... c ...))))"),
-                ("(combine (1 2) (3 4) (5 6))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::Integer(1),
-                    ProcessedValue::Integer(2),
-                    ProcessedValue::Integer(3),
-                    ProcessedValue::Integer(4),
-                    ProcessedValue::Integer(5),
-                    ProcessedValue::Integer(6),
-                ])))),
+                scheme_macro!(
+                    "(define-syntax combine (syntax-rules () ((_ (a ...) (b ...) (c ...)) (list a ... b ... c ...))))"
+                ),
+                (
+                    "(combine (1 2) (3 4) (5 6))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::Integer(1),
+                        ProcessedValue::Integer(2),
+                        ProcessedValue::Integer(3),
+                        ProcessedValue::Integer(4),
+                        ProcessedValue::Integer(5),
+                        ProcessedValue::Integer(6),
+                    ]))),
+                ),
             ]),
         ];
         run_tests_in_environment(test_cases);
@@ -3435,70 +4241,102 @@ mod comprehensive_evaluator_tests {
         let test_cases = vec![
             // ===== Multiple Underscore Patterns =====
             TestEnvironment(vec![
-                scheme_macro!("(define-syntax count-to-2 (syntax-rules () ((_) 0) ((_ _) 1) ((_ _ _) 2) ((_ _ _ _) 'three) ((_ _ _ _ _) 'four-or-more)))"),
+                scheme_macro!(
+                    "(define-syntax count-to-2 (syntax-rules () ((_) 0) ((_ _) 1) ((_ _ _) 2) ((_ _ _ _) 'three) ((_ _ _ _ _) 'four-or-more)))"
+                ),
                 // Each underscore matches independently without binding
                 ("(count-to-2)", Success(ProcessedValue::Integer(0))),
                 ("(count-to-2 a)", Success(ProcessedValue::Integer(1))),
                 ("(count-to-2 a b)", Success(ProcessedValue::Integer(2))),
-                ("(count-to-2 a b c)", Success(ProcessedValue::OwnedSymbol("three".to_string()))),
-                ("(count-to-2 a b c d)", Success(ProcessedValue::OwnedSymbol("four-or-more".to_string()))),
+                (
+                    "(count-to-2 a b c)",
+                    Success(ProcessedValue::OwnedSymbol("three".to_string())),
+                ),
+                (
+                    "(count-to-2 a b c d)",
+                    Success(ProcessedValue::OwnedSymbol("four-or-more".to_string())),
+                ),
             ]),
             // ===== Underscore as Literal =====
             TestEnvironment(vec![
                 // When _ is in literals list, it's matched as literal, not wildcard
-                scheme_macro!("(define-syntax count-to-2_ (syntax-rules (_) ((_) 0) ((_ _) 1) ((_ _ _) 2) ((_ a b) 'fail-2) ((_ a b c d) 'fail-4)))"),
+                scheme_macro!(
+                    "(define-syntax count-to-2_ (syntax-rules (_) ((_) 0) ((_ _) 1) ((_ _ _) 2) ((_ a b) 'fail-2) ((_ a b c d) 'fail-4)))"
+                ),
                 // First _ is macro name (always wildcard), subsequent _ are literals
                 ("(count-to-2_)", Success(ProcessedValue::Integer(0))),
                 ("(count-to-2_ _)", Success(ProcessedValue::Integer(1))),
                 ("(count-to-2_ _ _)", Success(ProcessedValue::Integer(2))),
-                ("(count-to-2_ a b)", Success(ProcessedValue::OwnedSymbol("fail-2".to_string()))),
-                ("(count-to-2_ a b c d)", Success(ProcessedValue::OwnedSymbol("fail-4".to_string()))),
+                (
+                    "(count-to-2_ a b)",
+                    Success(ProcessedValue::OwnedSymbol("fail-2".to_string())),
+                ),
+                (
+                    "(count-to-2_ a b c d)",
+                    Success(ProcessedValue::OwnedSymbol("fail-4".to_string())),
+                ),
             ]),
             TestEnvironment(vec![
                 // Simplified underscore literal test
-                scheme_macro!("(define-syntax test-lit (syntax-rules (_) ((_ _) 'matched-literal) ((_ x) 'matched-variable)))"),
-                ("(test-lit _)", Success(ProcessedValue::OwnedSymbol("matched-literal".to_string()))),
-                ("(test-lit foo)", Success(ProcessedValue::OwnedSymbol("matched-variable".to_string()))),
+                scheme_macro!(
+                    "(define-syntax test-lit (syntax-rules (_) ((_ _) 'matched-literal) ((_ x) 'matched-variable)))"
+                ),
+                (
+                    "(test-lit _)",
+                    Success(ProcessedValue::OwnedSymbol("matched-literal".to_string())),
+                ),
+                (
+                    "(test-lit foo)",
+                    Success(ProcessedValue::OwnedSymbol("matched-variable".to_string())),
+                ),
             ]),
             // ===== Ellipsis in Middle of Lists =====
             TestEnvironment(vec![
                 // Ellipsis can appear before trailing elements
-                scheme_macro!("(define-syntax part-2 (syntax-rules () ((_ a b (m n) ... x y) (list (quote matched) (list a b) (list m ...) (list n ...) (list x y)))))"),
-                ("(part-2 10 43 (31 32) (41 42) (51 52) 63 77)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::OwnedSymbol("matched".to_string()),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(10),
-                        ProcessedValue::Integer(43),
-                    ])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(31),
-                        ProcessedValue::Integer(41),
-                        ProcessedValue::Integer(51),
-                    ])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(32),
-                        ProcessedValue::Integer(42),
-                        ProcessedValue::Integer(52),
-                    ])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(63),
-                        ProcessedValue::Integer(77),
-                    ])),
-                ])))),
+                scheme_macro!(
+                    "(define-syntax part-2 (syntax-rules () ((_ a b (m n) ... x y) (list (quote matched) (list a b) (list m ...) (list n ...) (list x y)))))"
+                ),
+                (
+                    "(part-2 10 43 (31 32) (41 42) (51 52) 63 77)",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("matched".to_string()),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(10),
+                            ProcessedValue::Integer(43),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(31),
+                            ProcessedValue::Integer(41),
+                            ProcessedValue::Integer(51),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(32),
+                            ProcessedValue::Integer(42),
+                            ProcessedValue::Integer(52),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(63),
+                            ProcessedValue::Integer(77),
+                        ])),
+                    ]))),
+                ),
                 // Test with zero ellipsis matches
-                ("(part-2 10 43 63 77)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::OwnedSymbol("matched".to_string()),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(10),
-                        ProcessedValue::Integer(43),
-                    ])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::Integer(63),
-                        ProcessedValue::Integer(77),
-                    ])),
-                ])))),
+                (
+                    "(part-2 10 43 63 77)",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("matched".to_string()),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(10),
+                            ProcessedValue::Integer(43),
+                        ])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::Integer(63),
+                            ProcessedValue::Integer(77),
+                        ])),
+                    ]))),
+                ),
             ]),
         ];
         run_tests_in_environment(test_cases);
@@ -3547,24 +4385,29 @@ mod comprehensive_evaluator_tests {
         let test_cases = vec![
             // Test 3 REWRITTEN: Function with variadic arguments - THIS WORKS!
             TestEnvironment(vec![
-                scheme_macro!(r#"
+                scheme_macro!(
+                    r#"
                     (define-syntax defun-variadic
                       (syntax-rules ()
                         ((defun-variadic name body ...)
                          (define name 
                            (lambda args
                              body ...)))))
-                "#),
-                ("(defun-variadic sum-all (fold-left + 0 args))", Success(ProcessedValue::Unspecified)),
+                "#
+                ),
+                (
+                    "(defun-variadic sum-all (fold-left + 0 args))",
+                    Success(ProcessedValue::Unspecified),
+                ),
                 ("(sum-all 1 2 3 4 5)", Success(ProcessedValue::Integer(15))),
             ]),
-
             // Test 4 FULL ORIGINAL: Recursive CPS transformation macro
             // This is the EXACT test from test_macro_limitations.rs with call/cc pattern removed
             // 7 patterns with recursive macro calls and 2 literal keywords (lambda, if)
             // **R7RS RESTRICTED:** call/cc not supported (one pattern from original removed)
             TestEnvironment(vec![
-                scheme_macro!(r#"
+                scheme_macro!(
+                    r#"
                     (define-syntax cps-multi
                       (syntax-rules (lambda if)
                         ((cps-multi (lambda () body) k)
@@ -3580,17 +4423,30 @@ mod comprehensive_evaluator_tests {
                         ((cps-multi (if test then else) k)
                          (cps-multi test (lambda (t) (if t (cps-multi then k) (cps-multi else k)))))
                         ((cps-multi expr k) (k expr))))
-                "#),
-                ("(cps-multi 42 (lambda (x) x))", Success(ProcessedValue::Integer(42))),
-                ("(cps-multi (if #t) (lambda (x) x))", Success(ProcessedValue::Boolean(true))),
-                ("(cps-multi (if #f 1 2) (lambda (x) x))", Success(ProcessedValue::Integer(2))),
+                "#
+                ),
+                (
+                    "(cps-multi 42 (lambda (x) x))",
+                    Success(ProcessedValue::Integer(42)),
+                ),
+                (
+                    "(cps-multi (if #t) (lambda (x) x))",
+                    Success(ProcessedValue::Boolean(true)),
+                ),
+                (
+                    "(cps-multi (if #f 1 2) (lambda (x) x))",
+                    Success(ProcessedValue::Integer(2)),
+                ),
                 // Test lambda transformation by actually calling the result
-                ("((cps-multi (lambda (x) x) (lambda (f) f)) (lambda (y) y) 99)", Success(ProcessedValue::Integer(99))),
+                (
+                    "((cps-multi (lambda (x) x) (lambda (f) f)) (lambda (y) y) 99)",
+                    Success(ProcessedValue::Integer(99)),
+                ),
             ]),
-
             // Test 5: Context-dependent macro patterns with literals - THIS WORKS!
             TestEnvironment(vec![
-                scheme_macro!(r#"
+                scheme_macro!(
+                    r#"
                     (define-syntax with-context
                       (syntax-rules (in at from)
                         ((with-context (in env) (at location) (from source) body ...)
@@ -3599,61 +4455,94 @@ mod comprehensive_evaluator_tests {
                          (list 'at location 'from source body ...))
                         ((with-context (from source) body ...)
                          (list 'from source body ...))))
-                "#),
-                ("(with-context (in 'myenv) (at 'here) (from 'there) 1 2)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::OwnedSymbol("in".to_string()),
-                    ProcessedValue::OwnedSymbol("myenv".to_string()),
-                    ProcessedValue::OwnedSymbol("at".to_string()),
-                    ProcessedValue::OwnedSymbol("here".to_string()),
-                    ProcessedValue::OwnedSymbol("from".to_string()),
-                    ProcessedValue::OwnedSymbol("there".to_string()),
-                    ProcessedValue::Integer(1),
-                    ProcessedValue::Integer(2),
-                ])))),
-                ("(with-context (at 'location) (from 'source) 99)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::OwnedSymbol("at".to_string()),
-                    ProcessedValue::OwnedSymbol("location".to_string()),
-                    ProcessedValue::OwnedSymbol("from".to_string()),
-                    ProcessedValue::OwnedSymbol("source".to_string()),
-                    ProcessedValue::Integer(99),
-                ])))),
-                ("(with-context (from 'source) 42)", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::OwnedSymbol("from".to_string()),
-                    ProcessedValue::OwnedSymbol("source".to_string()),
-                    ProcessedValue::Integer(42),
-                ])))),
+                "#
+                ),
+                (
+                    "(with-context (in 'myenv) (at 'here) (from 'there) 1 2)",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("in".to_string()),
+                        ProcessedValue::OwnedSymbol("myenv".to_string()),
+                        ProcessedValue::OwnedSymbol("at".to_string()),
+                        ProcessedValue::OwnedSymbol("here".to_string()),
+                        ProcessedValue::OwnedSymbol("from".to_string()),
+                        ProcessedValue::OwnedSymbol("there".to_string()),
+                        ProcessedValue::Integer(1),
+                        ProcessedValue::Integer(2),
+                    ]))),
+                ),
+                (
+                    "(with-context (at 'location) (from 'source) 99)",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("at".to_string()),
+                        ProcessedValue::OwnedSymbol("location".to_string()),
+                        ProcessedValue::OwnedSymbol("from".to_string()),
+                        ProcessedValue::OwnedSymbol("source".to_string()),
+                        ProcessedValue::Integer(99),
+                    ]))),
+                ),
+                (
+                    "(with-context (from 'source) 42)",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::OwnedSymbol("from".to_string()),
+                        ProcessedValue::OwnedSymbol("source".to_string()),
+                        ProcessedValue::Integer(42),
+                    ]))),
+                ),
             ]),
-
             // Test 6: Simple patterns that work
             TestEnvironment(vec![
-                scheme_macro!(r#"
+                scheme_macro!(
+                    r#"
                     (define-syntax simple-when  
                       (syntax-rules ()
                         ((simple-when test body ...)
                          (if test (begin body ...)))))
-                "#),
-                ("(simple-when #t 1 2 3)", Success(ProcessedValue::Integer(3))),
-                ("(simple-when #f 1 2 3)", Success(ProcessedValue::Unspecified)),
+                "#
+                ),
+                (
+                    "(simple-when #t 1 2 3)",
+                    Success(ProcessedValue::Integer(3)),
+                ),
+                (
+                    "(simple-when #f 1 2 3)",
+                    Success(ProcessedValue::Unspecified),
+                ),
             ]),
-
             // Test 7: Nested ellipsis DOES work for fixed-structure sublists ((a b) ...)
             TestEnvironment(vec![
-                scheme_macro!("(define-syntax flatten-pairs (syntax-rules () ((flatten-pairs ((a b) ...)) (list a ... b ...))))"),
-                ("(flatten-pairs ((1 2) (3 4) (5 6)))", success(vec![1i64, 3, 5, 2, 4, 6])),
+                scheme_macro!(
+                    "(define-syntax flatten-pairs (syntax-rules () ((flatten-pairs ((a b) ...)) (list a ... b ...))))"
+                ),
+                (
+                    "(flatten-pairs ((1 2) (3 4) (5 6)))",
+                    success(vec![1i64, 3, 5, 2, 4, 6]),
+                ),
             ]),
-
             // Test 8: Multi-ellipsis for truly nested structures ((x ...) ...) WORKS!
             TestEnvironment(vec![
-                scheme_macro!("(define-syntax flatten-nested (syntax-rules () ((flatten-nested ((x ...) ...)) (list x ... ...))))"),
-                ("(flatten-nested ((1 2) (3 4 5) (6)))", success(vec![1i64, 2, 3, 4, 5, 6])),
+                scheme_macro!(
+                    "(define-syntax flatten-nested (syntax-rules () ((flatten-nested ((x ...) ...)) (list x ... ...))))"
+                ),
+                (
+                    "(flatten-nested ((1 2) (3 4 5) (6)))",
+                    success(vec![1i64, 2, 3, 4, 5, 6]),
+                ),
                 ("(flatten-nested (()))", success(vec![])),
             ]),
-
             // Test 9: Complex multi-pattern macros work (cond from prelude has 5 patterns)
             TestEnvironment(vec![
-                ("(cond (else 'default))", Success(ProcessedValue::OwnedSymbol("default".to_string()))),
-                ("(cond (#f 'no) (else 'yes))", Success(ProcessedValue::OwnedSymbol("yes".to_string()))),
-                ("(cond ((> 5 3) 'bigger) (else 'smaller))", Success(ProcessedValue::OwnedSymbol("bigger".to_string()))),
+                (
+                    "(cond (else 'default))",
+                    Success(ProcessedValue::OwnedSymbol("default".to_string())),
+                ),
+                (
+                    "(cond (#f 'no) (else 'yes))",
+                    Success(ProcessedValue::OwnedSymbol("yes".to_string())),
+                ),
+                (
+                    "(cond ((> 5 3) 'bigger) (else 'smaller))",
+                    Success(ProcessedValue::OwnedSymbol("bigger".to_string())),
+                ),
             ]),
         ];
         run_tests_in_environment(test_cases);
@@ -3669,8 +4558,11 @@ mod comprehensive_evaluator_tests {
         let test_cases = vec![
             // Test 1: Basic optional ellipsis - all items have trailing elements
             TestEnvironment(vec![
-                scheme_macro!("(define-syntax test-optional-all (syntax-rules () ((test-optional-all ((a b ...) ...)) (list (list 'a b ...) ...))))"),
-                ("(test-optional-all ((x 1 2) (y 3 4)))", 
+                scheme_macro!(
+                    "(define-syntax test-optional-all (syntax-rules () ((test-optional-all ((a b ...) ...)) (list (list 'a b ...) ...))))"
+                ),
+                (
+                    "(test-optional-all ((x 1 2) (y 3 4)))",
                     Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::OwnedSymbol("x".to_string()),
@@ -3682,8 +4574,10 @@ mod comprehensive_evaluator_tests {
                             ProcessedValue::Integer(3),
                             ProcessedValue::Integer(4),
                         ])),
-                    ])))),
-                ("(test-optional-all ((a 1 2 3) (b 4 5)))", 
+                    ]))),
+                ),
+                (
+                    "(test-optional-all ((a 1 2 3) (b 4 5)))",
                     Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::OwnedSymbol("a".to_string()),
@@ -3696,13 +4590,16 @@ mod comprehensive_evaluator_tests {
                             ProcessedValue::Integer(4),
                             ProcessedValue::Integer(5),
                         ])),
-                    ])))),
+                    ]))),
+                ),
             ]),
-
             // Test 2: Optional ellipsis - some items have no trailing elements
             TestEnvironment(vec![
-                scheme_macro!("(define-syntax test-optional-mixed (syntax-rules () ((test-optional-mixed ((a b ...) ...)) (list (list 'a b ...) ...))))"),
-                ("(test-optional-mixed ((x 1 2) (y)))", 
+                scheme_macro!(
+                    "(define-syntax test-optional-mixed (syntax-rules () ((test-optional-mixed ((a b ...) ...)) (list (list 'a b ...) ...))))"
+                ),
+                (
+                    "(test-optional-mixed ((x 1 2) (y)))",
                     Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::OwnedSymbol("x".to_string()),
@@ -3712,8 +4609,10 @@ mod comprehensive_evaluator_tests {
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::OwnedSymbol("y".to_string()),
                         ])),
-                    ])))),
-                ("(test-optional-mixed ((a) (b 1) (c 2 3 4)))", 
+                    ]))),
+                ),
+                (
+                    "(test-optional-mixed ((a) (b 1) (c 2 3 4)))",
                     Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::OwnedSymbol("a".to_string()),
@@ -3728,13 +4627,16 @@ mod comprehensive_evaluator_tests {
                             ProcessedValue::Integer(3),
                             ProcessedValue::Integer(4),
                         ])),
-                    ])))),
+                    ]))),
+                ),
             ]),
-
             // Test 3: Optional ellipsis - NO items have trailing elements
             TestEnvironment(vec![
-                scheme_macro!("(define-syntax test-optional-none (syntax-rules () ((test-optional-none ((a b ...) ...)) (list (list 'a b ...) ...))))"),
-                ("(test-optional-none ((x) (y) (z)))", 
+                scheme_macro!(
+                    "(define-syntax test-optional-none (syntax-rules () ((test-optional-none ((a b ...) ...)) (list (list 'a b ...) ...))))"
+                ),
+                (
+                    "(test-optional-none ((x) (y) (z)))",
                     Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::OwnedSymbol("x".to_string()),
@@ -3745,101 +4647,113 @@ mod comprehensive_evaluator_tests {
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::OwnedSymbol("z".to_string()),
                         ])),
-                    ])))),
+                    ]))),
+                ),
             ]),
-
             // Test 4: Nested optional ellipsis with computation
             TestEnvironment(vec![
-                scheme_macro!("(define-syntax sum-groups (syntax-rules () ((sum-groups ((first rest ...) ...)) (list (+ first rest ...) ...))))"),
-                ("(sum-groups ((1 2 3) (10 20) (100)))",
+                scheme_macro!(
+                    "(define-syntax sum-groups (syntax-rules () ((sum-groups ((first rest ...) ...)) (list (+ first rest ...) ...))))"
+                ),
+                (
+                    "(sum-groups ((1 2 3) (10 20) (100)))",
                     Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::Integer(6),
                         ProcessedValue::Integer(30),
                         ProcessedValue::Integer(100),
-                    ])))),
-                ("(sum-groups ((5) (7) (9)))",
+                    ]))),
+                ),
+                (
+                    "(sum-groups ((5) (7) (9)))",
                     Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::Integer(5),
                         ProcessedValue::Integer(7),
                         ProcessedValue::Integer(9),
-                    ])))),
+                    ]))),
+                ),
             ]),
-
             // Test 5: R7RS-style do macro simulation (simplified - structure only, no looping)
             // This demonstrates the core pattern matching that was broken
             TestEnvironment(vec![
                 // Define variables used in step expressions
                 ("(define i 999)", Success(ProcessedValue::Unspecified)),
                 ("(define j 777)", Success(ProcessedValue::Unspecified)),
-                scheme_macro!(r#"
+                scheme_macro!(
+                    r#"
 (define-syntax do-bindings
   (syntax-rules ()
     ((do-bindings ((var init step ...) ...))
      (list (list 'var init (list step ...)) ...))))
-"#),
-                ("(do-bindings ((i 0 (+ i 1)) (j 10 (- j 1))))",
+"#
+                ),
+                (
+                    "(do-bindings ((i 0 (+ i 1)) (j 10 (- j 1))))",
                     Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::OwnedSymbol("i".to_string()),
                             ProcessedValue::Integer(0),
                             ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                                ProcessedValue::Integer(1000),  // (+ 999 1)
+                                ProcessedValue::Integer(1000), // (+ 999 1)
                             ])),
                         ])),
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::OwnedSymbol("j".to_string()),
                             ProcessedValue::Integer(10),
                             ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                                ProcessedValue::Integer(776),  // (- 777 1)
+                                ProcessedValue::Integer(776), // (- 777 1)
                             ])),
                         ])),
-                    ])))),
-                ("(do-bindings ((i 0 (+ i 1)) (j 10)))",
+                    ]))),
+                ),
+                (
+                    "(do-bindings ((i 0 (+ i 1)) (j 10)))",
                     Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::OwnedSymbol("i".to_string()),
                             ProcessedValue::Integer(0),
                             ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                                ProcessedValue::Integer(1000),  // (+ 999 1)
+                                ProcessedValue::Integer(1000), // (+ 999 1)
                             ])),
                         ])),
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::OwnedSymbol("j".to_string()),
                             ProcessedValue::Integer(10),
-                            ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                            ])),
+                            ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
                         ])),
-                    ])))),
-                ("(do-bindings ((i 0) (j 10)))",
+                    ]))),
+                ),
+                (
+                    "(do-bindings ((i 0) (j 10)))",
                     Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::OwnedSymbol("i".to_string()),
                             ProcessedValue::Integer(0),
-                            ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                            ])),
+                            ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
                         ])),
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::OwnedSymbol("j".to_string()),
                             ProcessedValue::Integer(10),
-                            ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                            ])),
+                            ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
                         ])),
-                    ])))),
+                    ]))),
+                ),
             ]),
-
             // Test 6: Multiple optional ellipsis patterns in same list
             TestEnvironment(vec![
                 // Define symbols used in the test
                 ("(define a 100)", Success(ProcessedValue::Unspecified)),
                 ("(define b 200)", Success(ProcessedValue::Unspecified)),
                 ("(define c 300)", Success(ProcessedValue::Unspecified)),
-                scheme_macro!(r#"
+                scheme_macro!(
+                    r#"
 (define-syntax multi-optional
   (syntax-rules ()
     ((multi-optional ((a b ...) ...) ((x y ...) ...))
      (list (list (list a b ...) ...) (list (list x y ...) ...)))))
-"#),
-                ("(multi-optional ((1 2 3) (4)) ((a b) (c)))",
+"#
+                ),
+                (
+                    "(multi-optional ((1 2 3) (4)) ((a b) (c)))",
                     Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::List(std::borrow::Cow::Owned(vec![
@@ -3853,25 +4767,28 @@ mod comprehensive_evaluator_tests {
                         ])),
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                                ProcessedValue::Integer(100),  // a
-                                ProcessedValue::Integer(200),  // b
+                                ProcessedValue::Integer(100), // a
+                                ProcessedValue::Integer(200), // b
                             ])),
                             ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                                ProcessedValue::Integer(300),  // c
+                                ProcessedValue::Integer(300), // c
                             ])),
                         ])),
-                    ])))),
+                    ]))),
+                ),
             ]),
-
             // Test 7: Deep nesting with optional ellipsis
             TestEnvironment(vec![
-                scheme_macro!(r#"
+                scheme_macro!(
+                    r#"
 (define-syntax deep-optional
   (syntax-rules ()
     ((deep-optional (((a b ...) ...) ...))
      (list (list (list a b ...) ...) ...))))
-"#),
-                ("(deep-optional (((1 2) (3)) ((4) (5 6 7))))",
+"#
+                ),
+                (
+                    "(deep-optional (((1 2) (3)) ((4) (5 6 7))))",
                     Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::List(std::borrow::Cow::Owned(vec![
@@ -3892,32 +4809,40 @@ mod comprehensive_evaluator_tests {
                                 ProcessedValue::Integer(7),
                             ])),
                         ])),
-                    ])))),
+                    ]))),
+                ),
             ]),
-
             // Test 8: Empty outer list
             TestEnvironment(vec![
-                scheme_macro!("(define-syntax test-empty (syntax-rules () ((test-empty ((a b ...) ...)) (list (list 'a b ...) ...))))"),
-                ("(test-empty ())", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                ])))),
+                scheme_macro!(
+                    "(define-syntax test-empty (syntax-rules () ((test-empty ((a b ...) ...)) (list (list 'a b ...) ...))))"
+                ),
+                (
+                    "(test-empty ())",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![]))),
+                ),
             ]),
-
             // Test 9: Single item with no trailing
             TestEnvironment(vec![
-                scheme_macro!("(define-syntax test-single (syntax-rules () ((test-single ((a b ...) ...)) (list (list 'a b ...) ...))))"),
-                ("(test-single ((x)))", Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                    ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                        ProcessedValue::OwnedSymbol("x".to_string()),
-                    ])),
-                ])))),
+                scheme_macro!(
+                    "(define-syntax test-single (syntax-rules () ((test-single ((a b ...) ...)) (list (list 'a b ...) ...))))"
+                ),
+                (
+                    "(test-single ((x)))",
+                    Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                        ProcessedValue::List(std::borrow::Cow::Owned(vec![
+                            ProcessedValue::OwnedSymbol("x".to_string()),
+                        ])),
+                    ]))),
+                ),
             ]),
-
             // Test 10: Realistic do macro pattern (structure only, no actual looping)
             TestEnvironment(vec![
                 // Define variables used in test/result/step expressions
                 ("(define i 999)", Success(ProcessedValue::Unspecified)),
                 ("(define j 888)", Success(ProcessedValue::Unspecified)),
-                scheme_macro!(r#"
+                scheme_macro!(
+                    r#"
 (define-syntax do-structure
   (syntax-rules ()
     ((do-structure ((var init step ...) ...) (test-expr result ...))
@@ -3925,8 +4850,10 @@ mod comprehensive_evaluator_tests {
            'test test-expr
            'results (list result ...)
            'steps (list (list step ...) ...)))))
-"#),
-                (r#"(do-structure ((i 0 (+ i 1)) (j 10 (- j 1))) ((>= i 5) i j))"#,
+"#
+                ),
+                (
+                    r#"(do-structure ((i 0 (+ i 1)) (j 10 (- j 1))) ((>= i 5) i j))"#,
                     Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::OwnedSymbol("init-bindings".to_string()),
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
@@ -3940,23 +4867,25 @@ mod comprehensive_evaluator_tests {
                             ])),
                         ])),
                         ProcessedValue::OwnedSymbol("test".to_string()),
-                        ProcessedValue::Boolean(true),  // (>= 999 5) = true
+                        ProcessedValue::Boolean(true), // (>= 999 5) = true
                         ProcessedValue::OwnedSymbol("results".to_string()),
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                            ProcessedValue::Integer(999),  // i
-                            ProcessedValue::Integer(888),  // j
+                            ProcessedValue::Integer(999), // i
+                            ProcessedValue::Integer(888), // j
                         ])),
                         ProcessedValue::OwnedSymbol("steps".to_string()),
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                                ProcessedValue::Integer(1000),  // (+ 999 1)
+                                ProcessedValue::Integer(1000), // (+ 999 1)
                             ])),
                             ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                                ProcessedValue::Integer(887),  // (- 888 1)
+                                ProcessedValue::Integer(887), // (- 888 1)
                             ])),
                         ])),
-                    ])))),
-                (r#"(do-structure ((i 0 (+ i 1)) (j 10)) ((>= i 5) i j))"#,
+                    ]))),
+                ),
+                (
+                    r#"(do-structure ((i 0 (+ i 1)) (j 10)) ((>= i 5) i j))"#,
                     Success(ProcessedValue::List(std::borrow::Cow::Owned(vec![
                         ProcessedValue::OwnedSymbol("init-bindings".to_string()),
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
@@ -3970,21 +4899,21 @@ mod comprehensive_evaluator_tests {
                             ])),
                         ])),
                         ProcessedValue::OwnedSymbol("test".to_string()),
-                        ProcessedValue::Boolean(true),  // (>= 999 5) = true
+                        ProcessedValue::Boolean(true), // (>= 999 5) = true
                         ProcessedValue::OwnedSymbol("results".to_string()),
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                            ProcessedValue::Integer(999),  // i
-                            ProcessedValue::Integer(888),  // j
+                            ProcessedValue::Integer(999), // i
+                            ProcessedValue::Integer(888), // j
                         ])),
                         ProcessedValue::OwnedSymbol("steps".to_string()),
                         ProcessedValue::List(std::borrow::Cow::Owned(vec![
                             ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                                ProcessedValue::Integer(1000),  // (+ 999 1)
+                                ProcessedValue::Integer(1000), // (+ 999 1)
                             ])),
-                            ProcessedValue::List(std::borrow::Cow::Owned(vec![
-                            ])),
+                            ProcessedValue::List(std::borrow::Cow::Owned(vec![])),
                         ])),
-                    ])))),
+                    ]))),
+                ),
             ]),
         ];
         run_tests_in_environment(test_cases);

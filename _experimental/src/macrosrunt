@@ -1,0 +1,427 @@
+// Macro expansion system - implements R7RS syntax-rules macros
+use crate::value::{Environment, Value};
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+
+pub const STANDARD_DERIVED_EXPRESSIONS: &[&str] = &[
+    "and", "or", "when", "unless", "cond", "case", "let", "let*", "do",
+];
+
+#[derive(Debug, Clone)]
+pub struct MacroError(pub String);
+
+impl std::fmt::Display for MacroError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Macro error: {}", self.0)
+    }
+}
+
+impl std::error::Error for MacroError {}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MacroPattern {
+    Literal(String),
+    Variable(String),
+    Wildcard,
+    List(Vec<MacroPattern>),
+    Ellipsis(Box<MacroPattern>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MacroTemplate {
+    Literal(Value),
+    Variable(String),
+    List(Vec<MacroTemplate>),
+    Ellipsis(Box<MacroTemplate>),
+}
+
+#[derive(Debug, Clone)]
+pub struct SyntaxRule {
+    pub pattern: MacroPattern,
+    pub template: MacroTemplate,
+}
+
+#[derive(Debug, Clone)]
+pub struct MacroDefinition {
+    pub name: String,
+    pub literals: Vec<String>,
+    pub rules: Vec<SyntaxRule>,
+}
+
+pub type PatternBindings = HashMap<String, Vec<Value>>;
+
+pub struct MacroExpander {
+    macros: HashMap<String, MacroDefinition>,
+    known_macro_symbols: HashSet<String>,
+    expansion_dirty: bool,
+}
+
+impl MacroExpander {
+    pub fn new(_environment: Rc<Environment>) -> Self {
+        MacroExpander {
+            macros: HashMap::new(),
+            known_macro_symbols: HashSet::new(),
+            expansion_dirty: false,
+        }
+    }
+
+    pub fn expand(&mut self, ast: &Value) -> Result<Value, MacroError> {
+        self.expand_until_stable(ast)
+    }
+
+    fn expand_until_stable(&mut self, ast: &Value) -> Result<Value, MacroError> {
+        use std::borrow::Cow;
+        const MAX_EXPANSIONS: usize = 100;
+        let mut current = Cow::Borrowed(ast);
+        let mut expansion_count = 0;
+
+        loop {
+            self.expansion_dirty = false;
+            let expanded = self.expand_once(&current)?;
+
+            if !self.expansion_dirty {
+                return Ok(current.into_owned());
+            }
+
+            current = Cow::Owned(expanded);
+            expansion_count += 1;
+
+            if expansion_count > MAX_EXPANSIONS {
+                return Err(MacroError(format!(
+                    "Expression expansion exceeded {} iterations. This suggests infinite macro expansion.",
+                    MAX_EXPANSIONS
+                )));
+            }
+        }
+    }
+
+    fn expand_once(&mut self, ast: &Value) -> Result<Value, MacroError> {
+        match ast {
+            Value::List(items) if !items.is_empty() => {
+                if let Value::Symbol(name) = &items[0] {
+                    if name == "define-syntax" {
+                        return self.handle_define_syntax(items);
+                    }
+                    if let Some(macro_def) = self.get_macro(name) {
+                        self.expansion_dirty = true;
+                        return self.expand_macro_rule(&macro_def, &items[1..]);
+                    }
+                }
+
+                let expanded_items: Result<Vec<_>, _> = items
+                    .iter()
+                    .map(|item| self.expand_once(item))
+                    .filter(|res| !matches!(res, Ok(Value::Unspecified)))
+                    .collect();
+                
+                let final_items = expanded_items?;
+                if final_items != *items {
+                    self.expansion_dirty = true;
+                }
+                Ok(Value::List(final_items))
+            }
+            _ => Ok(ast.clone()),
+        }
+    }
+
+    fn handle_define_syntax(&mut self, items: &[Value]) -> Result<Value, MacroError> {
+        if items.len() != 3 {
+            return Err(MacroError("define-syntax requires exactly 2 arguments".to_string()));
+        }
+        let name = match &items[1] {
+            Value::Symbol(s) => s.clone(),
+            _ => return Err(MacroError("define-syntax name must be a symbol".to_string())),
+        };
+        let macro_def = self.parse_syntax_rules(&name, &items[2])?;
+        self.store_macro(macro_def)?;
+        Ok(Value::Unspecified)
+    }
+
+    fn parse_syntax_rules(&self, name: &str, syntax_rules: &Value) -> Result<MacroDefinition, MacroError> {
+        match syntax_rules {
+            Value::List(items) if items.len() >= 2 && matches!(&items[0], Value::Symbol(s) if s == "syntax-rules") => {
+                let (literals, rules_start_idx) = self.parse_literals(&items[1])?;
+                let rules_values = if rules_start_idx == 1 { &items[2..] } else { &items[1..] };
+
+                let rules = rules_values.iter()
+                    .map(|rule_item| self.parse_rule(rule_item, &literals))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                if rules.is_empty() {
+                    return Err(MacroError("syntax-rules must have at least one rule".to_string()));
+                }
+
+                Ok(MacroDefinition { name: name.to_string(), literals, rules })
+            }
+            _ => Err(MacroError("Invalid syntax-rules form".to_string())),
+        }
+    }
+
+    fn parse_literals(&self, literals_val: &Value) -> Result<(Vec<String>, usize), MacroError> {
+        match literals_val {
+            Value::List(items) => {
+                let literals = items.iter().map(|item| match item {
+                    Value::Symbol(s) => Ok(s.clone()),
+                    _ => Err(MacroError("Literals must be symbols".to_string())),
+                }).collect::<Result<Vec<_>, _>>()?;
+                Ok((literals, 2))
+            }
+            _ => Ok((vec![], 1)),
+        }
+    }
+
+    fn parse_rule(&self, rule: &Value, literals: &[String]) -> Result<SyntaxRule, MacroError> {
+        match rule {
+            Value::List(items) if items.len() == 2 => {
+                let pattern = self.parse_pattern(&items[0], literals)?;
+                let template = self.parse_template(&items[1])?;
+                Ok(SyntaxRule { pattern, template })
+            }
+            _ => Err(MacroError("Rule must be a list of pattern and template".to_string())),
+        }
+    }
+
+    fn parse_pattern(&self, pattern: &Value, literals: &[String]) -> Result<MacroPattern, MacroError> {
+        match pattern {
+            Value::Symbol(s) => {
+                if literals.contains(s) { Ok(MacroPattern::Literal(s.clone())) }
+                else if s == "_" { Ok(MacroPattern::Wildcard) }
+                else { Ok(MacroPattern::Variable(s.clone())) }
+            }
+            Value::List(items) => {
+                let mut patterns = Vec::new();
+                let mut it = items.iter().peekable();
+                while let Some(item) = it.next() {
+                    let sub_pattern = self.parse_pattern(item, literals)?;
+                    if let Some(&Value::Symbol(s)) = it.peek() {
+                        if s == "..." {
+                            it.next(); // consume ellipsis
+                            patterns.push(MacroPattern::Ellipsis(Box::new(sub_pattern)));
+                            continue;
+                        }
+                    }
+                    patterns.push(sub_pattern);
+                }
+                Ok(MacroPattern::List(patterns))
+            }
+            _ => Ok(MacroPattern::Literal(pattern.to_string())),
+        }
+    }
+
+    fn parse_template(&self, template: &Value) -> Result<MacroTemplate, MacroError> {
+        match template {
+            Value::Symbol(s) => Ok(MacroTemplate::Variable(s.clone())),
+            Value::List(items) => {
+                let mut templates = Vec::new();
+                let mut it = items.iter().peekable();
+                while let Some(item) = it.next() {
+                    let sub_template = self.parse_template(item)?;
+                    if let Some(&Value::Symbol(s)) = it.peek() {
+                        if s == "..." {
+                            it.next(); // consume ellipsis
+                            templates.push(MacroTemplate::Ellipsis(Box::new(sub_template)));
+                            continue;
+                        }
+                    }
+                    templates.push(sub_template);
+                }
+                Ok(MacroTemplate::List(templates))
+            }
+            _ => Ok(MacroTemplate::Literal(template.clone())),
+        }
+    }
+
+    fn expand_macro_rule(&mut self, macro_def: &MacroDefinition, args: &[Value]) -> Result<Value, MacroError> {
+        for rule in &macro_def.rules {
+            let mut bindings = PatternBindings::new();
+            if self.match_pattern(&rule.pattern, args, &mut bindings) {
+                return self.expand_template(&rule.template, &bindings);
+            }
+        }
+        Err(MacroError(format!("No matching rule for macro {}", macro_def.name)))
+    }
+
+    fn match_pattern(&self, pattern: &MacroPattern, values: &[Value], bindings: &mut PatternBindings) -> bool {
+        if let MacroPattern::List(patterns) = pattern {
+            return self.match_list_pattern(patterns, values, bindings).is_ok();
+        }
+        false
+    }
+
+    fn match_list_pattern<'a>(&self, patterns: &[MacroPattern], values: &'a [Value], bindings: &mut PatternBindings) -> Result<&'a [Value], ()> {
+        let mut value_idx = 0;
+        let mut pattern_idx = 0;
+
+        while pattern_idx < patterns.len() {
+            let pattern = &patterns[pattern_idx];
+            if let MacroPattern::Ellipsis(sub_pattern) = pattern {
+                let next_pattern = patterns.get(pattern_idx + 1);
+                let mut ellipsis_matches = 0;
+                
+                loop {
+                    if let Some(_np) = next_pattern {
+                        let mut temp_bindings = bindings.clone();
+                        if self.match_list_pattern(&patterns[pattern_idx + 1..], &values[value_idx + ellipsis_matches..], &mut temp_bindings).is_ok() {
+                            break;
+                        }
+                    }
+                    if value_idx + ellipsis_matches >= values.len() { break; }
+
+                    let mut temp_bindings = PatternBindings::new();
+                    if self.match_single_pattern(sub_pattern, &values[value_idx + ellipsis_matches..], &mut temp_bindings).is_ok() {
+                        for (key, mut vals) in temp_bindings {
+                            bindings.entry(key).or_default().append(&mut vals);
+                        }
+                        ellipsis_matches += 1;
+                    } else {
+                        break;
+                    }
+                }
+                value_idx += ellipsis_matches;
+                pattern_idx += 1;
+            } else {
+                if value_idx >= values.len() { return Err(()); }
+                self.match_single_pattern(pattern, &values[value_idx..], bindings)?;
+                value_idx += 1;
+                pattern_idx += 1;
+            }
+        }
+
+        if value_idx == values.len() { Ok(&values[value_idx..]) } else { Err(()) }
+    }
+
+    fn match_single_pattern<'a>(&self, pattern: &MacroPattern, values: &'a [Value], bindings: &mut PatternBindings) -> Result<&'a [Value], ()> {
+        if values.is_empty() { return Err(()); }
+        let value = &values[0];
+        let remaining_values = &values[1..];
+
+        match pattern {
+            MacroPattern::Literal(lit) => if let Value::Symbol(s) = value { if s == lit { return Ok(remaining_values); } },
+            MacroPattern::Variable(name) => {
+                bindings.entry(name.clone()).or_default().push(value.clone());
+                return Ok(remaining_values);
+            }
+            MacroPattern::Wildcard => return Ok(remaining_values),
+            MacroPattern::List(sub_patterns) => {
+                if let Value::List(sub_values) = value {
+                    if self.match_list_pattern(sub_patterns, sub_values, bindings)?.is_empty() {
+                        return Ok(remaining_values);
+                    }
+                }
+            }
+            _ => {}
+        }
+        Err(())
+    }
+
+    fn expand_template(&self, template: &MacroTemplate, bindings: &PatternBindings) -> Result<Value, MacroError> {
+        match template {
+            MacroTemplate::Literal(val) => Ok(val.clone()),
+            MacroTemplate::Variable(name) => {
+                if let Some(values) = bindings.get(name) {
+                    if values.len() == 1 { Ok(values[0].clone()) }
+                    else { Err(MacroError(format!("Ellipsis variable {} used in non-ellipsis context", name))) }
+                } else {
+                    Ok(Value::Symbol(name.clone()))
+                }
+            }
+            MacroTemplate::List(templates) => {
+                let mut items = Vec::new();
+                for t in templates {
+                    if let MacroTemplate::Ellipsis(sub_template) = t {
+                        let expanded_ellipsis = self.expand_ellipsis_template(sub_template, bindings)?;
+                        if let Value::List(mut expanded_items) = expanded_ellipsis {
+                            items.append(&mut expanded_items);
+                        }
+                    } else {
+                        items.push(self.expand_template(t, bindings)?);
+                    }
+                }
+                Ok(Value::List(items))
+            }
+            MacroTemplate::Ellipsis(_) => Err(MacroError("Ellipsis must be inside a list template".to_string())),
+        }
+    }
+
+    fn expand_ellipsis_template(&self, sub_template: &MacroTemplate, bindings: &PatternBindings) -> Result<Value, MacroError> {
+        let vars = self.get_vars_in_template(sub_template);
+        if vars.is_empty() {
+            return self.expand_template(sub_template, bindings);
+        }
+
+        let mut num_repetitions = 0;
+        if let Some(var) = vars.iter().next() {
+            if let Some(values) = bindings.get(var) {
+                num_repetitions = values.len();
+            }
+        }
+
+        for var in &vars {
+            if let Some(values) = bindings.get(var) {
+                if values.len() != num_repetitions {
+                    return Err(MacroError(format!("Inconsistent number of matches for ellipsis variables: {} has {}, expected {}", var, values.len(), num_repetitions)));
+                }
+            }
+        }
+
+        let mut result_items = Vec::new();
+        for i in 0..num_repetitions {
+            let mut local_bindings = PatternBindings::new();
+            for var in &vars {
+                if let Some(values) = bindings.get(var) {
+                    local_bindings.insert(var.clone(), vec![values[i].clone()]);
+                }
+            }
+            for (key, val) in bindings {
+                if !vars.contains(key) {
+                    local_bindings.insert(key.clone(), val.clone());
+                }
+            }
+            result_items.push(self.expand_template(sub_template, &local_bindings)?);
+        }
+        Ok(Value::List(result_items))
+    }
+
+    fn get_vars_in_template(&self, template: &MacroTemplate) -> HashSet<String> {
+        let mut vars = HashSet::new();
+        match template {
+            MacroTemplate::Variable(name) => { vars.insert(name.clone()); }
+            MacroTemplate::List(templates) => {
+                for t in templates {
+                    vars.extend(self.get_vars_in_template(t));
+                }
+            }
+            MacroTemplate::Ellipsis(sub_template) => {
+                vars.extend(self.get_vars_in_template(sub_template));
+            }
+            _ => {}
+        }
+        vars
+    }
+
+    fn store_macro(&mut self, macro_def: MacroDefinition) -> Result<(), MacroError> {
+        let name = macro_def.name.clone();
+        self.macros.insert(name.clone(), macro_def);
+        self.known_macro_symbols.insert(name);
+        Ok(())
+    }
+
+    fn get_macro(&self, name: &str) -> Option<MacroDefinition> {
+        self.macros.get(name).cloned()
+    }
+
+    pub fn load_prelude(&mut self) -> Result<(), MacroError> {
+        let prelude_path = "prelude/macros.scm";
+        let prelude_content = std::fs::read_to_string(prelude_path)
+            .map_err(|e| MacroError(format!("Failed to read prelude file: {}", e)))?;
+
+        let expressions = crate::parser::parse_multiple(&prelude_content)
+            .map_err(|e| MacroError(format!("Failed to parse prelude file: {}", e)))?;
+
+        for expr in expressions {
+            self.expand_once(&expr)?;
+        }
+
+        Ok(())
+    }
+}

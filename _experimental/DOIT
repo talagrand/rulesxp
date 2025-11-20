@@ -1,0 +1,100 @@
+Literal shadowing - Macro literals use structural matching, not free-identifier=?
+Forward macro references - Macro expansion during scan breaks forward refs
+
+Underscore wildcard patterns
+
+Hygienic macro expansion
+Documented restrictions (core language limitations, not macro system):
+
+
+Add identifier binding context tracking (6 hours)
+Implement free-identifier=? for literal matching (4 hours)
+Test suite: 15+ cases for shadowed literals (2 hours)
+Integration testing (2 hours)
+Result: Feature-complete syntax-rules! 🎉
+
+
+
+
+Missing Hygiene
+
+
+Refactor match_list_pattern: Correct the ellipsis matching logic to properly handle sub-patterns.
+Fix Zero-Match Ellipsis: Ensure all variables in a zero-match ellipsis pattern get an empty binding.
+ Make instantiate_template more robust in handling the distinction between pattern variables and literal symbols.
+r7RS Deviation: Template Expansion in Quoted Forms
+
+
+
+
+
+
+Refactor for Simplicity: The pattern matching and template instantiation code can be simplified. The current implementation has redundant logic and over-complicates ellipsis handling.
+Clarify R7RS Deviations: The code correctly notes some deviations but misses others. We should document them clearly and, where possible, move closer to the standard.
+
+
+
+
+
+Simplification: Redundant match_pattern and match_pattern_recursive
+Problem: You have match_pattern which creates a HashMap and then calls match_pattern_recursive. This is an unnecessary layer of indirection.
+Proposed Fix: The logic can be streamlined into a single match_pattern function that takes a mutable bindings map as an argument.
+Refactor match_list_pattern: Correct the ellipsis matching logic to properly handle sub-patterns.
+Simplify Template Parsing: Remove the _pattern_vars argument from parse_template_with_pattern_vars and parse_rule to simplify the parsing logic.
+Improve Template Instantiation: Make instantiate_template more robust in handling the distinction between pattern variables and literal symbols.
+When parsing a syntax-rules form, identify all symbols in the templates that are not pattern variables. These are the "introduced" identifiers.
+When instantiating the template, replace each introduced identifier with a fresh, unique symbol (e.g., x_1, x_2) using the gensym_counter.
+You will need to track the mapping from the original introduced name to the generated name so that all instances of the same introduced identifier get the same fresh name within a single expansion.
+
+
+ Simplification of parse_template_with_pattern_vars
+The _pattern_vars argument is passed down but not used, which adds unnecessary complexity.
+
+The Problem: The function signature is parse_template_with_pattern_vars(&self, template: &Value, _pattern_vars: &HashMap<String, usize>). The _pattern_vars map is intended to help distinguish pattern variables from literals inside a quote, but the logic doesn't actually use it. The template parser treats any symbol as a MacroTemplate::Variable. The decision of whether it's actually a pattern variable is deferred until instantiate_template.
+
+Suggestion: This is actually the correct R7RS behavior, so the implementation is right but the function signature is misleading. You can simplify the code by removing the _pattern_vars parameter entirely.
+Simplify the Template Parser: Remove the unused _pattern_vars parameter from parse_template_with_pattern_vars and rename it to parse_template. The current implementation correctly reflects R7RS semantics, and simplifying the signature will make the code clearer.
+
+
+
+
+====
+
+
+. Pattern Parsing (parse_pattern_with_literals)
+Critical Bug: Incorrect Handling of Literal Ellipsis (...)
+
+Problem: The parser has a fundamental flaw in how it handles the ... symbol. It immediately treats ... as an ellipsis operator and either pairs it with a preceding pattern or throws an error. It fails to first check if ... is in the literals list provided by syntax-rules.
+Impact: This is the direct cause of the test-literal-ellipsis failure. The test (syntax-rules (...) ((_ ...) ...)) correctly declares ... as a literal, but the parser is not respecting this declaration.
+Fix: The logic must be inverted. When a symbol is encountered, the first check should be if literals.contains(symbol). Only if it is not a literal should it be considered a pattern variable or the ellipsis operator.
+Deficiency: No Support for Underscore (_) as a True Wildcard
+
+Problem: The parser treats _ as a standard MacroPattern::Variable. While the matching logic has a special case to avoid binding it, this is inconsistent. A true wildcard should not be a variable at all.
+Impact: This can lead to subtle bugs and makes the code less clear. For example, validation logic might incorrectly check the usage of _ in a template.
+Fix: A new enum variant, MacroPattern::Wildcard, should be introduced. The parser should convert any _ that is not in the literals list into this variant.
+2. Pattern Matching (match_list_pattern)
+Critical Bug: Flawed Ellipsis Matching Logic
+
+Problem: The current implementation for matching an ellipsis pattern like (sub_pattern ...) against a list of inputs is incorrect. It iterates through the input items and attempts to match sub_pattern against each one. However, it merges the resulting bindings into a single, flat Vec<Value> for each variable.
+Impact: This is the direct cause of the test-ellipsis-list failure (Unbound variable: a). The pattern ((name expr) ...) is matched against ((a 1) (b 2)). The code tries to match the sub-pattern (name expr) against the entire list (a 1) instead of matching the contents of the sub-pattern against the contents of the input list. The logic does not correctly "descend" into sub-patterns.
+Fix: The matching logic for an ellipsis needs to be significantly reworked. When sub_pattern is a List, the corresponding input item must also be a List, and the function should recursively call match_list_pattern on their respective contents. The bindings from each iteration must be carefully collected and grouped.
+Bug: Incorrect Handling of Zero-Match Ellipsis
+
+Problem: When an ellipsis pattern matches zero items, the current logic does not reliably create empty bindings for the variables within the pattern.
+Impact: This causes the test-zero-ellipsis-nested test to fail. The template expansion then fails because it cannot find the variables that should have been bound (to empty lists).
+Fix: Before attempting to match an ellipsis, the variables within the sub-pattern should be identified. If the loop runs zero times, these variables must be explicitly bound to empty Vec<Value> collections in the final bindings.
+3. Template Instantiation (instantiate_template_impl and expand_ellipsis)
+Structural Issue: Complex and Brittle Ellipsis Expansion
+Problem: The expand_ellipsis function is complex. It re-collects template variables, calculates a maximum length, and then constructs new binding maps for each iteration. This process is inefficient and prone to errors, especially with nested ellipses.
+Impact: The logic is hard to debug and does not naturally handle nested structures. The current implementation flattens nested results, which is incorrect.
+Fix: The PatternBindings data structure (HashMap<String, Vec<Value>>) is insufficient for nested ellipses. A better structure would be a recursive one, such as enum BindingValue { Single(Value), Group(Vec<BindingValue>) }. This would allow match_list_pattern to store bindings in a structure that mirrors the pattern's nesting. The instantiate_template function could then traverse this structure without the complex iteration logic currently in expand_ellipsis.
+
+
+
+====
+
+
+Structural Issue: Complex and Brittle Ellipsis Expansion
+Status: Still Relevant (as a potential architectural improvement).
+Analysis: This note makes a high-level architectural point. It argues that the current PatternBindings structure (HashMap<String, Vec<Value>>) is insufficient for correctly handling nested ellipses (e.g., ((a ...) ...)). While the current system may handle simple cases, the note's suggestion to use a recursive binding structure (e.g., enum BindingValue { Single(Value), Group(Vec<BindingValue>) }) is a valid and powerful idea for making nested ellipsis expansion more robust and less complex. This is a significant refactoring that would improve support for advanced R7RS patterns.
+

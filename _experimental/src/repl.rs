@@ -1,9 +1,9 @@
 // REPL module - Interactive Read-Eval-Print Loop with rustyline
 
 use crate::macros::MacroExpander;
-use crate::{compile, parse, VM};
-use rustyline::error::ReadlineError;
+use crate::{VM, compile, parse};
 use rustyline::DefaultEditor;
+use rustyline::error::ReadlineError;
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!("SampleScheme v0.1.0 - A minimal R7RS Scheme interpreter");

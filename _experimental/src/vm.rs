@@ -435,7 +435,7 @@ impl VM {
         let mut macro_expander = MacroExpander::new(self.current_env.clone());
         if let Err(e) = macro_expander.load_prelude() {
             return Err(RuntimeError::new(format!(
-                "Failed to load macro prelude: {}\nThe interpreter cannot continue with a broken prelude.", 
+                "Failed to load macro prelude: {}\nThe interpreter cannot continue with a broken prelude.",
                 e
             )));
         }
@@ -448,7 +448,7 @@ impl VM {
                         Ok(expanded) => expanded,
                         Err(e) => {
                             return Err(RuntimeError::new(format!(
-                                "Failed to expand prelude function '{}': {}\nThe interpreter cannot continue with a broken prelude.", 
+                                "Failed to expand prelude function '{}': {}\nThe interpreter cannot continue with a broken prelude.",
                                 expression, e
                             )));
                         }
@@ -467,7 +467,7 @@ impl VM {
                                     continue;
                                 }
                                 return Err(RuntimeError::new(format!(
-                                    "Failed to execute prelude function '{}': {}\nThe interpreter cannot continue with a broken prelude.", 
+                                    "Failed to execute prelude function '{}': {}\nThe interpreter cannot continue with a broken prelude.",
                                     expanded_expression, e
                                 )));
                             }
@@ -482,7 +482,7 @@ impl VM {
                                 continue;
                             }
                             return Err(RuntimeError::new(format!(
-                                "Failed to compile prelude function '{}': {}\nThe interpreter cannot continue with a broken prelude.", 
+                                "Failed to compile prelude function '{}': {}\nThe interpreter cannot continue with a broken prelude.",
                                 expanded_expression, e
                             )));
                         }
@@ -491,7 +491,7 @@ impl VM {
             }
             Err(e) => {
                 return Err(RuntimeError::new(format!(
-                    "Failed to parse function prelude: {}\nThe interpreter cannot continue with a broken prelude.", 
+                    "Failed to parse function prelude: {}\nThe interpreter cannot continue with a broken prelude.",
                     e
                 )));
             }
@@ -783,7 +783,7 @@ impl VM {
             _ => {
                 return Err(self.create_simple_runtime_error(
                     "Function parameters must be symbols or list of symbols".to_string(),
-                ))
+                ));
             }
         };
 
@@ -920,7 +920,7 @@ impl VM {
                             return Err(self.create_runtime_error(
                                 format!("Undefined variable: {}", name),
                                 module,
-                            ))
+                            ));
                         }
                     }
                 }
@@ -1485,7 +1485,7 @@ impl VM {
                             return Err(self.create_runtime_error(
                                 "Expected string for function name".to_string(),
                                 module,
-                            ))
+                            ));
                         }
                     };
 
@@ -1510,7 +1510,7 @@ impl VM {
                             return Err(self.create_runtime_error(
                                 "Parameters must be a list".to_string(),
                                 module,
-                            ))
+                            ));
                         }
                     };
 

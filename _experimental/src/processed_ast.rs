@@ -69,7 +69,7 @@
 //! ```
 
 use crate::super_builtins::{
-    builtin_functions, ProcessedArity, ProcessedValue, SchemeStringInterner,
+    ProcessedArity, ProcessedValue, SchemeStringInterner, builtin_functions,
 };
 use crate::value::Value;
 use bumpalo::Bump;
@@ -583,6 +583,43 @@ impl ProcessedAST {
 }
 
 impl<'arena> ProcessedCompiler<'arena> {
+    /// R7RS Reserved Keywords - cannot be used as variable names
+    /// These are syntactic keywords and universal auxiliary keywords
+    const RESERVED_KEYWORDS: &'static [&'static str] = &[
+        // Core special forms
+        "if",
+        "define",
+        "set!",
+        "lambda",
+        "quote",
+        "begin",
+        "letrec",
+        "letrec*",
+        "define-syntax",
+        "syntax-rules",
+        // Quasiquote forms (only recognized in macro templates, but still reserved)
+        "quasiquote",
+        "unquote",
+        "unquote-splicing",
+        // Universal auxiliary keywords (R7RS 4.3.2)
+        "else",
+        "=>",
+        "_",
+        "...",
+    ];
+
+    /// Check if a name is a reserved keyword that cannot be bound
+    /// Returns an error if the name is reserved
+    fn check_not_keyword(&self, name: &str) -> Result<(), ProcessedCompileError> {
+        if Self::RESERVED_KEYWORDS.contains(&name) {
+            return Err(ProcessedCompileError::new(format!(
+                "Cannot bind to reserved keyword '{}'",
+                name
+            )));
+        }
+        Ok(())
+    }
+
     /// Compile a Value to ProcessedValue
     fn compile_value(
         &mut self,
@@ -734,6 +771,7 @@ impl<'arena> ProcessedCompiler<'arena> {
                         "Variable define requires exactly 1 value expression".to_string(),
                     ));
                 }
+                self.check_not_keyword(s)?;
                 let name = self.interner.get_or_intern(s);
                 (name, &elements[2])
             }
@@ -741,6 +779,7 @@ impl<'arena> ProcessedCompiler<'arena> {
             Value::List(func_def) if !func_def.is_empty() => {
                 match &func_def[0] {
                     Value::Symbol(func_name) => {
+                        self.check_not_keyword(func_name)?;
                         let name = self.interner.get_or_intern(func_name);
 
                         // Extract parameters: (func arg1 arg2 ...) -> (arg1 arg2 ...)
@@ -773,7 +812,7 @@ impl<'arena> ProcessedCompiler<'arena> {
                     _ => {
                         return Err(ProcessedCompileError::new(
                             "Function name in define must be a symbol".to_string(),
-                        ))
+                        ));
                     }
                 }
             }
@@ -781,7 +820,7 @@ impl<'arena> ProcessedCompiler<'arena> {
                 return Err(ProcessedCompileError::new(
                     "define first argument must be a symbol or function definition list"
                         .to_string(),
-                ))
+                ));
             }
         };
 
@@ -811,13 +850,16 @@ impl<'arena> ProcessedCompiler<'arena> {
 
         // Variable must be a symbol
         let name_symbol = match var {
-            Value::Symbol(s) => self.interner.get(s).ok_or_else(|| {
-                ProcessedCompileError::new(format!("Symbol not found in interner: {}", s))
-            })?,
+            Value::Symbol(s) => {
+                self.check_not_keyword(s)?;
+                self.interner.get(s).ok_or_else(|| {
+                    ProcessedCompileError::new(format!("Symbol not found in interner: {}", s))
+                })?
+            }
             _ => {
                 return Err(ProcessedCompileError::new(
                     "set! requires a symbol as first argument".to_string(),
-                ))
+                ));
             }
         };
 
@@ -844,6 +886,8 @@ impl<'arena> ProcessedCompiler<'arena> {
                 let mut param_symbols = Vec::new();
                 for param in param_list {
                     if let Value::Symbol(name) = param {
+                        // R7RS: Cannot bind to reserved keywords
+                        self.check_not_keyword(name)?;
                         param_symbols.push(self.interner.get_or_intern(name));
                     } else {
                         return Err(ProcessedCompileError::new(
@@ -855,12 +899,14 @@ impl<'arena> ProcessedCompiler<'arena> {
             }
             Value::Symbol(single_param) => {
                 // Single symbol = fully variadic
+                // R7RS: Cannot bind to reserved keywords (even for variadic param)
+                self.check_not_keyword(single_param)?;
                 (vec![self.interner.get_or_intern(single_param)], true)
             }
             _ => {
                 return Err(ProcessedCompileError::new(
                     "lambda parameters must be symbols or list of symbols".to_string(),
-                ))
+                ));
             }
         };
 
@@ -982,7 +1028,7 @@ impl<'arena> ProcessedCompiler<'arena> {
             _ => {
                 return Err(ProcessedCompileError::new(
                     "letrec bindings must be a list".to_string(),
-                ))
+                ));
             }
         };
 
@@ -1010,11 +1056,14 @@ impl<'arena> ProcessedCompiler<'arena> {
             match binding {
                 Value::List(binding_pair) if binding_pair.len() == 2 => {
                     let name = match &binding_pair[0] {
-                        Value::Symbol(name) => self.interner.get_or_intern(name),
+                        Value::Symbol(name) => {
+                            self.check_not_keyword(name)?;
+                            self.interner.get_or_intern(name)
+                        }
                         _ => {
                             return Err(ProcessedCompileError::new(
                                 "letrec binding variable must be a symbol".to_string(),
-                            ))
+                            ));
                         }
                     };
                     if !seen_names.insert(name) {
@@ -1028,7 +1077,7 @@ impl<'arena> ProcessedCompiler<'arena> {
                 _ => {
                     return Err(ProcessedCompileError::new(
                         "letrec binding must be a list of (variable init)".to_string(),
-                    ))
+                    ));
                 }
             }
         }
@@ -1073,7 +1122,7 @@ impl<'arena> ProcessedCompiler<'arena> {
             _ => {
                 return Err(ProcessedCompileError::new(
                     "letrec* bindings must be a list".to_string(),
-                ))
+                ));
             }
         };
 
@@ -1101,11 +1150,14 @@ impl<'arena> ProcessedCompiler<'arena> {
             match binding {
                 Value::List(binding_pair) if binding_pair.len() == 2 => {
                     let name = match &binding_pair[0] {
-                        Value::Symbol(name) => self.interner.get_or_intern(name),
+                        Value::Symbol(name) => {
+                            self.check_not_keyword(name)?;
+                            self.interner.get_or_intern(name)
+                        }
                         _ => {
                             return Err(ProcessedCompileError::new(
                                 "letrec* binding variable must be a symbol".to_string(),
-                            ))
+                            ));
                         }
                     };
                     if !seen_names.insert(name) {
@@ -1119,7 +1171,7 @@ impl<'arena> ProcessedCompiler<'arena> {
                 _ => {
                     return Err(ProcessedCompileError::new(
                         "letrec* binding must be a list of (variable init)".to_string(),
-                    ))
+                    ));
                 }
             }
         }

@@ -11,6 +11,8 @@
 //
 // This compilation happens once at macro definition time, enabling fast expansion later.
 //
+// **IMPORTANT:** Quasiquote depth of 0 means Normal context (not inside any quasiquote).
+//
 // **R7RS COMPLIANCE STATUS:**
 //
 // **CRITICAL GAP - NESTED ELLIPSIS:**
@@ -58,6 +60,23 @@ macro_rules! debug_trace {
             eprintln!("[MACRO DEBUG] {}", format!($($arg)*));
         }
     };
+}
+
+/// Context for parsing templates, tracking quote/quasiquote nesting
+///
+/// Quasiquote can be nested, and each level of nesting requires a corresponding unquote to escape.
+/// Example: ``(a ,(b ,c))` has quasiquote depth 2 for `c`, depth 1 for `b`, and depth 0 for `a`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseContext {
+    /// Normal context - pattern variables are substituted (quasiquote depth = 0)
+    Normal,
+    /// Inside a `(quote ...)` form - pattern variables become literals
+    /// Quote is "absolute" - you cannot escape from it
+    Quote,
+    /// Inside `(quasiquote ...)` with nesting depth (depth >= 1)
+    ///
+    /// Each unquote decreases depth by 1; at depth 0, we're back to Normal
+    Quasiquote(usize),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -404,7 +423,7 @@ fn compile_template(
     analyze_template(
         template,
         0,
-        false, // Not in a quote context initially
+        ParseContext::Normal, // Not in a quote context initially
         &mut template_identifiers,
         &mut pattern_var_depths,
         &pattern.variables,
@@ -454,7 +473,7 @@ fn compile_template(
 fn analyze_template(
     template: &MacroTemplate,
     current_depth: usize,
-    in_quote_context: bool,
+    context: ParseContext,
     identifiers: &mut HashSet<String>,
     var_depths: &mut HashMap<String, usize>,
     pattern_vars: &HashSet<String>,
@@ -463,12 +482,18 @@ fn analyze_template(
         MacroTemplate::Variable(name) => {
             identifiers.insert(name.clone());
 
-            // If in a quote, don't validate pattern variables. They are just symbols.
-            if in_quote_context {
-                return Ok(());
+            // Check if pattern variables should be substituted based on context
+            let should_substitute = match context {
+                ParseContext::Normal => true,
+                ParseContext::Quote => false,
+                ParseContext::Quasiquote(_) => false, // Variables in quasiquote are literal
+            };
+
+            if !should_substitute {
+                return Ok(()); // Variable is literal, no validation needed
             }
 
-            // Special check for underscore: only allowed in quote context
+            // Special check for underscore: only allowed in quote contexts
             if name == "_" {
                 return Err(MacroError(
                     "Underscore '_' cannot be used as a variable in a template. Use '(quote _)' for a literal underscore.".to_string()
@@ -492,38 +517,62 @@ fn analyze_template(
             // Literals (non-pattern variables) don't need depth tracking.
         }
         MacroTemplate::List(templates) => {
-            // Check for (quote ...) or (quasiquote ...) forms
-            // These forms require special handling: everything inside is literal
-            if let Some(MacroTemplate::Variable(quote_symbol)) = templates.first() {
-                if quote_symbol == "quote" || quote_symbol == "quasiquote" {
-                    // Validate the quote form structure
-                    if templates.len() != 2 {
-                        return Err(MacroError(format!(
-                            "Malformed {} form in template: expected ({} <datum>), found list with {} elements",
-                            quote_symbol, quote_symbol, templates.len()
-                        )));
-                    }
-
-                    // Analyze the quoted datum in quote context
-                    analyze_template(
-                        &templates[1],
-                        current_depth,
-                        true, // now in quote context
-                        identifiers,
-                        var_depths,
-                        pattern_vars,
-                    )?;
-                    // Early return - we've handled this quote form
-                    return Ok(());
+            // Special forms are only recognized in Normal or Quasiquote contexts
+            // Inside Quote context, everything is literal including "quote", "quasiquote", etc.
+            if context != ParseContext::Quote
+                && let Some(MacroTemplate::Variable(special_form)) = templates.first()
+                && matches!(
+                    special_form.as_str(),
+                    "quote" | "quasiquote" | "unquote" | "unquote-splicing"
+                )
+            {
+                // All special forms require exactly 2 elements: (form datum)
+                if templates.len() != 2 {
+                    return Err(MacroError(format!(
+                        "Malformed {} form in template: expected ({} <datum>), found list with {} elements",
+                        special_form,
+                        special_form,
+                        templates.len()
+                    )));
                 }
+
+                // Determine new context based on the form and current context
+                let new_context = match special_form.as_str() {
+                    "quote" => ParseContext::Quote,
+                    "quasiquote" => ParseContext::Quasiquote(match context {
+                        ParseContext::Quasiquote(depth) => depth + 1,
+                        _ => 1,
+                    }),
+                    "unquote" | "unquote-splicing" => match context {
+                        ParseContext::Quasiquote(1) => ParseContext::Normal,
+                        ParseContext::Quasiquote(depth) => ParseContext::Quasiquote(depth - 1),
+                        _ => {
+                            return Err(MacroError(format!(
+                                "{} form encountered outside quasiquote context in template",
+                                special_form
+                            )));
+                        }
+                    },
+                    _ => unreachable!(),
+                };
+
+                // Analyze the datum with the new context
+                return analyze_template(
+                    &templates[1],
+                    current_depth,
+                    new_context,
+                    identifiers,
+                    var_depths,
+                    pattern_vars,
+                );
             }
 
-            // Not a quote form, analyze all elements normally
+            // Not a special form (or inside Quote context), analyze all elements with current context
             for t in templates {
                 analyze_template(
                     t,
                     current_depth,
-                    in_quote_context,
+                    context,
                     identifiers,
                     var_depths,
                     pattern_vars,
@@ -537,7 +586,7 @@ fn analyze_template(
             analyze_template(
                 sub_template,
                 current_depth + 1,
-                in_quote_context,
+                context,
                 identifiers,
                 var_depths,
                 pattern_vars,

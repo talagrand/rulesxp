@@ -1,0 +1,43 @@
+
+Missing: Case-insensitive #true, #false, #True, #FALSE
+
+
+R7RS-RESTRICTED: Only proper lists, missing improper lists/dotted pairs ((a . b), (a b . c))
+
+R7RS-RESTRICTED: Only #t/#f, missing case-insensitive #true, #false
+R7RS-RESTRICTED: Limited special characters, missing Unicode and @%^&:~
+R7RS-RESTRICTED: ASCII whitespace only, not Unicode whitespace categories
+R7RS-RESTRICTED: Missing \<space> for escaping literal spaces
+Missing: Rationals, floating-point, complex numbers, exact/inexact distinction
+Missing: Scientific notation (1e10), binary literals (#b), octal literals (#o)
+R7RS-RESTRICTED: Only integers (i32), missing rationals, floating-point, complex numbers
+R7RS-RESTRICTED: Hex only supports integers, not floating-point hex literals
+R7RS-RESTRICTED: Missing binary (#b), octal (#o), scientific notation (1e10)
+Missing: Rational numbers (1/2), floating-point numbers (3.14), and complex numbers (1+2i).
+Missing: Binary (#b) and octal (#o).
+R7RS-RESTRICTED: Scientific and other floating-point notations are not supported (e.g., 1e10, 1.0e+5).
+R7RS-RESTRICTED: The exactness prefixes #e (exact) and #i (inexact) are not supported.
+R7RS-RESTRICTED: Missing \v (vertical tab), \f (form feed), \0 (null)
+R7RS-RESTRICTED: Missing characters (#\a, #\space, #\newline, #\x03BB)
+R7RS-RESTRICTED: Missing vectors (#(1 2 3))
+R7RS-RESTRICTED: Missing bytevectors (#u8(0 255))
+R7RS-RESTRICTED: Missing datum labels for shared/circular structures (#1=(a #1#))
+R7RS-RESTRICTED: Missing quasiquote syntax: `` expr , ,expr, ,@expr`
+R7RS-RESTRICTED: Missing syntax objects: #'expr, #,expr, #,@expr
+R7RS-RESTRICTED: Missing S-expression comments #;(expr)
+R7RS-RESTRICTED: No |symbol with spaces| syntax
+R7RS-RESTRICTED: Missing case folding directives: #!fold-case, #!no-fold-case
+R7RS-RESTRICTED: Missing read-time evaluation: #.(expr)
+
+
+R7RS-RESTRICTED: The parser only recognizes the canonical forms #t and #f.
+Missing: The mandated case-insensitive long forms: #true, #false, #TRUE, #FALSE, etc.
+R7RS-RESTRICTED: The set of allowed special characters in symbols is limited to +-*/<>=!?_$.
+Missing: Other standard special characters like . (in the middle of a symbol), @, %, ^, &, :, ~.
+R7RS-RESTRICTED: Some mnemonic escape sequences are not implemented.
+Missing: \v (vertical tab), \f (form feed), \0 (null character).
+R7RS-RESTRICTED: The line continuation syntax allowing for escaped whitespace (\<whitespace>) is not supported. The current implementation only supports backslash followed immediately by a newline.
+Missing: Dotted pairs and improper lists (e.g., (a . b), (a b . c)).
+R7RS-RESTRICTED: Whitespace handling is limited to ASCII whitespace.
+Missing: The full range of Unicode whitespace characters defined by the standard.
+

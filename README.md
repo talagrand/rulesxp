@@ -94,6 +94,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 cargo run --example repl --features="scheme jsonlogic"
 ```
 
+The REPL supports:
+- **Multi-line input**: Automatically detects incomplete expressions (unclosed parentheses, strings, comments) and prompts for continuation with `... >`
+- **Language detection**: Automatically switches between JSONLogic (input starting with `{` or `[`) and Scheme syntax
+- **Mode switching**: Use `:jsonlogic` to toggle output format between Scheme and JSONLogic
+- **Environment inspection**: Use `:env` to view defined variables
+- **Interactive help**: Type `:help` for available commands
+
 
 ## Supported Operations
 

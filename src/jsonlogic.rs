@@ -1,9 +1,45 @@
 use crate::Error;
 use crate::MAX_PARSE_DEPTH;
-use crate::ast::{Value, is_valid_symbol};
+use crate::ParseErrorKind;
+use crate::ast::{Value, is_symbol_valid};
 use crate::builtinops::{
     Arity, BuiltinOp, find_jsonlogic_op, find_scheme_op, get_list_op, get_quote_op,
 };
+
+/// Helper to create a parse error with JSONLogic context (uses InvalidSyntax kind)
+///
+/// Serializes the serde_json::Value to provide context about what JSON caused the error.
+fn parse_error_with_json_context(
+    message: impl Into<String>,
+    json_value: &serde_json::Value,
+) -> Error {
+    let context = serde_json::to_string(json_value).unwrap_or_else(|_| "<invalid json>".into());
+    Error::ParseError(crate::ParseError::new(
+        ParseErrorKind::InvalidSyntax,
+        message.into(),
+        Some(context),
+        None,
+    ))
+}
+
+/// Helper to create a parse error with JSONLogic context and explicit kind
+///
+/// Serializes the serde_json::Value to provide context about what JSON caused the error.
+/// Use this when the error kind should be something other than InvalidSyntax
+/// (e.g., ImplementationLimit, Unsupported).
+fn parse_error_with_json_context_and_kind(
+    kind: ParseErrorKind,
+    message: impl Into<String>,
+    json_value: &serde_json::Value,
+) -> Error {
+    let context = serde_json::to_string(json_value).unwrap_or_else(|_| "<invalid json>".into());
+    Error::ParseError(crate::ParseError::new(
+        kind,
+        message.into(),
+        Some(context),
+        None,
+    ))
+}
 
 /// Indicates the compilation context for JSON values
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,8 +54,12 @@ enum CompilationContext {
 
 /// Parse JSONLogic expression into AST value for evaluation
 pub fn parse_jsonlogic(input: &str) -> Result<Value, Error> {
-    let json_value: serde_json::Value =
-        serde_json::from_str(input).map_err(|e| Error::ParseError(format!("Invalid JSON: {e}")))?;
+    let json_value: serde_json::Value = serde_json::from_str(input).map_err(|e| {
+        Error::ParseError(crate::ParseError::from_message(
+            ParseErrorKind::InvalidSyntax,
+            format!("Invalid JSON: {e}"),
+        ))
+    })?;
 
     compile_json_to_ast(json_value)
 }
@@ -35,23 +75,36 @@ fn compile_json_to_ast_with_context(
     depth: usize,
 ) -> Result<Value, Error> {
     if depth >= MAX_PARSE_DEPTH {
-        return Err(Error::ParseError(format!(
-            "JSONLogic expression too deeply nested (max depth: {MAX_PARSE_DEPTH})"
-        )));
+        return Err(parse_error_with_json_context_and_kind(
+            ParseErrorKind::ImplementationLimit,
+            format!("JSONLogic expression too deeply nested (max depth: {MAX_PARSE_DEPTH})"),
+            &json,
+        ));
     }
     match json {
         // Primitives
-        serde_json::Value::Null => Err(Error::ParseError(
-            "null values are not supported in this JSONLogic implementation".into(),
+        serde_json::Value::Null => Err(parse_error_with_json_context_and_kind(
+            ParseErrorKind::Unsupported,
+            "null values are not supported in this JSONLogic implementation",
+            &json,
         )),
         serde_json::Value::Bool(b) => Ok(Value::Bool(b)),
-        serde_json::Value::Number(n) => {
+        serde_json::Value::Number(ref n) => {
             if let Some(i) = n.as_i64() {
-                Ok(Value::Number(i))
+                // R7RS-RESTRICTED: Limited to 32-bit integers to reserve upper bits for type tags
+                i.try_into().map(Value::Number).map_err(|_| {
+                    parse_error_with_json_context_and_kind(
+                        ParseErrorKind::ImplementationLimit,
+                        format!("Number out of 32-bit range: {n}"),
+                        &json,
+                    )
+                })
             } else {
-                Err(Error::ParseError(format!(
-                    "Number too large or not integer: {n}"
-                )))
+                Err(parse_error_with_json_context_and_kind(
+                    ParseErrorKind::ImplementationLimit,
+                    format!("Number too large or not integer: {n}"),
+                    &json,
+                ))
             }
         }
         serde_json::Value::String(s) => Ok(Value::String(s)),
@@ -84,18 +137,22 @@ fn compile_json_to_ast_with_context(
                 }
             }
         }
-        serde_json::Value::Object(obj) => {
-            let (operator, operands) = {
-                let mut iter = obj.into_iter();
-                // Attempt to get two elements from this object - hoping to get only 1 item back
-                match (iter.next(), iter.next()) {
-                    (Some((op, val)), None) => (op, val), // Exactly one item
-                    _ => {
-                        return Err(Error::ParseError(
-                            "JSONLogic operations must have exactly one operator".into(),
-                        ));
-                    }
-                }
+        serde_json::Value::Object(ref obj) => {
+            // Check upfront for multi-key objects
+            if obj.len() != 1 {
+                return Err(parse_error_with_json_context(
+                    "JSONLogic operations must have exactly one operator",
+                    &json,
+                ));
+            }
+
+            // Safe to expect - we checked len == 1 above
+            let (operator, operands) = if let serde_json::Value::Object(obj) = json {
+                obj.into_iter()
+                    .next()
+                    .expect("object has exactly one entry")
+            } else {
+                unreachable!()
             };
 
             match context {
@@ -105,18 +162,24 @@ fn compile_json_to_ast_with_context(
                     if operator == "var" {
                         // {"var": "symbol"} becomes a symbol in quote context
                         match operands {
-                            serde_json::Value::String(var_name) if is_valid_symbol(&var_name) => {
+                            serde_json::Value::String(var_name) if is_symbol_valid(&var_name) => {
                                 Ok(Value::Symbol(var_name))
                             }
-                            _ => Err(Error::ParseError(
-                                "Variable must be a valid symbol string".into(),
+                            val => Err(parse_error_with_json_context(
+                                "Variable must be a valid symbol string",
+                                &val,
                             )),
                         }
                     } else {
                         // Reject all other object form operations in quote context
-                        Err(Error::ParseError(format!(
-                            "Object form operations like '{{\"{operator}\":...}}' are not allowed in quote context. Use list form like '[\"{operator}\", ...]' instead"
-                        )))
+                        let mut obj_map = serde_json::Map::new();
+                        obj_map.insert(operator.clone(), operands.clone());
+                        Err(parse_error_with_json_context(
+                            format!(
+                                "Object form operations like '{{\"{operator}\":...}}' are not allowed in quote context. Use list form like '[\"{operator}\", ...]' instead"
+                            ),
+                            &serde_json::Value::Object(obj_map),
+                        ))
                     }
                 }
                 CompilationContext::Normal | CompilationContext::ArrayElement => {
@@ -205,11 +268,12 @@ fn compile_jsonlogic_operation(
 
         // Variable access (JSONLogic specific)
         "var" => match operands {
-            serde_json::Value::String(var_name) if is_valid_symbol(&var_name) => {
+            serde_json::Value::String(var_name) if is_symbol_valid(&var_name) => {
                 Ok(Value::Symbol(var_name))
             }
-            _ => Err(Error::ParseError(
-                "Variable must be a valid symbol string".into(),
+            ref val => Err(parse_error_with_json_context(
+                "Variable must be a valid symbol string",
+                val,
             )),
         },
 
@@ -217,13 +281,16 @@ fn compile_jsonlogic_operation(
         "scheme-quote" => {
             // Quote must have exactly one operand and must NOT compile/evaluate it
             let operand = match operands {
-                serde_json::Value::Array(arr) => match arr.as_slice() {
+                serde_json::Value::Array(ref arr) => match arr.as_slice() {
                     [single_operand] => single_operand.clone(),
                     _ => {
-                        return Err(Error::ParseError("quote requires one operand".into()));
+                        return Err(parse_error_with_json_context(
+                            "quote requires one operand",
+                            &operands,
+                        ));
                     }
                 },
-                single_operand => single_operand, // Single operand without array wrapper
+                ref single_operand => single_operand.clone(), // Single operand without array wrapper
             };
 
             // Convert the operand to literal data WITHOUT compilation/evaluation
@@ -255,16 +322,24 @@ fn compile_jsonlogic_operation(
                 // Check if this unknown JSONLogic operator happens to be a known Scheme builtin
                 // If so, reject it to prevent accidental access to Scheme symbols via JSONLogic
                 if find_scheme_op(operator).is_some() {
-                    Err(Error::ParseError(format!(
-                        "JSONLogic operator '{operator}' is not supported. Use the JSONLogic equivalent instead (e.g., use '!' instead of 'not')."
-                    )))
+                    let mut obj_map = serde_json::Map::new();
+                    obj_map.insert(operator.to_string(), operands.clone());
+                    Err(parse_error_with_json_context(
+                        format!(
+                            "JSONLogic operator '{operator}' is not supported. Use the JSONLogic equivalent instead (e.g., use '!' instead of 'not')."
+                        ),
+                        &serde_json::Value::Object(obj_map),
+                    ))
                 } else {
                     // Operation not in registry and not a Scheme builtin - emit as regular list for custom operations
                     // But first validate that the operator name is a valid symbol
-                    if !is_valid_symbol(operator) {
-                        return Err(Error::ParseError(format!(
-                            "Invalid operator name: '{operator}'"
-                        )));
+                    if !is_symbol_valid(operator) {
+                        let mut obj_map = serde_json::Map::new();
+                        obj_map.insert(operator.to_string(), operands.clone());
+                        return Err(parse_error_with_json_context(
+                            format!("Invalid operator name: '{operator}'"),
+                            &serde_json::Value::Object(obj_map),
+                        ));
                     }
                     let args = extract_operand_list(operands)?;
                     let mut result = vec![Value::Symbol(operator.into())];

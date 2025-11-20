@@ -1,5 +1,5 @@
 // Test runner binary for Scheme interpreter tests
-use samplescheme::test_runner::{print_test_results, TestMode, TestRunner};
+use samplescheme::test_runner::{TestMode, TestRunner, print_test_results};
 use std::env;
 use std::path::PathBuf;
 

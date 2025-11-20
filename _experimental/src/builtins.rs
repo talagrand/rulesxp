@@ -79,7 +79,7 @@ pub fn create_builtins() -> std::collections::HashMap<String, crate::Value> {
                     let mut result = match &args[0] {
                         Value::Integer(n) => *n,
                         _ => {
-                            return Err(format!("- expects integers, got {}", args[0].type_name()))
+                            return Err(format!("- expects integers, got {}", args[0].type_name()));
                         }
                     };
 
@@ -91,7 +91,7 @@ pub fn create_builtins() -> std::collections::HashMap<String, crate::Value> {
                                     .ok_or("Integer overflow in subtraction")?;
                             }
                             _ => {
-                                return Err(format!("- expects integers, got {}", arg.type_name()))
+                                return Err(format!("- expects integers, got {}", arg.type_name()));
                             }
                         }
                     }
@@ -435,7 +435,7 @@ pub fn create_builtins() -> std::collections::HashMap<String, crate::Value> {
                             _ => {
                                 return Err(
                                     "list->string expects list of single characters".to_string()
-                                )
+                                );
                             }
                         }
                     }

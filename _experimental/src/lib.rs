@@ -51,12 +51,12 @@ pub mod test_runner;
 pub mod value;
 pub mod vm;
 
-pub use compiler::{compile, CompileError};
+pub use compiler::{CompileError, compile};
 pub use macro_compiler::MacroDefinition;
 pub use macro_expander::expand_template;
 pub use macro_matcher::{Binding, MatchContext, MatchResult};
 pub use macros::MacroExpander;
-pub use parser::{parse, ParseError};
+pub use parser::{ParseError, parse};
 pub use processed_ast::{CustomBuiltin, ProcessedAST, ProcessedCompileError};
 pub use super_builtins::{ProcessedArity, ProcessedValue, SchemeStringInterner};
 pub use super_vm::{SuperDirectVM, SuperStackVM};

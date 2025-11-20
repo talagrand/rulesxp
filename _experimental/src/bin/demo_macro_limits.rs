@@ -19,7 +19,9 @@ fn main() {
 
     println!("\n=== 1. NESTED ELLIPSIS PROBLEMS ===");
     println!("R7RS `do` syntax: (do ((var init step) ...) (test expr ...) command ...)");
-    println!("This requires nested ellipsis: the pattern ((var init step) ...) has ellipsis inside ellipsis");
+    println!(
+        "This requires nested ellipsis: the pattern ((var init step) ...) has ellipsis inside ellipsis"
+    );
 
     // Show what fails - simplified nested ellipsis pattern
     let nested_pattern = "(define-syntax test-nested (syntax-rules () ((test-nested ((a b ...) ...) result) result)))";

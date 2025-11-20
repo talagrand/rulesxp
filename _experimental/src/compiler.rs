@@ -240,7 +240,7 @@ impl Compiler {
 
                                     // Patch else jump to point here
                                     let else_start = self.instructions.len();
-                                    if let Opcode::JumpIfFalse(ref mut offset) =
+                                    if let Opcode::JumpIfFalse(offset) =
                                         &mut self.instructions[else_jump].opcode
                                     {
                                         *offset = (else_start as i32 - else_jump as i32) as i16;
@@ -251,7 +251,7 @@ impl Compiler {
 
                                     // Patch end jump
                                     let end_pos = self.instructions.len();
-                                    if let Opcode::Jump(ref mut offset) =
+                                    if let Opcode::Jump(offset) =
                                         &mut self.instructions[end_jump].opcode
                                     {
                                         *offset = (end_pos as i32 - end_jump as i32) as i16;
@@ -263,7 +263,7 @@ impl Compiler {
                                     self.emit(Opcode::LoadConst(unspecified_index));
 
                                     // Patch else jump
-                                    if let Opcode::JumpIfFalse(ref mut offset) =
+                                    if let Opcode::JumpIfFalse(offset) =
                                         &mut self.instructions[else_jump].opcode
                                     {
                                         *offset = (else_start as i32 - else_jump as i32) as i16;
@@ -292,7 +292,7 @@ impl Compiler {
                                                     return Err(CompileError::new(
                                                         "Parameter must be a symbol".to_string(),
                                                     )
-                                                    .with_expression(value))
+                                                    .with_expression(value));
                                                 }
                                             }
                                         }
@@ -306,7 +306,7 @@ impl Compiler {
                                         return Err(CompileError::new(
                                             "Parameter list must be a list or symbol".to_string(),
                                         )
-                                        .with_expression(value))
+                                        .with_expression(value));
                                     }
                                 };
 
@@ -405,7 +405,7 @@ impl Compiler {
                                                 return Err(CompileError::new(
                                                     "Function name must be a symbol".to_string(),
                                                 )
-                                                .with_expression(value))
+                                                .with_expression(value));
                                             }
                                         };
 
@@ -446,7 +446,7 @@ impl Compiler {
                                             "define target must be symbol or function definition"
                                                 .to_string(),
                                         )
-                                        .with_expression(value))
+                                        .with_expression(value));
                                     }
                                 }
 
@@ -569,8 +569,7 @@ impl Compiler {
         if self.function_stack.contains(&function_name.to_string()) && !is_tail_position {
             let warning = format!(
                 "Warning: Non-tail recursive call to '{}' at offset {} - consider using tail recursion",
-                function_name,
-                self.current_offset
+                function_name, self.current_offset
             );
             self.warnings.push(warning);
         }

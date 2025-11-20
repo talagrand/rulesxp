@@ -1,0 +1,8 @@
+use rulesxp::scheme::{parse_scheme, ParseConfig};
+let cases = vec!["3.14", "#xG", "#x", "#y123", "123abc", "99999999999999999999", "-99999999999999999999", "123var", "-42name", "test space", "test#tag", "#T", "#F", "#TRUE", "#FALSE"];
+for input in cases {
+    match parse_scheme(input, &ParseConfig { script_syntax: false }) {
+        Err(e) => println!("{}: {:?}", input, e),
+        Ok(_) => println!("{}: OK", input),
+    }
+}

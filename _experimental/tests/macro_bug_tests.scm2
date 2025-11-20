@@ -1,0 +1,270 @@
+;; Test suite for Scheme macro expander bugs
+;; To run this file, use: cargo run --bin runscript -- superast tests/macro_bug_tests.scm
+
+;; -----------------------------------------------------------------------------
+;; Macro Definitions
+;; -----------------------------------------------------------------------------
+
+(define-syntax test-ellipsis-list
+  (syntax-rules ()
+    ((_ ((name expr) ...))
+     (list 'names '(name ...) 'exprs (list expr ...)))))
+
+(define-syntax test-zero-ellipsis-nested
+  (syntax-rules ()
+    ((_ ((a b ...) ...))
+     (list (list a (list b ...)) ...))))
+
+(define-syntax test-quote-collision
+  (syntax-rules ()
+    ((_ test) ;; `test` is a pattern variable
+     (list 'test test)))) ;; template uses 'test as literal and test as variable
+
+(define-syntax my-let
+  (syntax-rules ()
+    ((_ ((var val)) body)
+     ((lambda (var) body) val))))
+
+(define-syntax id
+  (syntax-rules ()
+    ((_ x) x)))
+
+(define-syntax test-literal-ellipsis
+  (syntax-rules (...) ; R7RS way to make '...' a literal
+    ((_ ...) 'found-literal-ellipsis)))
+
+(define-syntax test-wildcard
+  (syntax-rules ()
+    ((_ _ _) 'two-wildcards)))
+
+(define-syntax test-nested-ellipsis
+  (syntax-rules ()
+    ((_ ((a ...) ...))
+     (list (list a ...) ...))))
+
+(define-syntax test-quoting-a
+  (syntax-rules ()
+    ((_ x)
+     (list 'x x (quote x)))))
+
+(define-syntax test-quoting-b
+  (syntax-rules (y) ;; y is a literal
+    ((_ x y)
+     (list 'x x (quote x) 'y y (quote y)))))
+
+(define-syntax test-nested-ellipsis-quote
+  (syntax-rules ()
+    ((_ ((a b) ...))
+     (list (list (quote a) b) ...))))
+
+(define-syntax test-simple-quoted-ellipsis
+  (syntax-rules ()
+    ((_ (name ...))
+     '(name ...))))
+
+(define-syntax test-hygiene
+  (syntax-rules ()
+    ((_ val)
+     (let ((a 10)) ; This 'a' should be hygienic and not conflict
+       val))))
+
+(define-syntax test-ellipsis-middle
+  (syntax-rules ()
+    ((_ first ... rest)
+     (list (list first ...) rest))))
+
+(define-syntax test-ellipsis-list-new
+  (syntax-rules ()
+    ((_ ((name expr) ...))
+     (list (list name ...) (list expr ...)))))
+
+(define-syntax test-nested-ellipsis-reconstruction
+  (syntax-rules ()
+    ((_ ((a ...) ...))
+     (list (list a ...) ...))))
+
+;; -----------------------------------------------------------------------------
+;; Test Execution
+;; -----------------------------------------------------------------------------
+
+(display "--- Macro Bug Test Suite ---")
+(newline)
+
+;; Bug 1: Incorrect Ellipsis Matching for List Sub-patterns
+(display "Bug 1: Ellipsis List Matching")
+(newline)
+(display "  Input: (test-ellipsis-list ((a 1) (b 2)))")
+(newline)
+(display "  Expected: (names (a b) exprs (1 2))")
+(newline)
+(display "  Actual: ")
+(display (test-ellipsis-list ((a 1) (b 2))))
+(newline)
+(newline)
+
+;; Bug 2: Zero-Match Ellipsis Binding (Revised)
+(display "Bug 2: Zero-Match Ellipsis (Nested)")
+(newline)
+(display "  Input: (test-zero-ellipsis-nested ((1) (2)))")
+(newline)
+(display "  Expected: ((1 ()) (2 ()))")
+(newline)
+(display "  Actual: ")
+(display (test-zero-ellipsis-nested ((1) (2))))
+(newline)
+(newline)
+
+;; Bug 3: Template Expansion in Quoted Forms (Pattern vs. Literal)
+(display "Bug 3: Quoted Pattern Variable Collision")
+(newline)
+(display "  Input: (test-quote-collision 123)")
+(newline)
+(display "  Expected: (list 'test 123)")
+(newline)
+(display "  Actual: ")
+(display (test-quote-collision 123))
+(newline)
+(newline)
+
+;; Bug 4: Missing Hygiene
+(display "Bug 4: Missing Hygiene")
+(newline)
+(display "  Input: (let ((lambda 5)) (my-let ((x 10)) x))")
+(newline)
+(display "  Expected: 10")
+(newline)
+(display "  Actual: ")
+(let ((lambda 5))
+  (display (my-let ((x 10)) x)))
+(newline)
+(newline)
+
+;; Bug 5: AST Pollution with define-syntax
+(display "Bug 5: AST Pollution")
+(newline)
+(display "  Input: (begin (define-syntax id (syntax-rules () ((_ x) x))) (id 1))")
+(newline)
+(display "  Expected: 1")
+(newline)
+(display "  Actual: ")
+(display (begin (define-syntax id (syntax-rules () ((_ x) x))) (id 1)))
+(newline)
+(newline)
+
+;; Bug 6: R7RS Literal Ellipsis
+(display "Bug 6: R7RS Literal Ellipsis")
+(newline)
+(display "  Input: (test-literal-ellipsis ...)")
+(newline)
+(display "  Expected: found-literal-ellipsis")
+(newline)
+(display "  Actual: ")
+(display (test-literal-ellipsis ...))
+(newline)
+(newline)
+
+;; Bug 7: Underscore `_` as a Wildcard
+(display "Bug 7: Underscore Wildcard")
+(newline)
+(display "  Input: (test-wildcard 1 2)")
+(newline)
+(display "  Expected: two-wildcards")
+(newline)
+(display "  Actual: ")
+(display (test-wildcard 1 2))
+(newline)
+(newline)
+
+;; Bug 8: Nested Ellipsis Depth Handling
+(display "Bug 8: Nested Ellipsis Depth")
+(newline)
+(display "  Input: (test-nested-ellipsis ((1 2) (3 4)))")
+(newline)
+(display "  Expected: ((1 2) (3 4))")
+(newline)
+(display "  Actual: ")
+(display (test-nested-ellipsis ((1 2) (3 4))))
+(newline)
+(newline)
+
+;; Bug 9: Quoting Permutations
+(display "Bug 9: Quoting Permutations")
+(newline)
+(display "  Input: (test-quoting-a 123)")
+(newline)
+(display "  Expected: (x 123 (quote x))")
+(newline)
+(display "  Actual: ")
+(display (test-quoting-a 123))
+(newline)
+(display "  Input: (test-quoting-b 456 y)")
+(newline)
+(display "  Expected: (x 456 (quote x) y y (quote y))")
+(newline)
+(display "  Actual: ")
+(display (test-quoting-b 456 y))
+(newline)
+(newline)
+
+;; Bug 10: Nested Ellipsis with Quoting
+(display "Bug 10: Nested Ellipsis with Quoting")
+(newline)
+(display "  Input: (test-nested-ellipsis-quote ((foo 1) (bar 2)))")
+(newline)
+(display "  Expected: ((quote foo) 1) ((quote bar) 2))")
+(newline)
+(display "  Actual: ")
+(display (test-nested-ellipsis-quote ((foo 1) (bar 2))))
+(newline)
+(newline)
+
+;; Bug 11: Simple Quoted Ellipsis
+(display "Bug 11: Simple Quoted Ellipsis")
+(newline)
+(display "  Input: (test-simple-quoted-ellipsis (a b c))")
+(newline)
+(display "  Expected: (quote (a b c))")
+(newline)
+(display "  Actual: ")
+(display (test-simple-quoted-ellipsis (a b c)))
+(newline)
+(newline)
+
+(display "--- Test Suite Complete ---")
+(newline)
+
+;; New Test 1: Hygiene
+(display "New Hygiene test (should be 5): ")
+(display (let ((a 5)) (test-hygiene a)))
+(newline)
+(newline)
+
+;; New Test 2: Ellipsis in the middle of a pattern
+(display "New Ellipsis middle test (should be ((1 2 3) 4)): ")
+(display (test-ellipsis-middle 1 2 3 4))
+(newline)
+(newline)
+
+;; New Test 3: Ellipsis with list sub-patterns
+(display "New Ellipsis List Sub-pattern Test")
+(newline)
+(display "  Input: (test-ellipsis-list-new ((a 1) (b 2)))")
+(newline)
+(display "  Expected: ((a b) (1 2))")
+(newline)
+(display "  Actual: ")
+(display (test-ellipsis-list-new ((a 1) (b 2))))
+(newline)
+(newline)
+
+;; New Test 5: Nested Ellipsis Binding Structure
+(display "New Nested Ellipsis Reconstruction Test")
+(newline)
+(display "  Input: (test-nested-ellipsis-reconstruction ((1 2) (3)))")
+(newline)
+(display "  Expected: ((1 2) (3))")
+(newline)
+(display "  Actual: ")
+(display (test-nested-ellipsis-reconstruction ((1 2) (3))))
+(newline)
+(newline)

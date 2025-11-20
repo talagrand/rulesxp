@@ -1,0 +1,75 @@
+## Project Goals and Standards
+- This project's name is "rulesxp"
+- It is an interpreter for a typesafe strict subset of R7RS Scheme, JsonLogic, and CEL (Common Expression Language)
+- Document intentional limitations of the system where we are only implementing a strict subset of the language with a prefix "**LANG-RESTRICTED:**" where LANG is one of "R7RS", "JSONLOGIC", or "CEL". This is where we have taken an intentional choice not to support something. For example, the lack of improper lists in Scheme.
+- If this is a limitation of more than one language, mark up the comment with each langauge, like "**R7RS-JSONLOGIC-RESTRICTED:**"
+- It is critical that we keep track of where we implement a strict subset of the behaviors of the specified language, and where we have non-conformant behavior.
+- Document deviations from language standards with comments with a prefix "**LANG DEVIATION:**", where LANG is one of R7RS, JSONLOGIC, or CEL.
+- For example, lack of floating point support is "RESTRICTED". A function that returns a different value than expected is a "DEVIATION".
+- Every deviation from the language standard should be checked with an error emitted. Leave a "**NEEDS-ENFORCEMENT**" comment if this not possible.
+- Each instance of a comment that talks about a restriction or deviation needs to be tagged appropriate, and called out in project documentation.
+- Do not remove these restricted/deviation comments unless the underlying issue is fixed, and ensure these get preserved across refactoring. You do not need to repeat these in other comments, only in TODO.md.
+
+
+## Agent Context Update
+- Do not pause for user input when the next steps are clear and actionable.
+- If a bug or task is assigned, perform root cause analysis and provide fixes immediately, using the provided context and attachments.
+- Maintain direct, factual, and impersonal communication.
+
+## Comments
+- Do not write code or comments that refer to changes in the project like using words like "now" or "new" - write comments and code as if they were written that way from the very beginning.
+
+
+## Maintaining the project hygiene
+- **RUNNING CODE:**: Use `cargo run --example repl --features="scheme jsonlogic cel-alpha" <file>` to execute Scheme, JSONLogic or CEL files.
+- **TESTING:** Always use `--all-features` flag for all cargo commands including `cargo test --all-features`, `cargo build --all-features`, etc. to ensure all feature combinations are tested and built correctly.
+- **MANDATORY TODO.md MAINTENANCE:** Update TODO.md for EVERY task completion, significant change, or error discovery:
+  - Mark items as completed [x] when finished. Ensure that it is entirely complete before doing so. If the item was partially completed, create a new item for remaining work.
+  - Add new TODOs for any discovered issues, limitations, or blockers
+  - **STREAMLINED APPROACH:** Focus on current limitations and future work, NOT implementation history
+  - Remove completed project details - preserve only results (what doesn't work, limitations)
+  - **AVOID:** Extensive implementation narratives, step-by-step completion tracking, historical performance data
+  - **PRESERVE:** Current constraints, active bugs, strategic decisions, research insights, technical debt
+- **MANDATORY TESTING_GAPS.md MAINTENANCE:** Update TESTING_GAPS.md for EVERY test addition, test coverage change, or testing priority shift:
+  - Mark test categories as completed when comprehensive coverage achieved
+  - Add newly discovered testing gaps or edge cases
+  - Update testing priority assessments based on implementation changes
+  - Document test infrastructure improvements and needs
+  - Update current test count and coverage statistics
+- **CRITICAL WORKFLOW:** Before ANY response claiming "task complete" or "issue resolved":
+  1. First verify TODO.md reflects all completed work
+  2. Update TESTING_GAPS.md if testing-related changes occurred
+  3. Add any newly discovered limitations or issues
+  4. Update related item statuses
+  5. Only then respond to user
+- **ENFORCEMENT:** If TODO.md or TESTING_GAPS.md are not updated when required, the task is NOT complete
+- Run "cargo clippy --all-targets --all-features", "cargo fmt --all" after every edit and ensure there are no warnings.
+- Maintain DRY (don't repeat yourself) best practices. Look for opportunities to pull out helpers. This applies to comments as well - put details in a single place, and refer to detailed comments from other parts of the system.
+
+
+## Interaction
+- At the end of each task, summarize implementation limits that caused solution reworking. List all options attempted and reasons for abandoning approaches.
+- **MANDATORY COMPLETION PROTOCOL:** After completing any task:
+  1. Update TODO.md BEFORE responding to user
+  2. Mark completed items [x] 
+  3. Add new limitations or blockers discovered (focus on current constraints)
+  4. Update status changes for related items
+  5. **REMOVE completed project implementation details** - keep only essential results
+  6. Document strategic decisions and alternatives considered (brief summaries only)
+  7. **STREAMLINE:** Delete historical narratives, preserve actionable limitations and future work
+- **DESIGN DECISIONS:** When multiple approaches exist, list options with tradeoffs and request user input before proceeding.
+
+## Language and Tone Guidelines
+
+### Prohibited Language Patterns
+- **Avoid celebratory/evaluative language**: Do not use words like "Perfect!", "Excellent!", "Great!", "Wonderful!", "Amazing!", etc. These add no technical value and can seem patronizing.
+- **Eliminate first-person language completely**: Never use "I", "me", "my", "let me", "I'll", "I need to", "I want to", "I think", "I believe", "I will", "I can", "I should", etc. Use direct action statements instead:
+- **Be direct and factual**: State what's happening or what was found without editorial commentary
+- **Use present tense action statements**: "Running tests", "Applying fix", "Checking for errors"
+- **Use passive voice when needed**: "The tests were run", "The fix was applied" 
+- **Use impersonal constructions**: "This requires", "The code needs", "It's necessary to"
+- **Report outcomes neutrally**: "All tests pass", "No warnings found", "Issue resolved"
+- **Focus on technical substance**: Explain what changed, why it matters, what the implications are
+
+### Additional instructions
+End every statement with a traditional chinese character along with etymology in English and sample usage. Finish with a dad joke.

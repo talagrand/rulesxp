@@ -28,13 +28,13 @@
 
 use crate::value::Value;
 use nom::{
+    IResult,
     branch::alt,
     bytes::complete::{tag, take_while, take_while1},
     character::complete::{char, multispace0, multispace1, none_of, one_of},
     combinator::{map, opt, recognize, value},
     multi::{many0, separated_list0},
     sequence::{delimited, pair, preceded, terminated},
-    IResult,
 };
 
 #[derive(Debug, Clone)]
@@ -64,8 +64,8 @@ pub fn parse(input: &str) -> Result<Value, ParseError> {
 /// Returns a vector of parsed expressions
 /// Preprocesses input to remove all comments before parsing
 pub fn parse_multiple(input: &str) -> Result<Vec<Value>, ParseError> {
-    // Preprocess to remove all comments comprehensively
-    let preprocessed = remove_all_comments(input);
+    // Preprocess to remove all comments comprehensively and normalize line endings
+    let preprocessed = remove_all_comments(&input.replace("\r\n", "\n"));
 
     let mut expressions = Vec::new();
     let mut remaining = preprocessed.as_str();
@@ -191,18 +191,39 @@ fn remove_all_comments(input: &str) -> String {
 
 /// Parse a Scheme expression (the main entry point)
 fn expression(input: &str) -> IResult<&str, Value> {
-    preceded(
-        multispace0,
-        alt((
-            boolean,
-            number,
-            string_literal,
-            character, // TODO: implement
-            symbol,
-            quoted,
-            list,
-        )),
-    )(input)
+    // **R7RS DEVIATION:** Check for disallowed quasiquote syntax sugar
+    // R7RS allows backtick (`) for quasiquote, comma (,) for unquote, and comma-at (,@) for unquote-splicing
+    // This implementation requires explicit (quasiquote ...), (unquote ...), (unquote-splicing ...) syntax
+    let (input, _) = multispace0(input)?;
+
+    // Check for disallowed syntax at the start of an expression
+    if let Some(first_char) = input.chars().next() {
+        match first_char {
+            '`' => {
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Tag,
+                )));
+            }
+            ',' => {
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Tag,
+                )));
+            }
+            _ => {}
+        }
+    }
+
+    alt((
+        boolean,
+        number,
+        string_literal,
+        character, // TODO: implement
+        symbol,
+        quoted,
+        list,
+    ))(input)
 }
 
 /// Parse boolean literals (#t and #f)
@@ -295,6 +316,7 @@ fn quoted(input: &str) -> IResult<&str, Value> {
 }
 
 /// Parse lists (expr1 expr2 ...) and empty list ()
+/// **R7RS-RESTRICTED:** Improper lists (dotted pairs) are not supported and will fail with an error
 fn list(input: &str) -> IResult<&str, Value> {
     delimited(
         char('('),
@@ -313,10 +335,9 @@ fn list(input: &str) -> IResult<&str, Value> {
 
             // Build the list structure
             let list = if tail.is_some() {
-                // **R7RS DEVIATION:** Improper lists (dotted pairs) not supported
-                // This would need to be handled at a higher level to emit proper error message
-                // since nom parsers don't support custom error types easily
-                return Err(nom::Err::Error(nom::error::Error::new(
+                // **R7RS-RESTRICTED:** Improper lists (dotted pairs) not supported
+                // **NEEDS-ENFORCEMENT:** This detection is in place - improper lists are rejected
+                return Err(nom::Err::Failure(nom::error::Error::new(
                     input,
                     nom::error::ErrorKind::Tag,
                 )));
@@ -412,6 +433,14 @@ mod tests {
             Value::List(_) => {}
             _ => panic!("Expected a list"),
         }
+    }
+
+    #[test]
+    fn test_improper_list_rejected() {
+        // **R7RS-RESTRICTED:** Improper lists (dotted pairs) are not supported
+        assert!(parse("(1 . 2)").is_err());
+        assert!(parse("(a b . c)").is_err());
+        assert!(parse("(1 2 3 . 4)").is_err());
     }
 
     // Disabled tests showing R7RS deviations - these features are not supported

@@ -1,5 +1,5 @@
 use samplescheme::macros::MacroExpander;
-use samplescheme::{compile, parse, VM};
+use samplescheme::{VM, compile, parse};
 
 fn main() {
     println!("Testing ellipsis macro expansion...");

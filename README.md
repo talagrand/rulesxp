@@ -89,68 +89,90 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Registering Custom Builtins
 
-You can extend the evaluator with your own builtins. There are two
-APIs, both of which end up using the same underlying machinery:
+You can extend the evaluator with your own builtins using strongly-typed
+Rust functions. These are registered as **builtin operations** on the
+`Environment`.
 
-1. **Raw slice API** (closest to the core engine):
-
-```rust
-use rulesxp::ast::Value;
-use rulesxp::evaluator::{create_global_env, Environment};
-use rulesxp::Error;
-
-fn my_custom_function(args: &[Value]) -> Result<Value, Error> {
-    println!("called with {} args", args.len());
-    Ok(Value::Unspecified)
-}
-
-let mut env: Environment = create_global_env();
-env.register_builtin_function("my-func", my_custom_function);
-// Now (my-func) / {"my-func": [...]} can be used from Scheme / JSONLogic
-```
-
-2. **Typed API** (ergonomic Rust signatures, automatic conversion):
+#### Fixed-arity builtins
 
 ```rust
-use rulesxp::ast::Value;
-use rulesxp::evaluator::{create_global_env, Environment};
+use rulesxp::{Error, ast::Value, evaluator};
 
-// Fixed arity: arguments are converted from `Value` automatically
+// Infallible builtin: returns a bare i64
 fn add2(a: i64, b: i64) -> i64 {
     a + b
 }
 
-// Zero-argument builtin
-fn forty_two() -> i64 { 42 }
-
-// List argument converted to a slice of `Value`
-fn first_and_list_len(args: &[Value]) -> Value {
-    Value::List(vec![
-        args.first().cloned().unwrap_or(Value::Unspecified),
-        Value::Number(args.len() as i64),
-    ])
+// Fallible builtin: returns Result<T, Error>
+fn safe_div(a: i64, b: i64) -> Result<i64, Error> {
+    if b == 0 {
+        Err(Error::EvalError("division by zero".into()))
+    } else {
+        Ok(a / b)
+    }
 }
 
-let mut env: Environment = create_global_env();
-env.register_builtin_operation("add2", add2);
-env.register_builtin_operation("forty-two", forty_two);
-env.register_builtin_operation("first-and-len", first_and_list_len);
+let mut env = evaluator::create_global_env();
+env.register_builtin_operation::<(i64, i64)>("add2", add2);
+env.register_builtin_operation::<(i64, i64)>("safe-div", safe_div);
 
-// These builtins are then available from evaluated expressions
+// Now you can call (add2 7 5) or (safe-div 6 3) from Scheme
 ```
 
-The typed API currently supports:
+#### List and variadic builtins
 
-- **Parameter types**: `i64`, `bool`, `&str`, borrowed values `&Value`,
-    and list arguments via slices such as `&[i64]`, `&[bool]`, `&[&str]`,
-    and `&[Value]` (when the call site passes a list value).
-- **Return types**: any type implementing the internal `IntoValue` trait
-    (currently `Value`, `i64`, `bool`, `String`, and `&str`), or
-    `Result<R, E>` where `R` is one of those and `E: Display`.
+For list-style and variadic behavior, use the iterator-based
+parameter types re-exported from `rulesxp::evaluator`.
 
-Arity is enforced automatically; conversion errors become `TypeError`,
-and any user error from a `Result<_, E>` is wrapped into
-`Error::EvalError`.
+```rust
+use rulesxp::{Error, ast::Value, evaluator};
+use rulesxp::builtinops::Arity;
+use rulesxp::evaluator::{NumIter, ValueIter};
+
+// Single list argument: (sum-list (list 1 2 3 4)) => 10
+fn sum_list(nums: NumIter<'_>) -> i64 {
+    nums.sum()
+}
+
+// Variadic over all arguments: (count-numbers 1 "x" 2 #t 3) => 3
+fn count_numbers(args: ValueIter<'_>) -> i64 {
+    args.filter(|v| matches!(v, Value::Number(_))).count() as i64
+}
+
+let mut env = evaluator::create_global_env();
+
+// List parameter from a single list argument
+env.register_builtin_operation::<(NumIter<'static>,)>("sum-list", sum_list);
+
+// Variadic builtin with explicit arity metadata
+env.register_variadic_builtin_operation::<(ValueIter<'static>,)>(
+    "count-numbers",
+    Arity::AtLeast(0),
+    count_numbers,
+);
+```
+
+The typed registration APIs currently support:
+
+- **Parameter types** (as elements of the `Args` tuple):
+  - `i64` (number)
+  - `bool` (boolean)
+  - `&str` (borrowed string slices)
+  - `Value` (owned access to the raw AST value)
+  - `ValueIter<'_>` (iterate over `&Value` from a list/rest argument)
+  - `NumIter<'_>` (iterate over numeric elements as `i64`)
+  - `BoolIter<'_>` (iterate over boolean elements as `bool`)
+  - `StringIter<'_>` (iterate over string elements as `&str`)
+
+- **Return types**:
+  - `Result<Value, Error>`
+  - `Result<T, Error>` where `T: Into<Value>` (for example `i64`,
+    `bool`, `&str`, arrays/vectors of those types, or `Vec<Value>`)
+  - bare `T` where `T: Into<Value>` (for infallible helpers, which are
+    automatically wrapped as `Ok(T)`)
+
+Arity is enforced automatically. Conversion errors yield `TypeError`,
+and builtin errors are surfaced directly as `Error` values.
 
 ### Command Line Tools
 

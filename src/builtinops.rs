@@ -245,6 +245,124 @@ fn builtin_not(b: bool) -> bool {
     !b
 }
 
+/// JSONLogic-style truthiness per https://jsonlogic.com/truthy.html
+///
+/// Semantics:
+/// - `true` / `false`: returned as-is
+/// - `0`: false
+/// - any non-zero number: true
+/// - empty array: false
+/// - non-empty array: true
+/// - empty string: false
+/// - non-empty string: true (including "0")
+/// - `null`: false (not represented in our `Value` enum)
+///
+/// Types not expressible in JSONLogic (symbols, functions, builtins, unspecified)
+/// are rejected with a `TypeError`.
+fn builtin_jsonlogic_truthy(value: Value) -> Result<bool, Error> {
+    match value {
+        Value::Bool(b) => Ok(b),
+        Value::Number(n) => Ok(n != 0),
+        Value::List(list) => Ok(!list.is_empty()),
+        Value::String(s) => Ok(!s.is_empty()),
+
+        // Explicitly rejected types
+        Value::Unspecified
+        | Value::BuiltinFunction { .. }
+        | Value::Function { .. }
+        | Value::Symbol(_)
+        | Value::PrecompiledOp { .. } => Err(Error::TypeError(
+            "jsonlogic-truthy cannot be applied to non-JSONLogic types".to_owned(),
+        )),
+    }
+}
+
+/// JSONLogic `in` operator: membership in a list or substring test.
+///
+/// Semantics (aligned with JSONLogic tests):
+/// - If the second argument is a list, returns true if any element
+///   is structurally equal to the first argument.
+/// - If the second argument is a string, the first argument must
+///   also be a string, and we return true if it is a substring of
+///   the second argument.
+/// - Other combinations are rejected with a `TypeError`.
+fn builtin_jsonlogic_in(needle: Value, haystack: Value) -> Result<bool, Error> {
+    match (needle, haystack) {
+        (Value::String(needle), Value::String(haystack)) => Ok(haystack.contains(&needle)),
+        (value, Value::List(list)) => Ok(list.into_iter().any(|elem| elem == value)),
+        (_, Value::String(_)) => Err(Error::TypeError(
+            "jsonlogic-in with string haystack requires string needle".to_owned(),
+        )),
+        (_, _) => Err(Error::TypeError(
+            "jsonlogic-in requires list or string as haystack".to_owned(),
+        )),
+    }
+}
+
+/// JSONLogic `substr` operator on strings, supporting negative
+/// indices and lengths as in the official tests.
+///
+/// Signature: (string, start, [length])
+/// - `start` is required and can be negative, counting from the end
+///   of the string.
+/// - `length` is optional; if omitted, the substring extends to the
+///   end of the string.
+/// - A negative `length` trims characters from the end, matching the
+///   behavior exercised in the JSONLogic test suite.
+fn builtin_jsonlogic_substr(
+    source: &str,
+    start_raw: NumberType,
+    rest: NumIter<'_>,
+) -> Result<String, Error> {
+    // Collect at most one optional length argument from the numeric
+    // tail. Arity (2 or 3 total args) is enforced by the registry.
+    let mut iter = rest;
+    let length_raw = iter.next();
+
+    let chars: Vec<char> = source.chars().collect();
+    let len = chars.len() as i64;
+
+    // Compute start index with negative support
+    let mut start = if start_raw >= 0 {
+        start_raw
+    } else {
+        len + start_raw
+    };
+    if start < 0 {
+        start = 0;
+    }
+    if start > len {
+        start = len;
+    }
+
+    // Compute end index based on optional length
+    let mut end = match length_raw {
+        None => len,
+        Some(l) if l >= 0 => start + l,
+        Some(l) => len + l,
+    };
+
+    if end < 0 {
+        end = 0;
+    }
+    if end > len {
+        end = len;
+    }
+    if end < start {
+        end = start;
+    }
+
+    let start_idx = start as usize;
+    let end_idx = end as usize;
+
+    let result: String = chars
+        .get(start_idx..end_idx)
+        .expect("substring indices should be clamped to valid range")
+        .iter()
+        .collect();
+    Ok(result)
+}
+
 fn builtin_equal(first: Value, second: Value) -> Result<bool, Error> {
     // Scheme's equal? is structural equality for all types
     // JSONLOGIC-STRICT: Reject type coercion - require same types for equality
@@ -408,6 +526,18 @@ static BUILTIN_OPS: LazyLock<Vec<BuiltinOp>> = LazyLock::new(|| {
             arity: Arity::Exact(1),
         },
         BuiltinOp {
+            scheme_id: "jsonlogic-truthy",
+            jsonlogic_id: "jsonlogic-truthy",
+            op_kind: OpKind::Function(builtin_fixed::<(Value,), _>(builtin_jsonlogic_truthy)),
+            arity: Arity::Exact(1),
+        },
+        BuiltinOp {
+            scheme_id: "jsonlogic-in",
+            jsonlogic_id: "in",
+            op_kind: OpKind::Function(builtin_fixed::<(Value, Value), _>(builtin_jsonlogic_in)),
+            arity: Arity::Exact(2),
+        },
+        BuiltinOp {
             scheme_id: "and",
             jsonlogic_id: "and",
             op_kind: OpKind::SpecialForm(eval_and),
@@ -490,6 +620,15 @@ static BUILTIN_OPS: LazyLock<Vec<BuiltinOp>> = LazyLock::new(|| {
             )),
             arity: Arity::Any,
         },
+        BuiltinOp {
+            scheme_id: "jsonlogic-substr",
+            jsonlogic_id: "substr",
+            op_kind: OpKind::Function(builtin_variadic::<
+                (&'static str, NumberType, NumIter<'static>),
+                _,
+            >(builtin_jsonlogic_substr)),
+            arity: Arity::Range(2, 3),
+        },
         // Math operations
         BuiltinOp {
             scheme_id: "max",
@@ -560,6 +699,7 @@ pub(crate) fn get_list_op() -> &'static BuiltinOp {
 mod tests {
     use super::*;
     use crate::ast::{nil, val};
+    use crate::evaluator::Environment;
 
     /// Micro-helper for success cases in comprehensive tests
     fn success<T: Into<Value>>(value: T) -> Option<Value> {
@@ -694,6 +834,19 @@ mod tests {
         let complex2 = val([val(1), val("test"), val([val(2)])]);
         let complex3 = val([val(1), val("test"), val([val(3)])]);
 
+        let dummy_builtin_func: Arc<OperationFn> =
+            Arc::new(|_args: Vec<Value>| Ok(Value::Unspecified));
+        let builtin_value = Value::BuiltinFunction {
+            id: "dummy".to_owned(),
+            func: dummy_builtin_func,
+        };
+
+        let user_function = Value::Function {
+            params: vec!["x".to_owned()],
+            body: Box::new(val(42)),
+            env: Environment::new(),
+        };
+
         let test_cases: Vec<TestCase> = vec![
             // =================================================================
             // BASIC ARITHMETIC FUNCTIONS
@@ -785,6 +938,35 @@ mod tests {
             test!("not", &[val(true), val(false)], None), // Too many args
             test!("not", &[val(1)], None),                // Wrong type
             test!("not", &[val("true")], None),           // Wrong type
+            // =================================================================
+            // JSONLOGIC TRUTHINESS HELPER
+            // =================================================================
+
+            // Boolean inputs: pass through
+            test!("jsonlogic-truthy", &[val(true)], success(true)),
+            test!("jsonlogic-truthy", &[val(false)], success(false)),
+            // Numeric inputs
+            test!("jsonlogic-truthy", &[val(0)], success(false)),
+            test!("jsonlogic-truthy", &[val(1)], success(true)),
+            test!("jsonlogic-truthy", &[val(-1)], success(true)),
+            // String inputs
+            test!("jsonlogic-truthy", &[val("")], success(false)),
+            test!("jsonlogic-truthy", &[val("0")], success(true)),
+            // List inputs
+            test!("jsonlogic-truthy", &[nil()], success(false)),
+            test!("jsonlogic-truthy", &[val([1])], success(true)),
+            // Error cases: unspecified and function values
+            test!("jsonlogic-truthy", &[Value::Unspecified], None),
+            test!(
+                "jsonlogic-truthy",
+                std::slice::from_ref(&builtin_value),
+                None
+            ),
+            test!(
+                "jsonlogic-truthy",
+                std::slice::from_ref(&user_function),
+                None
+            ),
             // Test list functions - car
             test!("car", &[val([1, 2, 3])], success(1)), // First element
             test!("car", &[val(["only"])], success("only")), // Single element
@@ -957,6 +1139,73 @@ mod tests {
             test!("string-append", &[val(42)], None),
             test!("string-append", &[val("hello"), val(123)], None),
             test!("string-append", &[val(true), val("world")], None),
+            // JSONLogic string helpers
+
+            // jsonlogic-in: list membership
+            test!(
+                "jsonlogic-in",
+                &[
+                    val("Bart"),
+                    val(["Bart", "Homer", "Lisa", "Marge", "Maggie"])
+                ],
+                success(true)
+            ),
+            test!(
+                "jsonlogic-in",
+                &[
+                    val("Milhouse"),
+                    val(["Bart", "Homer", "Lisa", "Marge", "Maggie"])
+                ],
+                success(false)
+            ),
+            // jsonlogic-in: substring tests
+            test!(
+                "jsonlogic-in",
+                &[val("Spring"), val("Springfield")],
+                success(true)
+            ),
+            test!("jsonlogic-in", &[val("i"), val("team")], success(false)),
+            // jsonlogic-substr: mirror the JSONLogic conformance tests
+            test!(
+                "jsonlogic-substr",
+                &[val("jsonlogic"), val(4)],
+                success("logic")
+            ),
+            test!(
+                "jsonlogic-substr",
+                &[val("jsonlogic"), val(-5)],
+                success("logic")
+            ),
+            test!(
+                "jsonlogic-substr",
+                &[val("jsonlogic"), val(0), val(1)],
+                success("j")
+            ),
+            test!(
+                "jsonlogic-substr",
+                &[val("jsonlogic"), val(-1), val(1)],
+                success("c")
+            ),
+            test!(
+                "jsonlogic-substr",
+                &[val("jsonlogic"), val(4), val(5)],
+                success("logic")
+            ),
+            test!(
+                "jsonlogic-substr",
+                &[val("jsonlogic"), val(-5), val(5)],
+                success("logic")
+            ),
+            test!(
+                "jsonlogic-substr",
+                &[val("jsonlogic"), val(-5), val(-2)],
+                success("log")
+            ),
+            test!(
+                "jsonlogic-substr",
+                &[val("jsonlogic"), val(1), val(-5)],
+                success("son")
+            ),
             // =================================================================
             // MATH OPERATIONS - MAX/MIN
             // =================================================================
